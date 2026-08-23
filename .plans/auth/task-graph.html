@@ -1,0 +1,518 @@
+<title>Auth Kit Task Graph</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+  :root {
+    --ground:#F6F8F8; --surface:#FFFFFF; --surface-2:#EEF2F2;
+    --ink:#12181A; --ink-2:#4C585B; --ink-3:#7E8C8F;
+    --rule:#DDE4E4; --rule-strong:#C3CFCF;
+    --accent:#0F6B62; --accent-soft:#E2F0EE;
+    --ok:#1E7048; --ok-soft:#E3F1E9;
+    --partial:#8A6210; --partial-soft:#F6EEDC;
+    --no:#9C3730; --no-soft:#F7E7E5;
+    --shadow:0 1px 2px rgba(18,24,26,.05), 0 8px 24px -12px rgba(18,24,26,.12);
+    --display:'Archivo','Helvetica Neue',Arial,sans-serif;
+    --body:'Source Serif 4',Georgia,'Times New Roman',serif;
+    --mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+    --measure:68ch; --wide:1120px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:#0D1213; --surface:#141B1C; --surface-2:#1B2425;
+      --ink:#E7EDEC; --ink-2:#A3B0B0; --ink-3:#778585;
+      --rule:#263132; --rule-strong:#384748;
+      --accent:#4FBCAC; --accent-soft:#12302E;
+      --ok:#5DBF8B; --ok-soft:#14291F;
+      --partial:#D2A44B; --partial-soft:#2B2415;
+      --no:#E08078; --no-soft:#2E1B19;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#0D1213; --surface:#141B1C; --surface-2:#1B2425;
+    --ink:#E7EDEC; --ink-2:#A3B0B0; --ink-3:#778585;
+    --rule:#263132; --rule-strong:#384748;
+    --accent:#4FBCAC; --accent-soft:#12302E;
+    --ok:#5DBF8B; --ok-soft:#14291F;
+    --partial:#D2A44B; --partial-soft:#2B2415;
+    --no:#E08078; --no-soft:#2E1B19;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+  }
+
+  * { box-sizing:border-box; }
+  body {
+    background:var(--ground); color:var(--ink); font-family:var(--body);
+    font-size:17px; line-height:1.65; -webkit-font-smoothing:antialiased;
+    margin:0; padding:0 20px 96px;
+  }
+  .wrap { max-width:var(--wide); margin:0 auto; display:flex; flex-direction:column; gap:52px; }
+  .prose { max-width:var(--measure); }
+  p { margin:0 0 1em; } p:last-child { margin-bottom:0; }
+  h1,h2,h3,h4 { font-family:var(--display); font-weight:700; letter-spacing:-0.018em; text-wrap:balance; margin:0; line-height:1.15; }
+  a { color:var(--accent); text-underline-offset:2px; }
+  a:focus-visible { outline:2px solid var(--accent); outline-offset:3px; border-radius:3px; }
+  code,.mono { font-family:var(--mono); font-size:.84em; }
+  code { background:var(--surface-2); border:1px solid var(--rule); border-radius:4px; padding:.08em .34em; word-break:break-word; }
+  .eyebrow { font-family:var(--mono); font-size:11px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-3); }
+
+  header.masthead { padding-top:72px; padding-bottom:40px; border-bottom:1px solid var(--rule); display:flex; flex-direction:column; gap:22px; }
+  header.masthead h1 { font-size:clamp(2.2rem,5vw,3.4rem); letter-spacing:-0.03em; }
+  .standfirst { max-width:64ch; font-size:1.14rem; color:var(--ink-2); margin:0; }
+  .standfirst strong { color:var(--ink); font-weight:600; }
+  .meta-strip { display:flex; flex-wrap:wrap; gap:8px 28px; font-family:var(--mono); font-size:11.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-3); }
+  .meta-strip b { color:var(--ink-2); font-weight:500; }
+
+  section { display:flex; flex-direction:column; gap:22px; }
+  .sec-head { display:flex; flex-direction:column; gap:10px; }
+  .sec-head h2 { font-size:clamp(1.45rem,2.7vw,1.9rem); }
+  .sec-head p { color:var(--ink-2); max-width:var(--measure); margin:0; }
+
+  /* correction callout */
+  .correction {
+    background:var(--partial-soft); border:1px solid var(--rule);
+    border-left:4px solid var(--partial); border-radius:0 10px 10px 0;
+    padding:22px 26px; display:flex; flex-direction:column; gap:10px;
+  }
+  .correction h3 { font-size:1.06rem; }
+  .correction p { font-size:.97rem; color:var(--ink-2); max-width:74ch; }
+  .correction b { color:var(--ink); font-weight:600; }
+
+  /* figure */
+  figure { margin:0; display:flex; flex-direction:column; gap:14px; }
+  .figframe {
+    background:var(--surface); border:1px solid var(--rule); border-radius:10px;
+    box-shadow:var(--shadow); padding:26px 20px; overflow-x:auto;
+  }
+  .figframe svg { display:block; max-width:100%; height:auto; min-width:840px; margin:0 auto; color:var(--ink-2); }
+  figcaption { font-size:.94rem; color:var(--ink-2); max-width:78ch; }
+  figcaption b { color:var(--ink); font-weight:600; }
+
+  /* tables */
+  .scroller { overflow-x:auto; border:1px solid var(--rule); border-radius:10px; background:var(--surface); box-shadow:var(--shadow); }
+  table { border-collapse:collapse; width:100%; min-width:800px; font-family:var(--display); font-size:13px; font-variant-numeric:tabular-nums; }
+  thead th { text-align:left; font-family:var(--mono); font-size:10px; font-weight:700; letter-spacing:.09em; text-transform:uppercase; color:var(--ink-3); padding:13px 10px; border-bottom:1px solid var(--rule-strong); white-space:nowrap; }
+  tbody td { padding:10px; border-bottom:1px solid var(--rule); color:var(--ink-2); vertical-align:top; }
+  tbody tr:last-child td { border-bottom:0; }
+  tbody th { text-align:left; padding:10px; border-bottom:1px solid var(--rule); font-family:var(--mono); font-size:11.5px; font-weight:700; color:var(--accent); white-space:nowrap; vertical-align:top; }
+  tbody tr:last-child th { border-bottom:0; }
+  tbody tr.is-gate th { background:var(--accent-soft); }
+  tbody tr.is-gate td:first-of-type { font-weight:700; color:var(--ink); }
+  td.deps { font-family:var(--mono); font-size:10.5px; color:var(--ink-3); white-space:nowrap; }
+  td.size { font-family:var(--mono); font-size:10.5px; text-align:center; }
+  td.title { color:var(--ink); font-weight:600; min-width:210px; }
+  td.done { min-width:250px; }
+
+  .lane-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:12px; margin-bottom:-6px; }
+  .lane-head h3 { font-size:1.12rem; }
+  .lane-head .count { font-family:var(--mono); font-size:11px; color:var(--ink-3); letter-spacing:.05em; text-transform:uppercase; }
+  .lane-head .slack { margin-left:auto; font-family:var(--mono); font-size:10.5px; padding:3px 8px; border-radius:4px; letter-spacing:.05em; text-transform:uppercase; }
+  .slack.crit { background:var(--no-soft); color:var(--no); }
+  .slack.free { background:var(--ok-soft); color:var(--ok); }
+
+  /* scenarios */
+  .scenarios { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:14px; }
+  .scen { background:var(--surface); border:1px solid var(--rule); border-radius:9px; padding:20px; display:flex; flex-direction:column; gap:8px; box-shadow:var(--shadow); }
+  .scen .who { font-family:var(--mono); font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-3); }
+  .scen .dur { font-family:var(--display); font-weight:700; font-size:1.8rem; letter-spacing:-0.03em; color:var(--accent); line-height:1; }
+  .scen p { font-size:.9rem; color:var(--ink-2); margin:0; line-height:1.55; }
+
+  .note { background:var(--surface-2); border:1px solid var(--rule); border-radius:10px; padding:22px 26px; display:flex; flex-direction:column; gap:11px; }
+  .note ul { margin:0; padding-left:1.15em; display:flex; flex-direction:column; gap:9px; }
+  .note li { font-size:.94rem; color:var(--ink-2); max-width:76ch; }
+  .note li b { color:var(--ink); font-weight:600; }
+
+  footer { border-top:1px solid var(--rule); padding-top:24px; font-family:var(--mono); font-size:11.5px; color:var(--ink-3); letter-spacing:.04em; line-height:1.8; }
+
+  @media (max-width:620px) {
+    body { font-size:16px; padding:0 16px 72px; }
+    header.masthead { padding-top:48px; }
+    .figframe { padding:16px 12px; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Execution graph &middot; 65 tasks &middot; six lanes &middot; seven gates</div>
+    <h1>The task graph, and what it revealed</h1>
+    <p class="standfirst">
+      Decomposing the four-phase plan into <strong>65 dependency-linked tasks</strong> produced one uncomfortable finding
+      and one useful one. The uncomfortable finding is that my earlier estimate was wrong. The useful one is that
+      <strong>the long pole is documentation, not the backend rewrite</strong>.
+    </p>
+    <div class="meta-strip">
+      <span><b>65</b> tasks</span>
+      <span><b>54.5</b> person-days</span>
+      <span><b>16.5</b> days critical path</span>
+      <span><b>7</b> hard gates</span>
+      <span>acyclic, single root</span>
+    </div>
+  </header>
+
+  <section>
+    <div class="correction">
+      <h3>Correcting the estimate I gave you</h3>
+      <p>
+        Last turn I said <b>&ldquo;~3.5&ndash;4 weeks, one engineer.&rdquo;</b> That conflated two different numbers, and the
+        decomposition makes the difference concrete.
+      </p>
+      <p>
+        <b>16.5 days</b> is the critical path &mdash; the floor, achievable only with enough people to run every lane in parallel.
+        That is where my 3.5-week figure actually came from. <b>54.5 person-days</b> is the total effort, which for one engineer is
+        closer to <b>eleven weeks</b>, not four. Plan against 54.5; use 16.5 only to know that adding a fourth engineer buys you nothing.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>The shape of the dependency graph</h2>
+      <p>
+        Everything funnels through one boundary proof and one contract file, then fans into four lanes that rejoin at the re-grade.
+        The accented path is the longest chain; the two lanes drawn with slack can start late without moving the end date.
+      </p>
+    </div>
+
+    <figure>
+      <div class="figframe">
+        <svg viewBox="0 0 1000 470" role="img" aria-label="Dependency graph: the EE boundary proof gates the contract file, which fans into three kit workstreams, then the fakes and conformance suite, then four lanes — backend, UI, providers, docs — which all rejoin at the final re-grade. The critical path runs through identity, fakes, conformance and the docs lane.">
+          <defs>
+            <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+            </marker>
+            <marker id="arc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+            </marker>
+          </defs>
+
+          <g stroke="currentColor" stroke-opacity=".3" fill="none" marker-end="url(#ar)">
+            <line x1="300" y1="130" x2="322" y2="130"/>
+            <line x1="300" y1="352" x2="322" y2="352"/>
+            <path d="M 452 130 C 470 130 470 200 486 200"/>
+            <path d="M 452 241 C 470 241 470 210 486 205"/>
+            <path d="M 452 241 C 472 241 472 300 486 300"/>
+            <path d="M 452 352 C 600 352 600 100 654 100"/>
+            <path d="M 452 241 C 560 241 560 100 654 100"/>
+            <path d="M 452 241 C 590 241 590 178 654 178"/>
+            <path d="M 616 300 C 636 300 636 262 654 262"/>
+            <path d="M 616 300 C 636 300 636 390 640 390"/>
+            <path d="M 452 241 C 500 241 500 420 486 420"/>
+            <path d="M 616 420 C 700 420 700 300 806 262"/>
+            <path d="M 806 100 C 850 100 850 210 866 226"/>
+            <path d="M 806 178 C 850 178 850 214 866 230"/>
+            <path d="M 806 262 C 840 262 840 240 866 238"/>
+          </g>
+
+          <g stroke="var(--accent)" stroke-width="1.7" fill="none" marker-end="url(#arc)">
+            <line x1="160" y1="241" x2="182" y2="241"/>
+            <path d="M 300 241 C 312 241 312 130 322 130"/>
+            <path d="M 452 130 C 468 130 468 176 486 176"/>
+            <path d="M 546 224 L 546 246"/>
+            <path d="M 616 300 C 632 300 632 346 654 346"/>
+            <path d="M 806 346 C 840 346 840 262 866 250"/>
+          </g>
+
+          <g font-family="'JetBrains Mono',monospace" font-size="9.5" fill="currentColor" fill-opacity=".55" text-anchor="middle">
+            <text x="171" y="234">proven</text>
+            <text x="484" y="336">suite</text>
+            <text x="735" y="410">baseline</text>
+          </g>
+
+          <g fill="none" stroke-linejoin="round">
+            <rect x="30" y="212" width="130" height="58" rx="7" stroke="var(--accent)" stroke-width="1.6"/>
+            <rect x="182" y="212" width="118" height="58" rx="7" stroke="var(--accent)" stroke-width="1.6"/>
+            <rect x="322" y="102" width="130" height="56" rx="7" stroke="var(--accent)" stroke-width="1.6"/>
+            <rect x="322" y="213" width="130" height="56" rx="7" stroke="currentColor" stroke-opacity=".35"/>
+            <rect x="322" y="324" width="130" height="56" rx="7" stroke="currentColor" stroke-opacity=".35"/>
+            <rect x="486" y="150" width="130" height="50" rx="7" stroke="var(--accent)" stroke-width="1.6"/>
+            <rect x="486" y="248" width="130" height="52" rx="7" stroke="var(--accent)" stroke-width="1.6"/>
+            <rect x="486" y="392" width="130" height="52" rx="7" stroke="currentColor" stroke-opacity=".35"/>
+            <rect x="654" y="70" width="152" height="58" rx="7" stroke="currentColor" stroke-opacity=".35"/>
+            <rect x="654" y="150" width="152" height="56" rx="7" stroke="currentColor" stroke-opacity=".35"/>
+            <rect x="654" y="234" width="152" height="56" rx="7" stroke="currentColor" stroke-opacity=".35"/>
+            <rect x="654" y="318" width="152" height="56" rx="7" stroke="var(--accent)" stroke-width="1.6"/>
+            <rect x="866" y="208" width="106" height="58" rx="7" stroke="var(--accent)" stroke-width="1.6"/>
+          </g>
+
+          <g font-family="'JetBrains Mono',monospace" font-size="9.5" fill="currentColor" fill-opacity=".6">
+            <text x="44" y="234">K1–K6</text>
+            <text x="196" y="234">K7</text>
+            <text x="336" y="124">K8–K10</text>
+            <text x="336" y="235">K11–K14</text>
+            <text x="336" y="346">K15–K16</text>
+            <text x="500" y="170">K17</text>
+            <text x="500" y="270">K18</text>
+            <text x="500" y="414">K19–K21</text>
+            <text x="668" y="92">LANE B · 19</text>
+            <text x="668" y="172">LANE U · 9</text>
+            <text x="668" y="256">LANE C · 7</text>
+            <text x="668" y="340">LANE D · 6</text>
+            <text x="880" y="230">R1–R3</text>
+          </g>
+
+          <g font-family="Archivo,sans-serif" font-size="12.5" font-weight="600" fill="currentColor">
+            <text x="44" y="252">EE boundary</text>
+            <text x="196" y="252">contract.ts</text>
+            <text x="336" y="142">identity</text>
+            <text x="336" y="253">state · session</text>
+            <text x="336" y="364">organizations</text>
+            <text x="500" y="188">fakes</text>
+            <text x="500" y="288">conformance</text>
+            <text x="500" y="432">tests · packaging</text>
+            <text x="668" y="110">backend seam</text>
+            <text x="668" y="190">UI seam</text>
+            <text x="668" y="274">providers</text>
+            <text x="668" y="358">docs</text>
+            <text x="880" y="248">re-grade</text>
+          </g>
+
+          <g font-family="Archivo,sans-serif" font-size="10.5" fill="currentColor" fill-opacity=".5">
+            <text x="336" y="267">· descriptor</text>
+          </g>
+
+          <g fill="var(--accent)">
+            <circle cx="152" cy="220" r="3.4"/>
+            <circle cx="608" cy="400" r="3.4"/>
+            <circle cx="798" cy="78" r="3.4"/>
+            <circle cx="798" cy="158" r="3.4"/>
+            <circle cx="798" cy="242" r="3.4"/>
+            <circle cx="798" cy="326" r="3.4"/>
+            <circle cx="964" cy="216" r="3.4"/>
+          </g>
+
+          <g font-family="'JetBrains Mono',monospace" font-size="9" fill="currentColor" fill-opacity=".45">
+            <text x="30" y="452">● gate — work stops here until it passes</text>
+            <text x="342" y="452">━━ critical path (16.5 days)</text>
+            <text x="600" y="452">─── dependency with slack</text>
+          </g>
+        </svg>
+      </div>
+      <figcaption>
+        <b>Two lanes carry slack.</b> Backend (19 tasks) and UI (9) are the largest and most delicate, but neither is on the
+        longest chain &mdash; they can start late or run slow without moving the finish. The docs lane is critical because its
+        final gate, <code>D5</code>, is a human reading the guide and writing a working provider, and that cannot start until
+        conformance exists. If you want the end date to move, start docs earlier, not backend faster.
+      </figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Scheduling</h2>
+      <p>Three honest readings of the same graph.</p>
+    </div>
+    <div class="scenarios">
+      <div class="scen">
+        <div class="who">One engineer</div>
+        <div class="dur">~11 weeks</div>
+        <p>54.5 person-days end to end. The graph shape barely matters; you are effort-bound, not dependency-bound. Ship lane by lane and take the gates seriously &mdash; they are your only regression insurance.</p>
+      </div>
+      <div class="scen">
+        <div class="who">Two engineers</div>
+        <div class="dur">~6 weeks</div>
+        <p>Best value. Split at <code>K7</code>: one takes identity, fakes and conformance (<code>K8&ndash;K10</code>, <code>K17</code>, <code>K18</code>), the other takes state, session and the descriptor (<code>K11&ndash;K14</code>). They rejoin at <code>K17</code>, then split again across backend and UI+docs.</p>
+      </div>
+      <div class="scen">
+        <div class="who">Three or more</div>
+        <div class="dur">~4 weeks</div>
+        <p>Approaches the 16.5-day floor plus review overhead. A fourth engineer buys nothing &mdash; the kit spine is inherently serial, and <code>D5</code> needs a reader who was not involved in writing any of it.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>The seven gates</h2>
+      <p>Work stops at each of these until it passes. They are the difference between a plan and a wish.</p>
+    </div>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>Gate</th><th>Lane</th><th>What must be true</th></tr></thead>
+        <tbody>
+          <tr class="is-gate"><th>K6</th><td>Kit</td><td>Add an EE import, watch <b>both</b> lint and the module-graph test go red, revert. The boundary is proven, not asserted.</td></tr>
+          <tr class="is-gate"><th>K21</th><td>Kit</td><td><code>mastracode/web</code> builds with the kit in its <code>link:</code> graph and <code>validate-output.mjs</code> passes.</td></tr>
+          <tr class="is-gate"><th>B17</th><td>Backend</td><td>Five tests: cookie-only request authenticates; <code>{ uid }</code> provider works end to end; no-org provider reaches the board; every capability branch drives a real response; the <code>{ session, tokens }</code> callback branch is asserted.</td></tr>
+          <tr class="is-gate"><th>U8</th><td>UI</td><td>A CI test fails on any provider-name literal in <code>factory-ui/src</code>. This is what stops the UI seam sliding back to D+.</td></tr>
+          <tr class="is-gate"><th>C7</th><td>Providers</td><td>Every shipped provider runs conformance in CI. Deleting a provider's conformance test must fail the build.</td></tr>
+          <tr class="is-gate"><th>D5</th><td>Docs</td><td>Someone uninvolved writes a working provider from the guide alone. Everything before this is a proxy for it.</td></tr>
+          <tr class="is-gate"><th>R2</th><td>Release</td><td>All five A&minus; criteria sets demonstrably met, or the gap accepted in writing. No rounding up.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="lane-head">
+      <h3>Lane K &mdash; kit foundation</h3>
+      <span class="count">21 tasks &middot; 17 days</span>
+      <span class="slack crit">On critical path</span>
+    </div>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>ID</th><th>Task</th><th>Deps</th><th>Sz</th><th>Done when</th></tr></thead>
+        <tbody>
+          <tr><th>K1</th><td class="title">Scaffold <code>mastracode/auth-kit</code></td><td class="deps">&mdash;</td><td class="size">S</td><td class="done">package.json validates; subpath exports declared per module.</td></tr>
+          <tr><th>K2</th><td class="title">Register in the workspace</td><td class="deps">K1</td><td class="size">S</td><td class="done">Root <code>pnpm-workspace.yaml</code> lists mastracode packages <em>explicitly</em> &mdash; no glob. Add the entry, install, resolve.</td></tr>
+          <tr><th>K3</th><td class="title">Toolchain config</td><td class="deps">K2</td><td class="size">S</td><td class="done">build, check and lint pass on an empty package, mirroring <code>mastracode/factory</code>.</td></tr>
+          <tr><th>K4</th><td class="title">ESLint EE ban</td><td class="deps">K3</td><td class="size">S</td><td class="done">Importing <code>@mastra/core/auth</code> fails lint &mdash; banned wholesale, not just <code>/ee</code>.</td></tr>
+          <tr><th>K5</th><td class="title">Module-graph no-EE test</td><td class="deps">K3</td><td class="size">M</td><td class="done">Resolved graph contains no <code>/ee</code> specifier. Catches transitive drift lint cannot see.</td></tr>
+          <tr class="is-gate"><th>K6</th><td class="title">Negative-prove the boundary</td><td class="deps">K4, K5</td><td class="size">S</td><td class="done">Red observed on a deliberate EE import, reverted, procedure in the README.</td></tr>
+          <tr><th>K7</th><td class="title"><code>contract.ts</code></td><td class="deps">K6</td><td class="size">S</td><td class="done">All 16 symbols re-exported from <code>@mastra/core/server</code> only.</td></tr>
+          <tr><th>K8</th><td class="title"><code>AuthIdentity</code> type</td><td class="deps">K7</td><td class="size">S</td><td class="done">Required <code>id</code>, no vendor field. Replaces <code>workosId</code> and <code>EEUser</code>.</td></tr>
+          <tr><th>K9</th><td class="title"><code>toAuthIdentity</code> normalizer</td><td class="deps">K8</td><td class="size">M</td><td class="done">Handles <code>id</code>, <code>uid</code>, <code>sub</code> and <code>{session,user}</code>; null only when no id exists.</td></tr>
+          <tr><th>K10</th><td class="title"><code>IIdentityProvider</code> escape hatch</td><td class="deps">K9</td><td class="size">S</td><td class="done">Provider-supplied <code>toIdentity()</code> takes precedence; guard tested.</td></tr>
+          <tr><th>K11</th><td class="title"><code>state.ts</code> codec</td><td class="deps">K7</td><td class="size">S</td><td class="done">Round-trips, including a <code>returnTo</code> containing a literal pipe.</td></tr>
+          <tr><th>K12</th><td class="title"><code>session.ts</code> signed cookie</td><td class="deps">K7</td><td class="size">M</td><td class="done">Tamper, expiry and cross-site attribute tests pass.</td></tr>
+          <tr><th>K13</th><td class="title"><code>AuthDescriptor</code> type</td><td class="deps">K7</td><td class="size">S</td><td class="done">Scope boundary documented: no RBAC, no FGA, no licence gate.</td></tr>
+          <tr><th>K14</th><td class="title"><code>describeAuth()</code> derivation</td><td class="deps">K13</td><td class="size">M</td><td class="done">Four sign-in kinds tested. Written clean-room &mdash; a second engineer confirms it is not a paraphrase.</td></tr>
+          <tr><th>K15</th><td class="title"><code>withSyntheticOrganizations</code></td><td class="deps">K8</td><td class="size">M</td><td class="done">A wrapper, not a <code>CompositeAuth</code> member &mdash; composing provably cannot supply orgs.</td></tr>
+          <tr><th>K16</th><td class="title"><code>resolveTenant</code> helper</td><td class="deps">K15</td><td class="size">S</td><td class="done">Stable orgId for a no-org identity, generalizing the existing credentials-path fallback.</td></tr>
+          <tr><th>K17</th><td class="title">Composable fake providers</td><td class="deps">K10, K14</td><td class="size">M</td><td class="done">Every mixin combination satisfies its guard; zero env stubbing.</td></tr>
+          <tr><th>K18</th><td class="title">Conformance suite</td><td class="deps">K17, K11, K12</td><td class="size">L</td><td class="done">Green on a capable fake, red on a fake broken in each of the four obligations.</td></tr>
+          <tr><th>K19</th><td class="title">Unit test sweep</td><td class="deps">K9, K11, K12, K14, K16</td><td class="size">M</td><td class="done">No untested export. The kit is what everything else trusts.</td></tr>
+          <tr><th>K20</th><td class="title">README and stability policy</td><td class="deps">K18</td><td class="size">S</td><td class="done">Boundary re-verification procedure and semver policy written.</td></tr>
+          <tr class="is-gate"><th>K21</th><td class="title">Packaging into <code>mastracode/web</code></td><td class="deps">K20</td><td class="size">M</td><td class="done">Separate pnpm project: add the <code>link:</code> dep and prebuild filter; <code>monorepo-deps.mjs pin</code> resolves it; build output validates.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="lane-head">
+      <h3>Lane B &mdash; backend seam</h3>
+      <span class="count">19 tasks &middot; 16.5 days</span>
+      <span class="slack free">Has slack</span>
+    </div>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>ID</th><th>Task</th><th>Deps</th><th>Sz</th><th>Done when</th></tr></thead>
+        <tbody>
+          <tr><th>B1</th><td class="title">Kit dependency + EE lint in factory</td><td class="deps">K7</td><td class="size">S</td><td class="done">Factory builds with the kit and cannot regress the boundary.</td></tr>
+          <tr><th>B2</th><td class="title">Compat flag scaffold</td><td class="deps">B1</td><td class="size">S</td><td class="done"><code>MASTRACODE_AUTH_IDENTITY_V2</code> off by default; both paths reachable.</td></tr>
+          <tr><th>B3</th><td class="title">Route identity through the kit</td><td class="deps">B2, K10</td><td class="size">M</td><td class="done">Both flag states pass the existing suite. This is the change that unbreaks <code>{ uid }</code> providers.</td></tr>
+          <tr><th>B4</th><td class="title">Drop <code>workosId</code></td><td class="deps">B3</td><td class="size">S</td><td class="done">Gone from <code>FactoryAuthUser</code> and <code>TestAuthUser</code>; grep is clean.</td></tr>
+          <tr><th>B5</th><td class="title">Delete WorkOS type-test helpers</td><td class="deps">B1</td><td class="size">S</td><td class="done">No <code>instanceof</code> against a provider class anywhere in the Factory.</td></tr>
+          <tr><th>B6</th><td class="title">Delete the <code>WORKOS_*</code> env fallback</td><td class="deps">B5</td><td class="size">M</td><td class="done"><code>mountFactoryAuth</code> reads no env; suites pass a fake instead.</td></tr>
+          <tr><th>B7</th><td class="title">Remove <code>@mastra/auth-workos</code></td><td class="deps">B6</td><td class="size">S</td><td class="done">Dependency dropped, both <code>vi.mock</code> calls deleted.</td></tr>
+          <tr><th>B8</th><td class="title">Adopt the kit state codec</td><td class="deps">B2, K11</td><td class="size">M</td><td class="done">A provider written to the documented codec completes a callback under <em>both</em> hosts.</td></tr>
+          <tr><th>B9</th><td class="title">Session cookie via the kit</td><td class="deps">B2, K12</td><td class="size">M</td><td class="done">Both cookie sources tested; the malformed-header defence has a test pinning it.</td></tr>
+          <tr><th>B10</th><td class="title">Logout revokes, moves to POST</td><td class="deps">B9</td><td class="size">M</td><td class="done"><code>destroySession</code> observed called; GET shim redirects for one release.</td></tr>
+          <tr><th>B11</th><td class="title">Session refresh parity</td><td class="deps">B9</td><td class="size">M</td><td class="done">An expiring session refreshes transparently on a Factory route, as it already does on <code>/api/*</code>.</td></tr>
+          <tr><th>B12</th><td class="title"><code>resolveTenant</code> into RouteAuth</td><td class="deps">B3, K16</td><td class="size">M</td><td class="done">A no-org fake provider reaches the board.</td></tr>
+          <tr><th>B13</th><td class="title">Remove the workspace org throw</td><td class="deps">B12</td><td class="size">S</td><td class="done">No-org user opens a session; the genuinely identity-less caller still throws.</td></tr>
+          <tr><th>B14</th><td class="title">Migrate <code>workspace.ts</code> to RouteAuth</td><td class="deps">B13</td><td class="size">M</td><td class="done">No direct auth-module import remains.</td></tr>
+          <tr><th>B15</th><td class="title">Migrate <code>rules/binding-context.ts</code></td><td class="deps">B12</td><td class="size">S</td><td class="done">No direct auth-module import remains.</td></tr>
+          <tr><th>B16</th><td class="title">Migrate <code>session-subscriptions.ts</code></td><td class="deps">B12</td><td class="size">S</td><td class="done">RouteAuth becomes the sole identity path, not merely the preferred one.</td></tr>
+          <tr class="is-gate"><th>B17</th><td class="title">Backend exit-gate tests</td><td class="deps">B4, B7, B8, B10, B11, B14, B15, B16</td><td class="size">L</td><td class="done">All five gate tests pass with the flag on.</td></tr>
+          <tr><th>B18</th><td class="title">Flip the flag on by default</td><td class="deps">B17, U7</td><td class="size">S</td><td class="done">A release ships on V2 with no rollback. <em>Deferred one release.</em></td></tr>
+          <tr><th>B19</th><td class="title">Delete flag and legacy sniffer</td><td class="deps">B18</td><td class="size">S</td><td class="done">One identity path remains. <em>Deferred one release.</em></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="lane-head">
+      <h3>Lane U &mdash; UI seam</h3>
+      <span class="count">9 tasks &middot; 7 days</span>
+      <span class="slack free">Has slack</span>
+    </div>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>ID</th><th>Task</th><th>Deps</th><th>Sz</th><th>Done when</th></tr></thead>
+        <tbody>
+          <tr><th>U1</th><td class="title"><code>/auth/me</code> emits the descriptor</td><td class="deps">B1, K14</td><td class="size">M</td><td class="done">Descriptor present for every capability shape; <code>name</code> retained one release for the fallback.</td></tr>
+          <tr><th>U2</th><td class="title">Server-side descriptor tests</td><td class="deps">U1</td><td class="size">S</td><td class="done">Four payload shapes pinned.</td></tr>
+          <tr><th>U3</th><td class="title">SPA reads the descriptor</td><td class="deps">U1</td><td class="size">S</td><td class="done">Parses the descriptor, tolerates its absence against an older server.</td></tr>
+          <tr><th>U4</th><td class="title">SignInPage branches on capability</td><td class="deps">U3</td><td class="size">M</td><td class="done">All four kinds render, including an unrecognised provider &mdash; no more GitHub logo by default.</td></tr>
+          <tr><th>U5</th><td class="title">Credentials endpoint from the descriptor</td><td class="deps">U4</td><td class="size">M</td><td class="done">A fake handler provider on a different base path signs in. Removes better-auth's <em>wire format</em>, not just its name.</td></tr>
+          <tr><th>U6</th><td class="title">Sweep remaining name reads</td><td class="deps">U4</td><td class="size">S</td><td class="done">No behavioural branch on a provider name outside the labelled legacy fallback.</td></tr>
+          <tr><th>U7</th><td class="title">MSW tests, every sign-in kind</td><td class="deps">U5, U6</td><td class="size">M</td><td class="done">Real client + React Query through MSW handlers, per the repo's primary approach for these packages.</td></tr>
+          <tr class="is-gate"><th>U8</th><td class="title">CI ban on provider-name literals</td><td class="deps">U7</td><td class="size">S</td><td class="done">Adding a name literal fails the build.</td></tr>
+          <tr><th>U9</th><td class="title">Remove the legacy fallback</td><td class="deps">U8, B18</td><td class="size">S</td><td class="done">Descriptor is the only input to the sign-in decision. <em>Deferred one release.</em></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="lane-head">
+      <h3>Lane C &mdash; conformance and providers</h3>
+      <span class="count">7 tasks &middot; 8 days</span>
+      <span class="slack free">Has slack</span>
+    </div>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>ID</th><th>Task</th><th>Deps</th><th>Sz</th><th>Done when</th></tr></thead>
+        <tbody>
+          <tr><th>C1</th><td class="title">Baseline: better-auth</td><td class="deps">K18</td><td class="size">S</td><td class="done">Richest provider first, to shake out suite bugs against something that should pass.</td></tr>
+          <tr><th>C2</th><td class="title">Baseline: workos, studio</td><td class="deps">C1</td><td class="size">M</td><td class="done">The two that run the Factory today are green, or real defects are filed.</td></tr>
+          <tr><th>C3</th><td class="title">Okta &mdash; expect red</td><td class="deps">C1</td><td class="size">S</td><td class="done">Suite reproduces the callback failure. Zero <code>handleCallback</code> coverage today is exactly why it shipped.</td></tr>
+          <tr><th>C4</th><td class="title">Fix the okta state contract</td><td class="deps">C3, K11</td><td class="size">M</td><td class="done">C3 goes green; a full sign-in completes under the Factory.</td></tr>
+          <tr><th>C5</th><td class="title">Supabase and Firebase &mdash; decide and act</td><td class="deps">C1, K15</td><td class="size">L</td><td class="done">Each either passes conformance or carries a documented unsupported marker. Both need <code>authorizeUser</code> overridden.</td></tr>
+          <tr><th>C6</th><td class="title">Retire the 60-second boot tests</td><td class="deps">B7</td><td class="size">M</td><td class="done">Auth ladder assertions run in seconds on the existing config-capture seam.</td></tr>
+          <tr class="is-gate"><th>C7</th><td class="title">Conformance wired into CI</td><td class="deps">C2, C4, C5</td><td class="size">S</td><td class="done">Deleting a shipped provider's conformance test fails CI.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="lane-head">
+      <h3>Lane D &mdash; documentation</h3>
+      <span class="count">6 tasks &middot; 8.5 days</span>
+      <span class="slack crit">On critical path</span>
+    </div>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>ID</th><th>Task</th><th>Deps</th><th>Sz</th><th>Done when</th></tr></thead>
+        <tbody>
+          <tr><th>D1</th><td class="title">Capability reference table</td><td class="deps">K14, K18</td><td class="size">M</td><td class="done">Interface &rarr; routes unlocked &rarr; methods, for all eight. Currently zero of these names appear in docs.</td></tr>
+          <tr><th>D2</th><td class="title">Four obligations as documented contract</td><td class="deps">D1, B8, B9</td><td class="size">M</td><td class="done">Every obligation conformance asserts is documented with its consuming code named.</td></tr>
+          <tr><th>D3</th><td class="title">Write-a-provider guide</td><td class="deps">D2, C4</td><td class="size">L</td><td class="done">Empty package to working sign-in, ending at &ldquo;now run conformance.&rdquo; Generic OIDC as the worked example.</td></tr>
+          <tr><th>D4</th><td class="title">CI type-checks doc examples</td><td class="deps">D3</td><td class="size">M</td><td class="done">A deliberate contract break fails the docs job.</td></tr>
+          <tr class="is-gate"><th>D5</th><td class="title">Validate on a real reader</td><td class="deps">D4</td><td class="size">M</td><td class="done">Someone uninvolved ships a working provider from the guide alone, unaided.</td></tr>
+          <tr><th>D6</th><td class="title">Update the mastracode READMEs</td><td class="deps">D2</td><td class="size">S</td><td class="done">Fresh clone runs locally from the README. Includes the env-model-keys gotcha that currently reads as a bug.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="lane-head">
+      <h3>Lane R &mdash; release</h3>
+      <span class="count">3 tasks &middot; 2 days</span>
+    </div>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>ID</th><th>Task</th><th>Deps</th><th>Sz</th><th>Done when</th></tr></thead>
+        <tbody>
+          <tr><th>R1</th><td class="title">Changesets</td><td class="deps">B17, U8, C7</td><td class="size">S</td><td class="done">One per logical group, not one giant multi-package file: kit (minor), factory (minor), okta (patch), factory-ui (patch).</td></tr>
+          <tr class="is-gate"><th>R2</th><td class="title">Re-grade against the five criteria sets</td><td class="deps">R1, D5, K19</td><td class="size">M</td><td class="done">All five met, or gaps accepted in writing. Anything short gets a follow-up task, not a rounded-up grade.</td></tr>
+          <tr><th>R3</th><td class="title">Deferred cleanup release</td><td class="deps">B19, U9</td><td class="size">S</td><td class="done">Flag removal and legacy fallback deletion shipped. <em>Tracked here so it is not forgotten.</em></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="note">
+      <div class="eyebrow">Things the graph makes visible that the plan did not</div>
+      <ul>
+        <li><b>Docs is the long pole, not the rewrite.</b> Lane D is only 6 tasks and 8.5 days, but it sits at the end of the longest chain and its gate needs a person who was not involved. Start it the moment <code>K18</code> lands; do not treat it as the thing you do after the code works.</li>
+        <li><b>Four tasks are deliberately not on the path to A&minus;.</b> <code>B18</code>, <code>B19</code>, <code>U9</code> and <code>R3</code> are the one-release-later deletions. They are in the graph so they are not forgotten, but blocking on them would be a scheduling error.</li>
+        <li><b><code>K6</code> is cheap and disproportionately valuable.</b> Half a day, and it converts your hard licence requirement from a code-review habit into a build error. Nothing else in the graph is that leveraged.</li>
+        <li><b>Lane B has one uncomfortable cluster.</b> <code>B8</code>, <code>B9</code>, <code>B10</code> and <code>B11</code> change state, cookies, logout and refresh together, and all four are what a live sign-in depends on. That is exactly what <code>B2</code>'s flag exists for &mdash; do not skip it because the tests are green.</li>
+        <li><b><code>C5</code> may end in &ldquo;no.&rdquo;</b> Adapting Supabase and Firebase is real work, and deciding not to ship one of them is a legitimate outcome. The task is written to accept a documented unsupported marker as done &mdash; that is honest, and it keeps a half-working provider out of your matrix.</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>
+    65 tasks · 6 lanes · 7 gates · acyclic, single root (K1) · 54.5 person-days · 16.5-day critical path.<br>
+    Graph validated for cycles and unknown references; critical path computed by longest weighted path. Machine-readable task list shipped alongside this page.
+  </footer>
+
+</div>

@@ -1,0 +1,1065 @@
+<title>Auth Swappability Audit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+  :root {
+    --ground:      #F6F8F8;
+    --surface:     #FFFFFF;
+    --surface-2:   #EEF2F2;
+    --ink:         #12181A;
+    --ink-2:       #4C585B;
+    --ink-3:       #7E8C8F;
+    --rule:        #DDE4E4;
+    --rule-strong: #C3CFCF;
+    --accent:      #0F6B62;
+    --accent-soft: #E2F0EE;
+    --ok:          #1E7048;
+    --ok-soft:     #E3F1E9;
+    --partial:     #8A6210;
+    --partial-soft:#F6EEDC;
+    --no:          #9C3730;
+    --no-soft:     #F7E7E5;
+    --shadow:      0 1px 2px rgba(18, 24, 26, .05), 0 8px 24px -12px rgba(18, 24, 26, .12);
+
+    --display: 'Archivo', 'Helvetica Neue', Arial, sans-serif;
+    --body: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+    --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+    --measure: 68ch;
+    --wide: 1080px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #0D1213;
+      --surface:     #141B1C;
+      --surface-2:   #1B2425;
+      --ink:         #E7EDEC;
+      --ink-2:       #A3B0B0;
+      --ink-3:       #778585;
+      --rule:        #263132;
+      --rule-strong: #384748;
+      --accent:      #4FBCAC;
+      --accent-soft: #12302E;
+      --ok:          #5DBF8B;
+      --ok-soft:     #14291F;
+      --partial:     #D2A44B;
+      --partial-soft:#2B2415;
+      --no:          #E08078;
+      --no-soft:     #2E1B19;
+      --shadow:      0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:      #0D1213;
+    --surface:     #141B1C;
+    --surface-2:   #1B2425;
+    --ink:         #E7EDEC;
+    --ink-2:       #A3B0B0;
+    --ink-3:       #778585;
+    --rule:        #263132;
+    --rule-strong: #384748;
+    --accent:      #4FBCAC;
+    --accent-soft: #12302E;
+    --ok:          #5DBF8B;
+    --ok-soft:     #14291F;
+    --partial:     #D2A44B;
+    --partial-soft:#2B2415;
+    --no:          #E08078;
+    --no-soft:     #2E1B19;
+    --shadow:      0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    margin: 0;
+    padding: 0 20px 96px;
+  }
+
+  .wrap {
+    max-width: var(--wide);
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 56px;
+  }
+
+  .prose { max-width: var(--measure); }
+
+  p { margin: 0 0 1em; }
+  p:last-child { margin-bottom: 0; }
+
+  h1, h2, h3, h4 {
+    font-family: var(--display);
+    font-weight: 700;
+    letter-spacing: -0.018em;
+    text-wrap: balance;
+    margin: 0;
+    line-height: 1.15;
+  }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 3px;
+  }
+
+  code, .mono { font-family: var(--mono); font-size: .84em; }
+
+  code {
+    background: var(--surface-2);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: .08em .34em;
+    word-break: break-word;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+
+  /* ---------- masthead ---------- */
+
+  header.masthead {
+    padding-top: 72px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 40px;
+  }
+
+  header.masthead h1 {
+    font-size: clamp(2.3rem, 5.4vw, 3.6rem);
+    letter-spacing: -0.03em;
+  }
+
+  .standfirst {
+    max-width: 62ch;
+    font-size: 1.16rem;
+    color: var(--ink-2);
+    margin: 0;
+  }
+
+  .standfirst strong { color: var(--ink); font-weight: 600; }
+
+  .meta-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 28px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .meta-strip b { color: var(--ink-2); font-weight: 500; }
+
+  /* ---------- verdict ---------- */
+
+  .verdict {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 18px;
+  }
+
+  .contract-card {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 26px 26px 24px;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .contract-card .grade-line {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .contract-card h3 { font-size: 1.28rem; }
+
+  .contract-card p { font-size: .96rem; color: var(--ink-2); margin: 0; }
+
+  .grade {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 2.1rem;
+    letter-spacing: -0.04em;
+    line-height: 1;
+  }
+  .grade.good { color: var(--ok); }
+  .grade.mid  { color: var(--partial); }
+  .grade.bad  { color: var(--no); }
+
+  /* ---------- sections ---------- */
+
+  section { display: flex; flex-direction: column; gap: 24px; }
+
+  .sec-head { display: flex; flex-direction: column; gap: 10px; }
+  .sec-head h2 { font-size: clamp(1.5rem, 2.8vw, 1.95rem); }
+  .sec-head p { color: var(--ink-2); max-width: var(--measure); margin: 0; }
+
+  /* ---------- tables ---------- */
+
+  .scroller {
+    overflow-x: auto;
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 760px;
+    font-family: var(--display);
+    font-size: 13.5px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  thead th {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    padding: 14px 10px;
+    border-bottom: 1px solid var(--rule-strong);
+    white-space: nowrap;
+    vertical-align: bottom;
+  }
+
+  tbody td {
+    padding: 11px 10px;
+    border-bottom: 1px solid var(--rule);
+    color: var(--ink-2);
+    vertical-align: middle;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+
+  tbody th {
+    text-align: left;
+    padding: 11px 10px 11px 16px;
+    border-bottom: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  tbody tr:last-child th { border-bottom: 0; }
+
+  tbody tr.tier-full th { border-left: 3px solid var(--ok); }
+  tbody tr.tier-part th { border-left: 3px solid var(--partial); }
+  tbody tr.tier-none th { border-left: 3px solid var(--no); }
+
+  td.c { text-align: center; }
+
+  .mark {
+    display: inline-block;
+    width: 1.5em;
+    font-weight: 700;
+    font-size: 14px;
+  }
+  .mark.y { color: var(--ok); }
+  .mark.d { color: var(--partial); }
+  .mark.n { color: var(--rule-strong); }
+
+  .status {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+  .status.ok  { background: var(--ok-soft);      color: var(--ok); }
+  .status.mid { background: var(--partial-soft); color: var(--partial); }
+  .status.no  { background: var(--no-soft);      color: var(--no); }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 22px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-3);
+    letter-spacing: .03em;
+  }
+  .legend span b { font-weight: 700; }
+
+  /* ---------- finding blocks ---------- */
+
+  .findings { display: flex; flex-direction: column; gap: 16px; }
+
+  details.finding {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  details.finding > summary {
+    cursor: pointer;
+    list-style: none;
+    padding: 18px 22px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 1.02rem;
+    color: var(--ink);
+  }
+  details.finding > summary::-webkit-details-marker { display: none; }
+
+  details.finding > summary::after {
+    content: "+";
+    margin-left: auto;
+    font-family: var(--mono);
+    font-weight: 400;
+    font-size: 18px;
+    color: var(--ink-3);
+    flex-shrink: 0;
+  }
+  details.finding[open] > summary::after { content: "\2212"; }
+
+  details.finding[open] > summary { border-bottom: 1px solid var(--rule); }
+
+  .finding-body {
+    padding: 20px 22px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    font-size: 16px;
+  }
+  .finding-body p { max-width: var(--measure); }
+
+  .evidence {
+    background: var(--surface-2);
+    border-left: 3px solid var(--rule-strong);
+    border-radius: 0 6px 6px 0;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+  .evidence .line {
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--ink-2);
+    word-break: break-word;
+  }
+  .evidence .line b { color: var(--ink); font-weight: 700; }
+
+  .takeaway {
+    font-size: 15.5px;
+    color: var(--ink);
+    border-top: 1px solid var(--rule);
+    padding-top: 13px;
+    max-width: var(--measure);
+  }
+  .takeaway b {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    display: block;
+    margin-bottom: 3px;
+  }
+
+  /* ---------- obligations ---------- */
+
+  .obligations {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 14px;
+  }
+
+  .ob {
+    background: var(--accent-soft);
+    border: 1px solid var(--rule);
+    border-radius: 9px;
+    padding: 18px 18px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+  .ob h4 { font-size: .98rem; letter-spacing: -0.01em; }
+  .ob p { font-size: .89rem; color: var(--ink-2); margin: 0; line-height: 1.55; }
+  .ob .where { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); word-break: break-all; }
+
+  /* ---------- plans ---------- */
+
+  .plan {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    padding: 26px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .plan-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  .plan-head h3 { font-size: 1.2rem; }
+  .plan p { font-size: .97rem; color: var(--ink-2); max-width: var(--measure); }
+  .plan ul { margin: 0; padding-left: 1.15em; display: flex; flex-direction: column; gap: 7px; }
+  .plan li { font-size: .95rem; color: var(--ink-2); }
+  .plan li b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- ordered fix list ---------- */
+
+  ol.fixes {
+    counter-reset: fix;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  ol.fixes li {
+    counter-increment: fix;
+    display: grid;
+    grid-template-columns: 42px 1fr;
+    gap: 16px;
+    align-items: start;
+    padding: 15px 4px;
+    border-bottom: 1px solid var(--rule);
+  }
+  ol.fixes li:last-child { border-bottom: 0; }
+  ol.fixes li::before {
+    content: counter(fix, decimal-leading-zero);
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--accent);
+    padding-top: 4px;
+  }
+  ol.fixes .fix-t { font-family: var(--display); font-weight: 600; font-size: 1rem; color: var(--ink); }
+  ol.fixes .fix-d { font-size: .93rem; color: var(--ink-2); max-width: 62ch; }
+
+  /* ---------- caveats ---------- */
+
+  .caveats {
+    background: var(--surface-2);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 24px 26px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .caveats ul { margin: 0; padding-left: 1.15em; display: flex; flex-direction: column; gap: 9px; }
+  .caveats li { font-size: .95rem; color: var(--ink-2); max-width: 72ch; }
+  .caveats li b { color: var(--ink); font-weight: 600; }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 24px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink-3);
+    letter-spacing: .04em;
+    line-height: 1.8;
+  }
+
+  @media (max-width: 620px) {
+    body { font-size: 16px; padding: 0 16px 72px; }
+    header.masthead { padding-top: 48px; }
+    .finding-body, details.finding > summary { padding-left: 17px; padding-right: 17px; }
+    .plan { padding: 20px; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Architecture audit &middot; mastracode/factory &middot; auth layer</div>
+    <h1>Two auth contracts wearing one name</h1>
+    <p class="standfirst">
+      Mastra&rsquo;s provider contract is genuinely well designed &mdash; small structural interfaces, no base class required, publicly re-exported.
+      But the Factory web app needs far more than that contract advertises, and
+      <strong>only 2 of the 11 shipped providers can actually run it</strong>. Supabase and Firebase are not among them.
+    </p>
+    <div class="meta-strip">
+      <span><b>11</b> provider packages read</span>
+      <span><b>8</b> capability interfaces</span>
+      <span><b>5</b> seams audited</span>
+      <span>every finding adversarially verified</span>
+    </div>
+  </header>
+
+  <section>
+    <div class="sec-head">
+      <h2>The verdict, split two ways</h2>
+      <p>
+        The confusion in this codebase comes from one word doing two jobs. &ldquo;Auth provider&rdquo; means something small and
+        well-specified when you are gating an API, and something large and unwritten when you are running the Factory SPA.
+        Grade them separately and the picture is coherent.
+      </p>
+    </div>
+
+    <div class="verdict">
+      <div class="contract-card">
+        <div class="grade-line">
+          <h3>Contract A &mdash; gate my API</h3>
+          <span class="grade good">A&minus;</span>
+        </div>
+        <p>
+          Two methods: <code>authenticateToken</code> and <code>authorizeUser</code>. Documented in a 519-line guide.
+          Honored by all 11 providers. Structurally detected, so an out-of-tree package works. This part is genuinely plug-and-play.
+        </p>
+      </div>
+      <div class="contract-card">
+        <div class="grade-line">
+          <h3>Contract B &mdash; run the Factory</h3>
+          <span class="grade bad">C</span>
+        </div>
+        <p>
+          Roughly 20 methods across 6 interfaces, plus 4 obligations that appear in no interface at all.
+          Documented in <em>zero</em> places &mdash; a grep of the entire docs tree for any of the six interface names returns nothing.
+          Your goal lands here.
+        </p>
+      </div>
+    </div>
+
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr>
+            <th>Seam</th>
+            <th style="width:66px">Grade</th>
+            <th>Why</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th>Contract design</th>
+            <td class="c"><span class="status ok">B+</span></td>
+            <td>Eight small interfaces, purely structural guards, publicly exported, base class optional. Held back by <code>authenticateToken</code> returning <code>unknown</code> with no <code>id</code> requirement, and no cookie contract anywhere.</td>
+          </tr>
+          <tr>
+            <th>Backend seam</th>
+            <td class="c"><span class="status ok">B&minus;</span></td>
+            <td>Route derivation is capability-driven and the <code>RouteAuth</code> port is real dependency inversion &mdash; but identity is shape-sniffed, an org id is hard-required, and three modules bypass the port.</td>
+          </tr>
+          <tr>
+            <th>UI seam</th>
+            <td class="c"><span class="status no">D+</span></td>
+            <td>The one decision that renders the sign-in screen is <code>provider === 'better-auth'</code> string equality. Everything beneath it is neutral and well built.</td>
+          </tr>
+          <tr>
+            <th>Testability</th>
+            <td class="c"><span class="status ok">B&minus;</span></td>
+            <td><code>fakeRouteAuth</code> keeps 17 suites provider-free and the seam suite is a real executable spec. No conformance kit, and coverage is inverted &mdash; your drop-in targets have the thinnest tests.</td>
+          </tr>
+          <tr>
+            <th>Documentation</th>
+            <td class="c"><span class="status no">D</span></td>
+            <td>The docs that exist are good. They document Contract A. The capability surface a Factory provider must implement appears nowhere.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>What the eleven providers actually implement</h2>
+      <p>
+        This is the single most decision-relevant table in the audit. Read the last column honestly: shipping a package named
+        <code>@mastra/auth-supabase</code> is not the same as being able to sign into the Factory with Supabase.
+      </p>
+    </div>
+
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr>
+            <th>Package</th>
+            <th class="c">Gate</th>
+            <th class="c">SSO</th>
+            <th class="c">Session</th>
+            <th class="c">User</th>
+            <th class="c">Creds</th>
+            <th class="c">Orgs</th>
+            <th class="c">Init</th>
+            <th class="c">HTTP</th>
+            <th>Runs the Factory?</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="tier-full">
+            <th>workos</th>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td><span class="status ok">Yes &mdash; full</span></td>
+          </tr>
+          <tr class="tier-full">
+            <th>studio <span style="color:var(--ink-3)">(default)</span></th>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td><span class="status ok">Yes &mdash; full</span></td>
+          </tr>
+          <tr class="tier-part">
+            <th>better-auth</th>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td><span class="status mid">Yes &mdash; but only because the SPA hardcodes its name</span></td>
+          </tr>
+          <tr class="tier-part">
+            <th>auth0</th>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark d">&#9686;</span></td>
+            <td class="c"><span class="mark d">&#9686;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td><span class="status mid">Signs in, then 403s &mdash; no org</span></td>
+          </tr>
+          <tr class="tier-part">
+            <th>clerk</th>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark d">&#9686;</span></td>
+            <td class="c"><span class="mark d">&#9686;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td><span class="status mid">Signs in, then 403s &mdash; no org</span></td>
+          </tr>
+          <tr class="tier-part">
+            <th>google</th>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark d">&#9686;</span></td>
+            <td class="c"><span class="mark d">&#9686;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td><span class="status mid">Signs in, then 403s &mdash; no org</span></td>
+          </tr>
+          <tr class="tier-none">
+            <th>okta</th>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td><span class="status no">No &mdash; callback always fails</span></td>
+          </tr>
+          <tr class="tier-none">
+            <th>cloud</th>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td><span class="status no">No &mdash; PKCE read hook unreachable</span></td>
+          </tr>
+          <tr class="tier-none">
+            <th>neon</th>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td><span class="status no">No &mdash; no login route</span></td>
+          </tr>
+          <tr class="tier-none">
+            <th>supabase</th>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td><span class="status no">No &mdash; bearer validation only</span></td>
+          </tr>
+          <tr class="tier-none">
+            <th>firebase</th>
+            <td class="c"><span class="mark y">&#9679;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td class="c"><span class="mark n">&mdash;</span></td>
+            <td><span class="status no">No &mdash; bearer only, and <code>uid</code> not <code>id</code></span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="legend">
+      <span><b class="mono" style="color:var(--ok)">&#9679;</b> implemented</span>
+      <span><b class="mono" style="color:var(--partial)">&#9686;</b> attached at runtime only when OAuth config is present</span>
+      <span><b class="mono" style="color:var(--rule-strong)">&mdash;</b> absent</span>
+    </div>
+
+    <p class="prose" style="color:var(--ink-2)">
+      Both <code>auth/supabase/src/index.ts</code> and <code>auth/firebase/src/index.ts</code> define exactly two methods:
+      <code>authenticateToken</code> and <code>authorizeUser</code>. They are Contract A packages. Nothing about them is broken &mdash;
+      they were built to gate an API, and they do that well.
+    </p>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>The four obligations no interface mentions</h2>
+      <p>
+        These are the ones that will cost you a debugging afternoon each, because nothing type-checks them and nothing documents them.
+        A provider can satisfy every declared interface and still fail on all four.
+      </p>
+    </div>
+
+    <div class="obligations">
+      <div class="ob">
+        <h4>A flat <code>id</code>, not <code>uid</code> or <code>sub</code></h4>
+        <p>The Factory re-sniffs whatever <code>authenticateToken</code> returns, and recognizes exactly two shapes: a <code>{session, user}</code> wrapper, or a flat object carrying <code>id</code> (or WorkOS&rsquo;s <code>workosId</code>). Anything else authenticates as nobody.</p>
+        <div class="where">mastracode/factory/src/auth.ts:190&ndash;231</div>
+      </div>
+      <div class="ob">
+        <h4>Read the cookie yourself</h4>
+        <p>The gate extracts a bearer token from <code>Authorization</code> and passes the raw <code>Request</code> as the second argument. Browsers send neither header nor bearer &mdash; so an empty token silently means &ldquo;this is a navigation, go read the Cookie header.&rdquo; That convention is written down nowhere.</p>
+        <div class="where">mastracode/factory/src/auth.ts:787</div>
+      </div>
+      <div class="ob">
+        <h4>Parse the pipe-delimited <code>state</code></h4>
+        <p>The Factory mints <code>uuid|encodedReturnTo</code> and hands <code>handleCallback</code> the <em>raw</em> value. <code>packages/server</code> splits it first and passes only the UUID. Two hosts, one interface, two incompatible contracts &mdash; this is precisely why the Okta provider&rsquo;s callback can never succeed under the Factory.</p>
+        <div class="where">auth.ts:434, :569 &nbsp;vs&nbsp; handlers/auth.ts:443</div>
+      </div>
+      <div class="ob">
+        <h4>Produce an organization id</h4>
+        <p>Seven route groups 403 without one and the workspace layer throws outright. Either implement <code>IOrganizationsProvider</code>, or return <code>organizationId</code> directly on the user &mdash; the second route is undocumented but works.</p>
+        <div class="where">factory.ts &rarr; routes/projects.ts:269, workspace.ts:316</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Findings by seam</h2>
+      <p>Each of these was written by one agent and then attacked by a second one whose job was to refute it. Severities below are post-refutation, not as first claimed.</p>
+    </div>
+
+    <div class="findings">
+
+      <details class="finding" open>
+        <summary><span class="status ok">Strength</span> The contract layer is textbook interface segregation</summary>
+        <div class="finding-body">
+          <p>
+            <code>IMastraAuthProvider</code> requires two methods. Seven optional capability interfaces sit alongside it, and every runtime
+            detection is a duck-typed <code>typeof x.method === 'function'</code> check &mdash; there is not a single <code>instanceof</code> in the
+            guard set. The rationale is stated in the source itself.
+          </p>
+          <div class="evidence">
+            <div class="line"><b>provider/index.ts:34</b> &mdash; &ldquo;Auth provider packages bundle their own copy of the <code>MastraAuthProvider</code> declaration, so provider class types cannot be compared nominally across package boundaries.&rdquo;</div>
+            <div class="line"><b>packages/core/src/auth/index.ts:1</b> &mdash; <code>export * from '@internal/auth';</code> &mdash; the whole surface is publicly re-exported</div>
+            <div class="line"><b>server.test-d.ts:122</b> &mdash; a compile-time regression test proving a nominally distinct duplicate class stays assignable</div>
+          </div>
+          <div class="takeaway"><b>What this buys you</b>
+            An OIDC or Cognito provider can be a plain object with two methods plus whichever capabilities it wants, published from its own repo, with no base class and no monorepo membership. Someone fought for this and it holds.</div>
+        </div>
+      </details>
+
+      <details class="finding">
+        <summary><span class="status no">High</span> The SPA picks its sign-in screen by string equality on the provider name</summary>
+        <div class="finding-body">
+          <p>
+            <code>/auth/me</code> forwards only <code>provider.name</code>. The sign-in page compares it against two literals.
+            A correctly-implemented Cognito provider signs in fine &mdash; the button navigates to <code>/auth/login</code> and the SSO flow works &mdash;
+            but the button is labelled <em>&ldquo;Continue with GitHub&rdquo;</em> and wears a GitHub logo, because that is the fallback branch.
+          </p>
+          <div class="evidence">
+            <div class="line"><b>SignInPage.tsx:154&ndash;157</b> &mdash; <code>const credentialForm = auth.data?.provider === 'better-auth';</code> / <code>const studioAuth = auth.data?.provider === 'mastra-studio';</code></div>
+            <div class="line"><b>services/auth.ts:74</b> &mdash; the credentials form posts to <code>/auth/api/sign-in/email</code>, hardcoding better-auth&rsquo;s <em>wire format</em>, not just its name</div>
+            <div class="line"><b>mastracode/factory/src/auth.ts:406&ndash;407</b> &mdash; the handler evaluates a capability guard one line before forwarding a bare name string</div>
+          </div>
+          <div class="takeaway"><b>The sharpest detail in the audit</b>
+            Capability-driven sign-in UI already exists and ships. <code>ee/capabilities.ts:285&ndash;315</code> builds exactly the descriptor the SPA needs, and <code>docs/studio/auth.mdx:150</code> documents the resulting behavior as a feature. The Factory SPA just doesn&rsquo;t call it. This is an unreused solution, not a missing one.</div>
+        </div>
+      </details>
+
+      <details class="finding">
+        <summary><span class="status no">High</span> An organization is mandatory, and <code>CompositeAuth</code> cannot supply one</summary>
+        <div class="finding-body">
+          <p>
+            Org-lessness 403s projects, work-items, audit, intake, knowledge and both integration route groups, and throws in the workspace layer.
+            The obvious workaround &mdash; wrap any provider in <code>CompositeAuth</code> alongside a small local organizations provider &mdash;
+            does not work, and it is worth knowing why before you try it.
+          </p>
+          <div class="evidence">
+            <div class="line"><b>provider/index.ts:169&ndash;171</b> &mdash; <code>class CompositeAuth extends MastraAuthProvider implements ISSOProvider, ISessionProvider, IUserProvider</code></div>
+            <div class="line">No <code>ensureOrganization</code>, no <code>isOrganizationAdmin</code>, no <code>handleAuthRequest</code>, no <code>init</code> anywhere in the class body</div>
+            <div class="line"><b>auth.ts:260</b> &mdash; <code>if (!isOrganizationsProvider(provider)) return;</code> &mdash; so the org bootstrap silently no-ops</div>
+          </div>
+          <div class="takeaway"><b>Do this instead</b>
+            Implement <code>ensureOrganization</code> on the provider and mint a synthetic personal org. <code>orgId</code> is an opaque row-scoping string with no referential integrity anywhere &mdash; <code>org:${userId}</code> is a perfectly valid answer for Cognito, Supabase and Firebase, none of which have an organization primitive.</div>
+        </div>
+      </details>
+
+      <details class="finding">
+        <summary><span class="status mid">Medium</span> Nobody owns the session cookie &mdash; three conventions and per-provider bespoke</summary>
+        <div class="finding-body">
+          <p>
+            No interface mentions cookies beyond opaque <code>string[]</code> returns. In practice there are three competing conventions:
+            SimpleAuth&rsquo;s <code>mastra-token</code> (hardcoded in the provider <em>and</em> re-read by regex in the host), a
+            <code>mastra_session</code> default in two shipped session providers that <em>no package uses</em>, and one bespoke name per vendor
+            (<code>wos_session</code>, Okta&rsquo;s configurable name, Neon&rsquo;s cookie plus a <code>_sig</code> sidecar, and so on).
+          </p>
+          <div class="evidence">
+            <div class="line"><b>packages/server/.../helpers.ts:461</b> &mdash; <code>cookieHeader.match(/mastra-token=([^;]+)/)</code> &mdash; the host reaching through to one provider&rsquo;s cookie name by regex</div>
+            <div class="line"><b>mastracode/factory/src/auth.ts:281&ndash;282</b> &mdash; a regex that un-joins malformed clearing cookies, with the comment &ldquo;A provider may join several clearing cookies into one header value&rdquo;</div>
+            <div class="line"><b>session/cookie.ts:73</b> &mdash; a complete HMAC-signed <code>CookieSessionProvider</code> ships publicly and is used by zero providers</div>
+          </div>
+          <div class="takeaway"><b>Why it matters for you</b>
+            When your new provider&rsquo;s session doesn&rsquo;t stick, there is no canonical place to look, because no layer owns the name. The already-shipped <code>CookieSessionProvider</code> is the fix nobody adopted.</div>
+        </div>
+      </details>
+
+      <details class="finding">
+        <summary><span class="status mid">Medium</span> Logout diverges three ways, and the Factory never revokes a session</summary>
+        <div class="finding-body">
+          <p>
+            <code>packages/server</code> exposes <code>POST /auth/logout</code> and calls <code>destroySession</code>. The Factory exposes
+            <code>GET /auth/logout</code>; on the SSO path it clears cookies and redirects, and on the http-handler path it POSTs to the
+            provider&rsquo;s own sign-out. A grep for <code>destroySession</code> across all of <code>mastracode/</code> returns zero non-comment hits.
+          </p>
+          <div class="evidence">
+            <div class="line">So for an SSO user, &ldquo;log out&rdquo; is a cookie deletion &mdash; a stolen token stays valid until natural expiry</div>
+            <div class="line">A <code>GET</code> logout is CSRF-triggerable by any <code>&lt;img src="/auth/logout"&gt;</code></div>
+            <div class="line">Five providers&rsquo; <code>destroySession</code> bodies are empty or comment-only &mdash; the method exists, the guarantee does not</div>
+            <div class="line"><code>packages/server</code> also implements transparent session refresh; the Factory has no equivalent, so <code>refreshSession</code> works on <code>/api/*</code> and silently does nothing on Factory routes</div>
+          </div>
+          <div class="takeaway"><b>Read this as</b>
+            Two hosts consuming one contract have drifted into three behaviors. That drift, not any single bug, is the maintainability risk.</div>
+        </div>
+      </details>
+
+      <details class="finding">
+        <summary><span class="status mid">Medium</span> Deploying to Mastra Cloud rewraps your provider at build time</summary>
+        <div class="finding-body">
+          <p>
+            The Cloud deployer injects generated source into the built entry that replaces <code>server.auth</code> with a
+            <code>CompositeAuth</code> &mdash; and places your provider <em>last</em>. Since <code>CompositeAuth.getLoginUrl</code> resolves via
+            the <em>first</em> SSO provider, a Cognito provider deployed to Cloud has its login URL shadowed. RBAC is silently installed too.
+          </p>
+          <div class="evidence">
+            <div class="line"><b>deployers/cloud/src/utils/auth.ts:55&ndash;63</b> &mdash; <code>const providers = [serviceAuth]; ... providers.push(userAuth); serverConfig.auth = new CompositeAuth(providers);</code></div>
+            <div class="line">By contrast the <em>bundler</em> is clean: externals come purely from dependency analysis, and grepping the deployer and CLI for <code>@mastra/auth</code> returns nothing &mdash; a new provider package needs no build-system change at all</div>
+          </div>
+          <div class="takeaway"><b>Scope</b>
+            Only affects Mastra Cloud deploys. Self-hosting is unaffected &mdash; but it is worth knowing before you debug a login redirect that works locally and not in production.</div>
+        </div>
+      </details>
+
+      <details class="finding">
+        <summary><span class="status mid">Medium</span> No conformance kit, and coverage is inverted</summary>
+        <div class="finding-body">
+          <p>
+            The foundations are good: <code>fakeRouteAuth</code> is used by 17 suites, none of which stub an env var, and
+            <code>auth-seam.test.ts</code> composes capability mixins onto bare object literals and asserts real HTTP responses.
+            That is a genuine executable spec for the seam.
+          </p>
+          <div class="evidence">
+            <div class="line">A grep for <code>conformance|contract test|test-kit</code> across <code>auth/</code> and <code>packages/_internals/auth/</code> returns nothing</div>
+            <div class="line">Coverage runs backwards: <code>auth/studio</code> 1369 lines and <code>auth/better-auth</code> 1157, against <code>auth/supabase</code> 152 and <code>auth/firebase</code> 157</div>
+            <div class="line"><code>auth/okta</code> has zero <code>handleCallback</code> coverage &mdash; which is exactly why its Factory-breaking state bug went unnoticed</div>
+            <div class="line">No test drives a cookie-only request through the gate, though that is how every browser hits it</div>
+          </div>
+          <div class="takeaway"><b>The cheapest high-value addition</b>
+            A shared conformance suite a provider can run against. It would have caught the Okta state bug, and it is the artifact that would turn &ldquo;write a provider&rdquo; from archaeology into a checklist.</div>
+        </div>
+      </details>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>What each target would actually take</h2>
+      <p>Neither is a drop-in. Both are tractable, and they share most of the same work.</p>
+    </div>
+
+    <div class="plan">
+      <div class="plan-head">
+        <h3>Generic OIDC &amp; AWS Cognito</h3>
+        <span class="status mid">Meaningful work &mdash; new package</span>
+      </div>
+      <p>
+        There is no OIDC or Cognito package today. <code>auth/okta</code> is the closest shape and gets four hard things right &mdash;
+        configurable issuer, JWKS verification via <code>jose</code>, a flat string <code>id</code> mapped from <code>sub</code>, and cookie-first
+        authentication &mdash; but it cannot complete a single Factory sign-in, because its callback looks up the <code>state</code> verbatim
+        while the Factory passes the full pipe-delimited value. Fork the shape, fix the state contract, and Cognito becomes a preset.
+      </p>
+      <ul>
+        <li><b>Implement:</b> the 2-method gate (cookie-first, flat <code>id</code>), <code>ISSOProvider</code> against the <em>full</em> state string, session-cookie minting via <code>handleCallback</code>&rsquo;s <code>cookies: []</code> return, <code>getClearSessionHeaders</code>, and <code>ensureOrganization</code> returning a synthetic org.</li>
+        <li><b>Skip:</b> <code>IAuthHttpHandler</code> and <code>IUserProvider</code> &mdash; the Factory never calls them.</li>
+        <li><b>Blocked:</b> PKCE. The <em>write</em> side (<code>getLoginCookies</code>) is declared and called; the <em>read</em> side is an undeclared hook that only <code>packages/server</code> invokes. Use a signed state or server-side verifier store instead.</li>
+        <li><b>Blocked:</b> pure SAML. The interface is authorization-code shaped and the Factory registers <code>/auth/callback</code> as GET only, so a SAML POST binding has nowhere to land. Front it with an OIDC broker.</li>
+      </ul>
+    </div>
+
+    <div class="plan">
+      <div class="plan-head">
+        <h3>Supabase &amp; Firebase</h3>
+        <span class="status mid">Meaningful work &mdash; extend existing packages</span>
+      </div>
+      <p>
+        Both packages exist and both are bearer-validators. Supabase is the easier of the two: its user object already has a flat
+        <code>id</code>, so the normalizer accepts it unchanged, and <code>signInWithOAuth</code> maps cleanly onto <code>ISSOProvider</code>.
+        Firebase is harder for a structural reason &mdash; sign-in is client-SDK-driven, so the Admin SDK has no hosted-login URL to return.
+      </p>
+      <ul>
+        <li><b>Supabase:</b> add <code>ISSOProvider</code> over <code>signInWithOAuth</code>, make <code>authenticateToken</code> cookie-aware, mint a session cookie, add <code>ensureOrganization</code>.</li>
+        <li><b>Firebase:</b> go the <code>IAuthHttpHandler</code> route over the Identity Toolkit REST API instead of <code>ISSOProvider</code>. Also fix the user shape &mdash; <code>DecodedIdToken</code> exposes <code>uid</code>, and the Factory only accepts <code>id</code>, so today it would authenticate successfully and still be treated as anonymous at every ownership check.</li>
+        <li><b>Both:</b> override <code>authorizeUser</code>. The shipped implementations check bespoke infrastructure (a Supabase <code>users</code> table, a Firestore <code>user_access</code> doc) and will 403 core <code>/api/*</code> without it.</li>
+        <li><b>Both:</b> synthetic personal orgs. Neither vendor has an organization primitive &mdash; Firebase&rsquo;s GCIP multi-tenancy is an isolation boundary, not a membership model.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>What to fix, in order</h2>
+      <p>Ordered by friction removed per unit of work. The first item is pure documentation and removes more friction than anything below it.</p>
+    </div>
+
+    <ol class="fixes">
+      <li>
+        <div>
+          <div class="fix-t">Publish the capability contract</div>
+          <div class="fix-d">A table mapping interface &rarr; routes unlocked &rarr; methods required, plus the four undocumented obligations. Zero code. Largest single reduction in friction.</div>
+        </div>
+      </li>
+      <li>
+        <div>
+          <div class="fix-t">Put identity in the contract</div>
+          <div class="fix-d">Require <code>authenticateToken</code> to return something with a string <code>id</code>, and drop <code>workosId</code> from the neutral <code>FactoryAuthUser</code> shape. The contract already defines a <code>User</code> with an <code>id</code> &mdash; it just declines to require it at the one place every host depends on it.</div>
+        </div>
+      </li>
+      <li>
+        <div>
+          <div class="fix-t">Emit a capability descriptor from <code>/auth/me</code></div>
+          <div class="fix-d">Reuse the shape <code>ee/capabilities.ts</code> already builds, without its licence gate, and branch the sign-in page on that instead of a name string. Turns the UI seam from D+ into the same grade as the rest.</div>
+        </div>
+      </li>
+      <li>
+        <div>
+          <div class="fix-t">Give the org requirement a host-side default</div>
+          <div class="fix-d">A <code>user:${userId}</code> fallback already exists in the credentials path. Generalize it app-wide, since <code>CompositeAuth</code> provably cannot patch this from outside.</div>
+        </div>
+      </li>
+      <li>
+        <div>
+          <div class="fix-t">Own the session cookie in the host</div>
+          <div class="fix-d">Adopt the already-shipped <code>CookieSessionProvider</code> as the default and delete the <code>mastra-token</code> regex in the server helpers.</div>
+        </div>
+      </li>
+      <li>
+        <div>
+          <div class="fix-t">Unify logout</div>
+          <div class="fix-d">Call <code>destroySession</code> on the Factory&rsquo;s SSO path, make it <code>POST</code>, and audit the five providers whose implementation is an empty body.</div>
+        </div>
+      </li>
+      <li>
+        <div>
+          <div class="fix-t">Declare the PKCE read side</div>
+          <div class="fix-d">Widen <code>handleCallback</code> to take the <code>Request</code> and delete the undeclared <code>setCallbackCookieHeader</code> hook. Unblocks <code>@mastra/auth-cloud</code> and any PKCE-based OIDC provider under the Factory.</div>
+        </div>
+      </li>
+      <li>
+        <div>
+          <div class="fix-t">Ship a conformance kit</div>
+          <div class="fix-d">A fake provider plus guard assertions a new package can run against. It would have caught the Okta state bug before it shipped.</div>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <section>
+    <div class="caveats">
+      <div class="eyebrow">Corrections the verification pass forced</div>
+      <ul>
+        <li><b>The EE licence gate does not affect the Factory today.</b> <code>buildCapabilities</code> ANDs SSO and credentials capabilities with a licence check whose only escapes are two first-party marker properties &mdash; but a grep confirms nothing under <code>mastracode/</code> calls it. The effect is confined to Studio&rsquo;s <code>/auth/capabilities</code>. It becomes a live trap only if you adopt fix&nbsp;3 by reusing that builder <em>with</em> its gate.</li>
+        <li><b>The leftover WorkOS coupling is inert.</b> The <code>instanceof MastraAuthWorkos</code> checks and the <code>WORKOS_*</code> env fallback in the neutral auth module sit on a code path with no production callers. Real cost: a vendor package as a hard dependency of the neutral module, and a forced <code>vi.mock</code> in both gate suites. Not a blocker for any drop-in.</li>
+        <li><b>Test coverage of org-less providers is better than first reported.</b> A claim that no test covers a no-org provider was refuted &mdash; org-less gate behavior, the downstream 403, and the id-less-result-is-unauthenticated path are all pinned by existing tests.</li>
+        <li><b>The docs estate is not thin, it is aimed elsewhere.</b> <code>composite-auth</code>, <code>simple-auth</code>, <code>jwt</code>, <code>fga</code>, <code>workers</code> and <code>studio/auth</code> all exist and are reasonable. The precise claim is that the six capability interfaces appear in zero docs files.</li>
+        <li><b>Per-tenant provider selection does not exist.</b> One provider is resolved once at boot. <code>CompositeAuth</code>&rsquo;s first-wins fallthrough is the wrong primitive for &ldquo;each customer brings their own IdP&rdquo; &mdash; that would need host- or tenant-keyed dispatch, which is not in the architecture today.</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>
+    Audit of <span class="mono">packages/_internals/auth</span>, <span class="mono">packages/core</span>, <span class="mono">packages/server</span>, <span class="mono">deployers/cloud</span>, all 11 <span class="mono">auth/*</span> packages, <span class="mono">mastracode/factory</span>, <span class="mono">mastracode/factory-ui</span> and <span class="mono">mastracode/web</span>.<br>
+    Five parallel readers, each adversarially verified, plus a completeness pass. Load-bearing claims re-checked by hand against source.
+  </footer>
+
+</div>
