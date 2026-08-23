@@ -1,0 +1,643 @@
+<title>Auth Kit Rollout</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+  :root {
+    --ground:      #F6F8F8;
+    --surface:     #FFFFFF;
+    --surface-2:   #EEF2F2;
+    --ink:         #12181A;
+    --ink-2:       #4C585B;
+    --ink-3:       #7E8C8F;
+    --rule:        #DDE4E4;
+    --rule-strong: #C3CFCF;
+    --accent:      #0F6B62;
+    --accent-soft: #E2F0EE;
+    --ok:          #1E7048;
+    --ok-soft:     #E3F1E9;
+    --partial:     #8A6210;
+    --partial-soft:#F6EEDC;
+    --no:          #9C3730;
+    --no-soft:     #F7E7E5;
+    --shadow:      0 1px 2px rgba(18, 24, 26, .05), 0 8px 24px -12px rgba(18, 24, 26, .12);
+
+    --display: 'Archivo', 'Helvetica Neue', Arial, sans-serif;
+    --body: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+    --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+    --measure: 68ch;
+    --wide: 1080px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #0D1213;
+      --surface:     #141B1C;
+      --surface-2:   #1B2425;
+      --ink:         #E7EDEC;
+      --ink-2:       #A3B0B0;
+      --ink-3:       #778585;
+      --rule:        #263132;
+      --rule-strong: #384748;
+      --accent:      #4FBCAC;
+      --accent-soft: #12302E;
+      --ok:          #5DBF8B;
+      --ok-soft:     #14291F;
+      --partial:     #D2A44B;
+      --partial-soft:#2B2415;
+      --no:          #E08078;
+      --no-soft:     #2E1B19;
+      --shadow:      0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:      #0D1213;
+    --surface:     #141B1C;
+    --surface-2:   #1B2425;
+    --ink:         #E7EDEC;
+    --ink-2:       #A3B0B0;
+    --ink-3:       #778585;
+    --rule:        #263132;
+    --rule-strong: #384748;
+    --accent:      #4FBCAC;
+    --accent-soft: #12302E;
+    --ok:          #5DBF8B;
+    --ok-soft:     #14291F;
+    --partial:     #D2A44B;
+    --partial-soft:#2B2415;
+    --no:          #E08078;
+    --no-soft:     #2E1B19;
+    --shadow:      0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    margin: 0;
+    padding: 0 20px 96px;
+  }
+
+  .wrap { max-width: var(--wide); margin: 0 auto; display: flex; flex-direction: column; gap: 56px; }
+  .prose { max-width: var(--measure); }
+
+  p { margin: 0 0 1em; }
+  p:last-child { margin-bottom: 0; }
+
+  h1, h2, h3, h4 {
+    font-family: var(--display);
+    font-weight: 700;
+    letter-spacing: -0.018em;
+    text-wrap: balance;
+    margin: 0;
+    line-height: 1.15;
+  }
+
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+
+  code, .mono { font-family: var(--mono); font-size: .84em; }
+  code {
+    background: var(--surface-2);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: .08em .34em;
+    word-break: break-word;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+
+  header.masthead {
+    padding-top: 72px;
+    padding-bottom: 40px;
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+  header.masthead h1 { font-size: clamp(2.3rem, 5.4vw, 3.6rem); letter-spacing: -0.03em; }
+  .standfirst { max-width: 62ch; font-size: 1.16rem; color: var(--ink-2); margin: 0; }
+  .standfirst strong { color: var(--ink); font-weight: 600; }
+
+  .meta-strip {
+    display: flex; flex-wrap: wrap; gap: 8px 28px;
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--ink-3);
+  }
+  .meta-strip b { color: var(--ink-2); font-weight: 500; }
+
+  section { display: flex; flex-direction: column; gap: 24px; }
+  .sec-head { display: flex; flex-direction: column; gap: 10px; }
+  .sec-head h2 { font-size: clamp(1.5rem, 2.8vw, 1.95rem); }
+  .sec-head p { color: var(--ink-2); max-width: var(--measure); margin: 0; }
+
+  /* ---------- constraint banner ---------- */
+  .constraint {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 4px solid var(--accent);
+    border-radius: 0 10px 10px 0;
+    padding: 24px 26px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    box-shadow: var(--shadow);
+  }
+  .constraint h3 { font-size: 1.12rem; }
+  .constraint p { font-size: .97rem; color: var(--ink-2); max-width: 74ch; }
+  .rule-list { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
+  .rule-list li {
+    display: grid; grid-template-columns: 74px 1fr; gap: 14px; align-items: start;
+    font-size: .95rem; color: var(--ink-2);
+  }
+  .rule-list li b { color: var(--ink); font-weight: 600; }
+  .tag {
+    font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: .07em;
+    text-transform: uppercase; padding: 3px 6px; border-radius: 4px; text-align: center; white-space: nowrap;
+  }
+  .tag.allow { background: var(--ok-soft); color: var(--ok); }
+  .tag.deny  { background: var(--no-soft); color: var(--no); }
+  .tag.watch { background: var(--partial-soft); color: var(--partial); }
+
+  /* ---------- grade ladder ---------- */
+  .scroller {
+    overflow-x: auto; border: 1px solid var(--rule); border-radius: 10px;
+    background: var(--surface); box-shadow: var(--shadow);
+  }
+  table {
+    border-collapse: collapse; width: 100%; min-width: 720px;
+    font-family: var(--display); font-size: 13.5px; font-variant-numeric: tabular-nums;
+  }
+  thead th {
+    text-align: left; font-family: var(--mono); font-size: 10.5px; font-weight: 700;
+    letter-spacing: .09em; text-transform: uppercase; color: var(--ink-3);
+    padding: 14px 12px; border-bottom: 1px solid var(--rule-strong); white-space: nowrap;
+  }
+  tbody td { padding: 13px 12px; border-bottom: 1px solid var(--rule); color: var(--ink-2); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody th {
+    text-align: left; padding: 13px 12px; border-bottom: 1px solid var(--rule);
+    font-family: var(--display); font-size: 14px; font-weight: 600; color: var(--ink); white-space: nowrap;
+    vertical-align: top;
+  }
+  tbody tr:last-child th { border-bottom: 0; }
+  td.c { text-align: center; }
+
+  .status {
+    display: inline-block; font-family: var(--mono); font-size: 10.5px; font-weight: 700;
+    letter-spacing: .05em; text-transform: uppercase; padding: 3px 8px; border-radius: 4px; white-space: nowrap;
+  }
+  .status.ok  { background: var(--ok-soft);      color: var(--ok); }
+  .status.mid { background: var(--partial-soft); color: var(--partial); }
+  .status.no  { background: var(--no-soft);      color: var(--no); }
+
+  .arrow { font-family: var(--mono); color: var(--ink-3); padding: 0 6px; }
+
+  /* ---------- module cards ---------- */
+  .modules { display: grid; grid-template-columns: repeat(auto-fit, minmax(268px, 1fr)); gap: 14px; }
+  .mod {
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 9px;
+    padding: 18px 18px 16px; display: flex; flex-direction: column; gap: 8px; box-shadow: var(--shadow);
+  }
+  .mod .fname { font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--accent); }
+  .mod h4 { font-size: .98rem; }
+  .mod p { font-size: .89rem; color: var(--ink-2); margin: 0; line-height: 1.55; }
+  .mod .fixes-tag {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--ink-3); border-top: 1px solid var(--rule); padding-top: 8px; margin-top: 2px;
+  }
+
+  /* ---------- phases ---------- */
+  .phases { display: flex; flex-direction: column; gap: 16px; }
+  .phase {
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 10px;
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .phase-head {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px;
+    padding: 20px 24px 16px; border-bottom: 1px solid var(--rule);
+  }
+  .phase-num {
+    font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .1em;
+    color: var(--accent); text-transform: uppercase;
+  }
+  .phase-head h3 { font-size: 1.16rem; }
+  .phase-dur {
+    margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--ink-3);
+    letter-spacing: .05em; text-transform: uppercase;
+  }
+  .phase-body { padding: 20px 24px 24px; display: flex; flex-direction: column; gap: 16px; }
+  .phase-body > p { font-size: .97rem; color: var(--ink-2); max-width: var(--measure); }
+
+  .task { display: grid; grid-template-columns: 1fr; gap: 5px; padding: 13px 0; border-top: 1px solid var(--rule); }
+  .task:first-of-type { border-top: 1px solid var(--rule-strong); }
+  .task .t { font-family: var(--display); font-weight: 600; font-size: .98rem; color: var(--ink); }
+  .task .d { font-size: .92rem; color: var(--ink-2); max-width: 68ch; }
+  .task .f { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); word-break: break-word; }
+
+  .gate {
+    background: var(--accent-soft); border: 1px solid var(--rule); border-radius: 8px;
+    padding: 15px 18px; display: flex; flex-direction: column; gap: 7px;
+  }
+  .gate .eyebrow { color: var(--accent); }
+  .gate ul { margin: 0; padding-left: 1.1em; display: flex; flex-direction: column; gap: 5px; }
+  .gate li { font-size: .92rem; color: var(--ink-2); }
+  .gate li b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- risks ---------- */
+  .risks { background: var(--surface-2); border: 1px solid var(--rule); border-radius: 10px; padding: 24px 26px; display: flex; flex-direction: column; gap: 12px; }
+  .risks ul { margin: 0; padding-left: 1.15em; display: flex; flex-direction: column; gap: 10px; }
+  .risks li { font-size: .95rem; color: var(--ink-2); max-width: 74ch; }
+  .risks li b { color: var(--ink); font-weight: 600; }
+
+  footer {
+    border-top: 1px solid var(--rule); padding-top: 24px;
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink-3);
+    letter-spacing: .04em; line-height: 1.8;
+  }
+
+  @media (max-width: 620px) {
+    body { font-size: 16px; padding: 0 16px 72px; }
+    header.masthead { padding-top: 48px; }
+    .phase-head, .phase-body { padding-left: 18px; padding-right: 18px; }
+    .rule-list li { grid-template-columns: 1fr; gap: 4px; }
+    .tag { justify-self: start; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Remediation plan &middot; companion to the auth swappability audit</div>
+    <h1>Getting all five seams to A&minus;, without touching EE</h1>
+    <p class="standfirst">
+      A fork-owned Apache-2.0 <strong>auth kit</strong> that owns identity, the capability descriptor, sessions and conformance &mdash;
+      then four phases wiring the Factory to it. Every EE-licensed dependency is
+      <strong>reimplemented, never ported</strong>.
+    </p>
+    <div class="meta-strip">
+      <span><b>4</b> phases</span>
+      <span><b>~3.5&ndash;4</b> weeks, one engineer</span>
+      <span><b>8</b> kit modules</span>
+      <span>each phase has a hard exit gate</span>
+    </div>
+  </header>
+
+  <section>
+    <div class="sec-head">
+      <h2>The EE boundary, stated precisely</h2>
+      <p>
+        Your constraint is the load-bearing design input, so it gets pinned down first. The good news:
+        <strong>all eight capability interfaces already live outside <code>ee/</code></strong> under Apache-2.0, and
+        <code>mastracode/</code> today contains zero EE references. There is a clean line to draw &mdash; it just runs through
+        an unexpected place.
+      </p>
+    </div>
+
+    <div class="constraint">
+      <h3>One import decides everything</h3>
+      <p>
+        <code>@mastra/core/auth</code> is <em>not</em> safe: its barrel reaches <code>@internal/auth</code>, whose
+        <code>src/index.ts:373</code> does <code>export * from './ee'</code>, and <code>packages/core/src/auth/ee/index.ts</code>
+        opens with a side-effecting <code>import './telemetry'</code>. Importing it <em>executes</em> EE code.
+        <code>@mastra/core/server</code> is safe: <code>packages/core/src/server/auth.ts</code> re-exports the eight interfaces
+        and eight guards by explicit name, and EE appears only as erased <code>import type</code> in <code>types.ts:7&ndash;9</code>.
+      </p>
+      <ul class="rule-list">
+        <li><span class="tag allow">Allowed</span><span><b><code>@mastra/core/server</code></b> &mdash; the contract, the guards, <code>registerApiRoute</code>. Runtime-clean.</span></li>
+        <li><span class="tag allow">Allowed</span><span><b>Erased type references</b> reaching EE declarations through <code>MastraServerConfig</code> &mdash; zero bytes shipped, per your ruling.</span></li>
+        <li><span class="tag deny">Forbidden</span><span><b><code>@mastra/core/auth</code></b>, <b><code>@mastra/core/auth/ee</code></b>, <b><code>@internal/auth/ee</code></b>, <b><code>EEUser</code></b>, <b><code>buildCapabilities</code></b>, and the shipped <code>CookieSessionProvider</code> &mdash; Apache itself, but only reachable through the tainted barrel.</span></li>
+        <li><span class="tag deny">Forbidden</span><span><b>Porting <code>ee/capabilities.ts</code></b>. We derive our descriptor from the Apache interfaces instead. Same idea, independently written, no licence gate.</span></li>
+        <li><span class="tag watch">Flag</span><span><b><code>packages/server/src/server/fga-permissions.ts:31</code></b> does a module-scope <code>import * as authEE from '@mastra/core/auth/ee'</code>. That is pre-existing platform behavior on the <code>/api/*</code> path, not something this plan adds &mdash; but it is the one place EE runs at runtime today, and worth a deliberate look from whoever owns the licence question.</span></li>
+      </ul>
+      <p style="border-top:1px solid var(--rule); padding-top:13px">
+        <b>Enforcement, not intention:</b> the kit ships an ESLint <code>no-restricted-imports</code> rule plus a CI test that walks
+        the kit&rsquo;s resolved module graph and fails on any specifier containing <code>/ee</code>. The boundary becomes a build error,
+        not a code-review habit.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>What A&minus; means for each seam</h2>
+      <p>Exit criteria, not aspirations. Each is checkable, and each is gated in a phase below.</p>
+    </div>
+
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr>
+            <th>Seam</th>
+            <th style="width:118px">Grade</th>
+            <th>What has to be true</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th>Contract design</th>
+            <td class="c"><span class="status no">B+</span><span class="arrow">&rarr;</span><span class="status ok">A&minus;</span></td>
+            <td>Identity is declared, not sniffed &mdash; a real <code>AuthIdentity</code> with a required <code>id</code>, plus an overridable <code>toIdentity()</code>. Cookie name, <code>state</code> format and the PKCE read side all move from convention into the contract. Kit is semver&rsquo;d with a written stability policy.</td>
+          </tr>
+          <tr>
+            <th>Backend seam</th>
+            <td class="c"><span class="status no">B&minus;</span><span class="arrow">&rarr;</span><span class="status ok">A&minus;</span></td>
+            <td>The Factory imports only the kit. <code>instanceof MastraAuthWorkos</code> and the <code>WORKOS_*</code> reach-through are deleted and <code>@mastra/auth-workos</code> leaves the dependency list. <code>RouteAuth</code> becomes the <em>only</em> identity path. Org-lessness stops 403ing. Logout revokes, and is POST.</td>
+          </tr>
+          <tr>
+            <th>UI seam</th>
+            <td class="c"><span class="status no">D+</span><span class="arrow">&rarr;</span><span class="status ok">A&minus;</span></td>
+            <td>Sign-in renders from the descriptor. A CI test greps <code>factory-ui</code> for provider-name literals and fails on any hit. The credentials form posts to a descriptor-supplied endpoint. An unknown provider renders correctly, with correct labelling.</td>
+          </tr>
+          <tr>
+            <th>Testability</th>
+            <td class="c"><span class="status no">B&minus;</span><span class="arrow">&rarr;</span><span class="status ok">A&minus;</span></td>
+            <td>A runnable <code>describeAuthProvider()</code> conformance suite that every shipped provider executes in its own CI. Host tests cover a cookie-only request through the gate and every capability branch. Provider-selection tests drop from 60&nbsp;s boots to the existing config-capture seam.</td>
+          </tr>
+          <tr>
+            <th>Documentation</th>
+            <td class="c"><span class="status no">D</span><span class="arrow">&rarr;</span><span class="status ok">A&minus;</span></td>
+            <td>A capability reference table (interface &rarr; routes unlocked &rarr; methods required), a start-to-finish &ldquo;write a Factory auth provider&rdquo; guide, and the four undocumented obligations promoted to documented contract. Every doc example type-checks in CI.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>The kit</h2>
+      <p>
+        <code>mastracode/auth-kit</code>, publishing as <code>@mastra/factory-auth</code> &mdash; sited in your own area rather than the
+        shared <code>packages/</code> tree so upstream merges stay cheap. Apache-2.0, eight modules, no EE anywhere in its graph.
+        (<code>@mastra/auth</code> is already taken by an unrelated Apache JWT helper package; name is yours to settle.)
+      </p>
+    </div>
+
+    <div class="modules">
+      <div class="mod">
+        <div class="fname">contract.ts</div>
+        <h4>One import site</h4>
+        <p>Re-exports the eight interfaces and eight guards from <code>@mastra/core/server</code>. Provider authors import one thing; if upstream drifts, one file changes.</p>
+        <div class="fixes-tag">Contract &middot; enforces the EE boundary</div>
+      </div>
+      <div class="mod">
+        <div class="fname">identity.ts</div>
+        <h4>Declared identity</h4>
+        <p><code>AuthIdentity</code> with a required <code>id</code>, and <code>toAuthIdentity()</code> handling <code>id</code>, <code>uid</code>, <code>sub</code> and <code>{session,&nbsp;user}</code>. Providers override via an optional <code>toIdentity()</code>. Replaces both the shape-sniffer and <code>EEUser</code>.</p>
+        <div class="fixes-tag">Contract &middot; backend &middot; unbreaks Firebase</div>
+      </div>
+      <div class="mod">
+        <div class="fname">capabilities.ts</div>
+        <h4>Our capability descriptor</h4>
+        <p><code>describeAuth(provider)</code> &rarr; sign-in kind, labels, sign-up state, feature flags &mdash; derived purely from the Apache guards. Independently written; no licence gate, no RBAC, no telemetry.</p>
+        <div class="fixes-tag">UI seam &middot; replaces ee/capabilities.ts</div>
+      </div>
+      <div class="mod">
+        <div class="fname">organizations.ts</div>
+        <h4>Orgs for providers without them</h4>
+        <p><code>withSyntheticOrganizations()</code> gives any provider a valid <code>IOrganizationsProvider</code>, plus a host-side <code>resolveTenant()</code> so org-lessness degrades instead of 403ing.</p>
+        <div class="fixes-tag">Backend &middot; unblocks Cognito, Supabase, Firebase</div>
+      </div>
+      <div class="mod">
+        <div class="fname">session.ts</div>
+        <h4>The host owns the cookie</h4>
+        <p>HMAC-signed session cookie over <code>node:crypto</code>, with one declared name. Written fresh because the shipped equivalent is only reachable through the EE-barrelled entry point.</p>
+        <div class="fixes-tag">Contract &middot; backend</div>
+      </div>
+      <div class="mod">
+        <div class="fname">state.ts</div>
+        <h4>One state format</h4>
+        <p>Shared <code>encodeState</code> / <code>decodeState</code>, so the Factory and <code>packages/server</code> stop disagreeing about whether <code>handleCallback</code> receives the raw value or the UUID half.</p>
+        <div class="fixes-tag">Contract &middot; unbreaks Okta</div>
+      </div>
+      <div class="mod">
+        <div class="fname">testing/</div>
+        <h4>Composable fakes</h4>
+        <p><code>fakeProvider()</code> with capability mixins, so a host test can conjure &ldquo;SSO but no orgs&rdquo; in one line and never stub an env var.</p>
+        <div class="fixes-tag">Testability</div>
+      </div>
+      <div class="mod">
+        <div class="fname">conformance/</div>
+        <h4>Proof, not inspection</h4>
+        <p><code>describeAuthProvider(factory)</code> &mdash; a drop-in suite a provider package runs in its own CI to prove it satisfies the contract, including the four obligations.</p>
+        <div class="fixes-tag">Testability &middot; docs</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Four phases</h2>
+      <p>
+        Ordered so each phase leaves the tree shippable, and so the riskiest reversal &mdash; the identity change &mdash; lands
+        behind a conformance suite rather than in front of one.
+      </p>
+    </div>
+
+    <div class="phases">
+
+      <div class="phase">
+        <div class="phase-head">
+          <span class="phase-num">Phase 1</span>
+          <h3>Kit foundation</h3>
+          <span class="phase-dur">~1 week</span>
+        </div>
+        <div class="phase-body">
+          <p>Pure addition. Nothing consumes the kit yet, so nothing can regress &mdash; and the EE boundary gets its enforcement before any code depends on it.</p>
+
+          <div class="task">
+            <div class="t">Scaffold the package and lock the boundary</div>
+            <div class="d">Apache-2.0 header, tsdown build matching the sibling packages, the ESLint restricted-imports rule, and the CI module-graph test that fails on any <code>/ee</code> specifier. Write this test first &mdash; it is the constraint made executable.</div>
+            <div class="f">mastracode/auth-kit/{package.json, tsdown.config.ts, eslint.config.js, src/__tests__/no-ee.test.ts}</div>
+          </div>
+          <div class="task">
+            <div class="t">Write <code>contract</code>, <code>identity</code>, <code>state</code>, <code>session</code></div>
+            <div class="d">The four primitives everything else builds on. <code>identity</code> is the one to get right: a required <code>id</code>, an escape hatch for providers whose token shape you cannot change, and no vendor field anywhere in the type.</div>
+            <div class="f">src/{contract,identity,state,session}.ts</div>
+          </div>
+          <div class="task">
+            <div class="t">Write <code>capabilities</code> and <code>organizations</code></div>
+            <div class="d">Derive the descriptor from the guards, from scratch. Keep it deliberately smaller than the EE version &mdash; sign-in shape and feature booleans only. RBAC and FGA are explicitly out of scope and stay that way.</div>
+            <div class="f">src/{capabilities,organizations}.ts</div>
+          </div>
+          <div class="task">
+            <div class="t">Write the fakes and the conformance suite</div>
+            <div class="d">Both are deliverables, not test scaffolding. The conformance suite doubles as the executable specification the docs phase points at.</div>
+            <div class="f">src/testing/, src/conformance/</div>
+          </div>
+
+          <div class="gate">
+            <div class="eyebrow">Exit gate</div>
+            <ul>
+              <li>The no-EE module-graph test <b>passes and is proven</b> &mdash; add a temporary EE import, watch CI go red, revert.</li>
+              <li>The conformance suite runs green against a <b>fake</b> provider and red against a deliberately broken one.</li>
+              <li>Kit builds and type-checks standalone, with nothing else in the repo importing it yet.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-head">
+          <span class="phase-num">Phase 2</span>
+          <h3>Backend seam</h3>
+          <span class="phase-dur">~1 week</span>
+        </div>
+        <div class="phase-body">
+          <p>The behavioural phase. Everything here is observable through HTTP, so every change lands with a test that drives a real request.</p>
+
+          <div class="task">
+            <div class="t">Replace the shape-sniffer with the kit</div>
+            <div class="d">Delete <code>toFactoryAuthUser</code> and <code>FactoryAuthUser.workosId</code>; route every identity read through <code>toAuthIdentity</code>. This is the change that makes a Firebase-shaped or raw-JWT-shaped provider stop authenticating as nobody.</div>
+            <div class="f">mastracode/factory/src/auth.ts:41&ndash;43, :190&ndash;231</div>
+          </div>
+          <div class="task">
+            <div class="t">Cut the WorkOS coupling out of the neutral module</div>
+            <div class="d">Remove <code>isWorkOSAuth</code>, <code>getWorkOSProvider</code>, <code>envFallbackAuthProvider</code> and the static import; drop <code>@mastra/auth-workos</code> from the Factory&rsquo;s dependencies. The audit confirmed this path has no production callers &mdash; its real cost is a vendor package in the graph and a forced <code>vi.mock</code> in two suites.</div>
+            <div class="f">mastracode/factory/src/auth.ts:1, :161&ndash;179, :325, :334 &middot; package.json:58</div>
+          </div>
+          <div class="task">
+            <div class="t">Close the two identity back doors</div>
+            <div class="d">Migrate the three modules that bypass <code>RouteAuth</code> and read the request context directly, so the port becomes the single path rather than the preferred one.</div>
+            <div class="f">workspace.ts:13 &middot; rules/binding-context.ts:4 &middot; integrations/github/session-subscriptions.ts:5</div>
+          </div>
+          <div class="task">
+            <div class="t">Make org-lessness survivable</div>
+            <div class="d">Generalize the <code>user:${userId}</code> fallback that already exists in the credentials path so the seven org-gated route groups degrade instead of 403ing, and the workspace layer stops throwing.</div>
+            <div class="f">routes/provider-credentials.ts:74&ndash;75 &rarr; kit <code>resolveTenant()</code> &middot; workspace.ts:316</div>
+          </div>
+          <div class="task">
+            <div class="t">Fix logout, and adopt one state format</div>
+            <div class="d">Call <code>destroySession</code> on the SSO path, move logout to POST (a GET logout is CSRF-triggerable by any <code>&lt;img&gt;</code>), and switch both callback paths to the kit&rsquo;s state codec. Audit the five providers whose <code>destroySession</code> body is empty.</div>
+            <div class="f">mastracode/factory/src/auth.ts:434, :569, :603</div>
+          </div>
+
+          <div class="gate">
+            <div class="eyebrow">Exit gate</div>
+            <ul>
+              <li>A test drives a <b>cookie-only</b> request through the gate and gets an authenticated identity &mdash; the browser path, finally covered.</li>
+              <li>A fake provider returning <code>{ uid }</code> authenticates successfully end to end.</li>
+              <li>A fake provider with <b>no</b> organizations capability reaches the board without a 403.</li>
+              <li><code>grep -r "workos" mastracode/factory/src</code> returns nothing outside changelogs.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-head">
+          <span class="phase-num">Phase 3</span>
+          <h3>UI seam</h3>
+          <span class="phase-dur">~3 days</span>
+        </div>
+        <div class="phase-body">
+          <p>The smallest phase and the biggest grade jump &mdash; D+ to A&minus; &mdash; because the deficit is one decision made in one place.</p>
+
+          <div class="task">
+            <div class="t">Emit the descriptor from <code>/auth/me</code></div>
+            <div class="d">Replace the bare <code>provider.name</code> payload with the kit&rsquo;s descriptor. The handler already evaluates a capability guard one line earlier; it just throws the answer away.</div>
+            <div class="f">mastracode/factory/src/auth.ts:400&ndash;424</div>
+          </div>
+          <div class="task">
+            <div class="t">Render from capability, not from name</div>
+            <div class="d">Branch on <code>descriptor.signIn.kind</code>. Keep the name check as a labelled legacy fallback for one release, then delete it. An unknown provider gets a correct generic hosted-login button instead of a GitHub logo.</div>
+            <div class="f">factory-ui/src/ui/pages/SignInPage.tsx:154&ndash;157, :225</div>
+          </div>
+          <div class="task">
+            <div class="t">Un-hardcode the credentials endpoint</div>
+            <div class="d">The form currently posts to better-auth&rsquo;s wire format. Take the path from the descriptor so any <code>IAuthHttpHandler</code> provider &mdash; including the Firebase adapter &mdash; works without touching the SPA.</div>
+            <div class="f">factory-ui/src/ui/domains/auth/services/auth.ts:74, :103, :107</div>
+          </div>
+
+          <div class="gate">
+            <div class="eyebrow">Exit gate</div>
+            <ul>
+              <li>A CI test greps <code>factory-ui/src</code> for provider-name literals and <b>fails on any hit</b>.</li>
+              <li>MSW tests cover all four sign-in kinds, including an unrecognised provider.</li>
+              <li>Adding a new provider requires <b>zero</b> SPA changes &mdash; demonstrated, not asserted.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-head">
+          <span class="phase-num">Phase 4</span>
+          <h3>Conformance, providers, docs</h3>
+          <span class="phase-dur">~1 week</span>
+        </div>
+        <div class="phase-body">
+          <p>Where the work becomes durable. The conformance suite is what stops these grades sliding back the next time someone adds a provider.</p>
+
+          <div class="task">
+            <div class="t">Run conformance against every provider you ship</div>
+            <div class="d">Expect failures &mdash; that is the point. Okta&rsquo;s callback bug surfaces immediately, since its <code>handleCallback</code> has zero coverage today and that is exactly why the state mismatch went unnoticed.</div>
+            <div class="f">auth/*/src/*.conformance.test.ts</div>
+          </div>
+          <div class="task">
+            <div class="t">Fix what conformance catches</div>
+            <div class="d">Okta&rsquo;s state lookup at minimum. Any provider you intend to support gets an <code>ensureOrganization</code> and a cookie-aware <code>authenticateToken</code> via the kit&rsquo;s helpers.</div>
+            <div class="f">auth/okta/src/auth-provider.ts:379, :412</div>
+          </div>
+          <div class="task">
+            <div class="t">Retire the 60-second boot tests</div>
+            <div class="d">Move host provider-selection tests onto the <code>factoryConfigs</code> capture seam that already exists in the same file and is already used by another test there.</div>
+            <div class="f">mastracode/web/src/mastra/index.test.ts:6&ndash;16, :315</div>
+          </div>
+          <div class="task">
+            <div class="t">Write the two documents that do not exist</div>
+            <div class="d">A capability reference table, and a start-to-finish provider guide that ends with &ldquo;now run the conformance suite.&rdquo; Compile every example in CI so the guide cannot rot. Follow <code>docs/AGENTS.md</code> and the repo styleguides.</div>
+            <div class="f">docs/ &middot; mastracode/auth-kit/README.md</div>
+          </div>
+
+          <div class="gate">
+            <div class="eyebrow">Exit gate</div>
+            <ul>
+              <li>Every provider you ship <b>passes conformance</b>, or is explicitly marked unsupported with a reason.</li>
+              <li>Someone who has never seen this codebase writes a working provider from the guide alone. That is the actual test.</li>
+              <li>Doc examples type-check in CI.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Risks worth pricing in now</h2>
+    </div>
+    <div class="risks">
+      <ul>
+        <li><b>Phase 2 is the only phase that can break a live sign-in.</b> Identity normalization, session cookies and logout all change together. Ship it behind a flag that falls back to the current sniffer for one release, and keep both paths covered until the flag comes out.</li>
+        <li><b>The kit re-exports from a package you do not control.</b> <code>@mastra/core/server</code> could move a symbol or, worse, start barrelling EE the way <code>@mastra/core/auth</code> does. <code>contract.ts</code> exists precisely so that is a one-file fix &mdash; and the no-EE graph test would catch the bad case on the next dependency bump rather than in production.</li>
+        <li><b>&ldquo;Reimplemented, not ported&rdquo; needs to be visibly true.</b> Write <code>capabilities.ts</code> from the interface definitions with the EE file closed. Different shape, different names, smaller scope. If it ends up looking like a paraphrase, that is a worse position than not having written it.</li>
+        <li><b>Providers you do not own can still fail the four obligations.</b> Conformance proves the ones you ship; it cannot police a third-party package. The guide and the descriptor make failure legible early &mdash; that is the realistic ceiling.</li>
+        <li><b>Deploying to Mastra Cloud still rewraps your provider at build time</b>, placing it last in a first-wins composite so its login URL is shadowed. Nothing in this plan changes that, because it lives in the deployer. Self-hosting is unaffected; know it before debugging a redirect that works locally and not in production.</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>
+    Plan derived from the auth swappability audit: five parallel readers, each adversarially verified, plus a completeness pass.<br>
+    EE boundary re-verified by hand against <span class="mono">LICENSE.md</span>, <span class="mono">ee/LICENSE</span>, and the resolved import graphs of <span class="mono">@mastra/core/auth</span>, <span class="mono">@mastra/core/server</span> and <span class="mono">mastracode/factory</span>.
+  </footer>
+
+</div>
