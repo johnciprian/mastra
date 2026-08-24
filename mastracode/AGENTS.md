@@ -6,6 +6,8 @@ Focused TUI test: `pnpm --filter ./mastracode/tui exec vitest run <test-file> --
 
 Factory UI is the independent React SPA and CLI UI artifact; see `mastracode/factory-ui/AGENTS.md`.
 
+`mastracode/factory-auth` (`@mastra/factory-auth`) is Apache-2.0 and must never reach an `ee/` directory, directly or transitively. Take the auth contract from `@mastra/core/server` only; lint and `no-ee-boundary.test.ts` enforce it. Read its README first.
+
 Tests are colocated in package `src`. TUI scenarios: `mastracode/tui/e2e/tui/`; fixtures: `mastracode/tui/e2e/fixtures/`. Use `e2e:list`, `e2e:smoke`, or `e2e:test -- --reporter=dot`; focus with `MC_E2E_VITEST_SCENARIOS=<scenario> pnpm --filter ./mastracode/tui exec vitest run --config e2e/vitest.config.ts --reporter=dot`.
 
 Use `testing-mastracode-tui` for interactive guidance and `mastracode/tui/e2e/README.md` for runner commands. TUI-visible behavior needs checked-in TUI E2E coverage. Sanitize any read-only local Application Support data into deterministic AIMock fixtures.
