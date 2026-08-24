@@ -26,11 +26,32 @@
  * output for EE identifiers - a type-only path into EE carries no code but is
  * still a licence problem in a published Apache-2.0 package's type surface.
  *
- * WHAT THIS TEST CANNOT DO
- * It resolves specifiers, so a lazy `await import()` behind a runtime flag is
- * seen, but code loaded by string concatenation is not. Lint (`eslint.config.js`)
- * covers source syntax and runs without a build; this covers what a dependency
- * drags in and survives a version bump. Neither is sufficient alone.
+ * WHAT EACH HALF SEES, PRECISELY
+ * The two halves of this test read imports differently, and the difference is
+ * load-bearing rather than incidental.
+ *
+ * - `readSpecifiers` (the allowlist assertion, the built-output sweep, and the
+ *   floor guard's input) reads literal specifiers in every quoting form the
+ *   language offers: `'x'`, `"x"`, and the no-substitution template literal
+ *   `` `x` ``, for static, side-effect, dynamic and `require` forms.
+ * - madge's resolver walks static imports and QUOTED dynamic imports. It does
+ *   not follow ``import(`x`)``.
+ *
+ * So a backtick dynamic import is invisible to the graph, and it is invisible to
+ * both linters too - oxlint's `no-restricted-imports` handles `import()` only
+ * for string literals, and ESLint's does not handle `import()` at all. It is
+ * caught here by the allowlist (which reads it), and by the floor guard (which
+ * notices the graph never left the package while contract.ts names an import).
+ * Measured: that payload was green in all six checks until this test learned to
+ * read backticks and to insist the walk leaves the package.
+ *
+ * WHAT NOTHING HERE CAN SEE
+ * A specifier that does not exist until runtime: string concatenation, a
+ * template literal with a `${}` substitution, or a variable. That is a known gap
+ * in every source-level check in this repo, this test and both linters alike.
+ *
+ * Lint covers source syntax and runs without a build; this covers what a
+ * dependency drags in and survives a version bump. Neither is sufficient alone.
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { isBuiltin } from 'node:module';
@@ -71,23 +92,103 @@ const ALLOWED_EXTERNAL_SPECIFIERS = new Map<string, RegExp>([
 /**
  * Specifiers the resolver is allowed to leave unresolved, each with a reason.
  * Node builtins are handled separately and never need a line here.
+ *
+ * A line here is a real concession: the walk stops at that specifier, so nothing
+ * behind it is checked. Only add one for a package that cannot be enterprise
+ * code, and say why.
  */
-const ALLOWED_UNRESOLVED = new Map<string, string>();
+const ALLOWED_UNRESOLVED = new Map<string, string>([
+  [
+    'madge',
+    "This test's own resolver. `enableGlobalVirtualStore: true` puts it in the pnpm store outside " +
+      'the repo, and the source alias table empties `exportsFields`, so it cannot be followed. It is a ' +
+      'devDependency of this test and never ships.',
+  ],
+  [
+    'vitest',
+    'The test runner, reached from this file and (once K18 lands) from src/conformance/. Same ' +
+      'out-of-repo resolution as madge. It is an optional peer dependency, never a runtime import.',
+  ],
+]);
 
-/** EE-authored identifiers. A hit in built output means EE reached this package. */
-const EE_IDENTIFIERS = [
-  'MastraFGAPermissions',
-  'MastraFGAPermissionInput',
-  'IFGAProvider',
-  'IRBACProvider',
-  'FGADeniedError',
-  'StaticRBACProvider',
-  'buildCapabilities',
-  'PERMISSION_PATTERNS',
-  'isEELicenseValid',
-  'startLicenseValidation',
-  'mastra.eeTelemetryBridge',
-];
+/** Where the enterprise sources live, relative to the repo root. */
+const EE_SOURCE_DIRS = ['packages/_internals/auth/src/ee', 'packages/core/src/auth/ee'];
+
+/**
+ * Names too generic to be evidence of anything on their own.
+ *
+ * Every entry is a real EE export, so each one is a deliberately accepted blind
+ * spot rather than an oversight. They are one-word nouns that any auth-adjacent
+ * declaration might legitimately use, and a hit on `Action` would fail this test
+ * for a reason nobody could act on. The distinctive EE names - anything with
+ * FGA, RBAC, License or EE in it - carry the assertion.
+ */
+const TOO_GENERIC_TO_ASSERT_ON = new Set([
+  'Action',
+  'ACTIONS',
+  'Permission',
+  'PERMISSIONS',
+  'Resource',
+  'RESOURCES',
+  'ResourceIdentifier',
+  'UserAccess',
+  'RoleDefinition',
+  'RoleMapping',
+  'TypedRoleMapping',
+  'CapabilityFlags',
+  'ActorSignal',
+  'isAuthenticated',
+  'isDevEnvironment',
+  'isFeatureEnabled',
+  'hasPermission',
+  'getDefaultRole',
+  'matchesPermission',
+  'resolvePermissions',
+  'validatePermissions',
+]);
+
+/**
+ * EE-authored identifiers, derived from the enterprise sources rather than typed
+ * out here. A hit in built output means enterprise code reached this package.
+ *
+ * Derived on purpose, for two reasons. A hand-written list rots exactly when EE
+ * grows, and this assertion is the only thing closing the gap that
+ * `skipTypeImports` opens - an erased import carries no code, but an enterprise
+ * declaration inlined into a published Apache-2.0 package's `.d.ts` is still a
+ * licence problem. And it keeps this Apache-2.0 file from carrying a hand-copied
+ * roster of enterprise symbol names: it reads the names in order to ban them,
+ * and stores none of them.
+ */
+function deriveEeIdentifiers(): string[] {
+  const names = new Set<string>();
+  for (const dir of EE_SOURCE_DIRS) {
+    const absolute = path.join(REPO_ROOT, dir);
+    if (!existsSync(absolute)) continue;
+    for (const file of listFiles(absolute, file => file.endsWith('.ts'))) {
+      const source = readFileSync(file, 'utf8');
+      const declared =
+        /\bexport\s+(?:declare\s+)?(?:async\s+)?(?:const|let|var|function|class|interface|type|enum|abstract\s+class)\s+([A-Za-z_$][\w$]*)/g;
+      const named = /\bexport\s*(?:type\s*)?\{([^}]*)\}/g;
+      for (const match of source.matchAll(declared)) {
+        if (match[1]) names.add(match[1]);
+      }
+      for (const match of source.matchAll(named)) {
+        for (const part of (match[1] ?? '').split(',')) {
+          const name = part
+            .trim()
+            .replace(/^type\s+/, '')
+            .split(/\s+as\s+/)[0]
+            ?.trim();
+          if (name && /^[A-Za-z_$][\w$]*$/.test(name)) names.add(name);
+        }
+      }
+    }
+  }
+  // The EE telemetry bridge installs itself under this key; it is a string, not
+  // an exported name, so no parser would find it.
+  names.add('mastra.eeTelemetryBridge');
+  return [...names].filter(name => !TOO_GENERIC_TO_ASSERT_ON.has(name) && name.length > 3).sort();
+}
 
 interface ExportEntry {
   /** The subpath as written in package.json, e.g. `.` or `./cookie`. */
@@ -140,15 +241,28 @@ function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 }
 
-/** Every module specifier in a file: static, side-effect, dynamic and require. */
+/**
+ * Every module specifier in a file: static, side-effect, dynamic and require.
+ *
+ * Each form is matched in all three quoting styles. The backtick alternatives
+ * are not decoration: ``import(`@mastra/core/auth`)`` is a literal that both
+ * linters wave through, so if this function does not read it, nothing does.
+ * A template literal carrying a `${}` substitution is deliberately not matched -
+ * its specifier is not knowable statically, and pretending otherwise would put a
+ * fragment of a specifier into the allowlist comparison.
+ */
 function readSpecifiers(file: string): string[] {
   const source = stripComments(readFileSync(file, 'utf8'));
   const specifiers: string[] = [];
   const patterns = [
     /\bfrom\s*['"]([^'"]+)['"]/g,
+    /\bfrom\s*`([^`$]+)`/g,
     /^[ \t]*import\s+['"]([^'"]+)['"]/gm,
+    /^[ \t]*import\s+`([^`$]+)`/gm,
     /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+    /\bimport\s*\(\s*`([^`$]+)`\s*\)/g,
     /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+    /\brequire\s*\(\s*`([^`$]+)`\s*\)/g,
   ];
   for (const pattern of patterns) {
     for (const match of source.matchAll(pattern)) {
@@ -230,6 +344,22 @@ function formatViolations(graph: Record<string, string[]>, roots: string[], offe
 const exportEntries = readExportEntries();
 const entryRoots = exportEntries.filter(entry => entry.exists).map(entry => entry.sourceRelativeToRepo);
 
+/**
+ * Graph roots: EVERY source file, not just the nine published entry points.
+ *
+ * Rooting the walk at the exports map leaves a hole the width of one file. A
+ * module that no entry point imports is never opened, so a specifier like
+ * `'../../factory/src/auth.js'` sitting in an orphan file reaches 11 ee/ modules
+ * while every check stays green: the linters see no banned specifier (it names
+ * no `ee` segment and no `@mastra/*` package), the allowlist abstains on
+ * relative specifiers because the graph is supposed to cover those, and tsdown
+ * emits no dist output for a file that is not an entry. Measured: the identical
+ * import inside `contract.ts` turns this assertion red at 51 nodes.
+ *
+ * Every file that ships in the repo is Apache-2.0 output, entry point or not.
+ */
+const sourceFiles = listFiles(SRC_DIR, file => file.endsWith('.ts') || file.endsWith('.tsx'));
+
 describe('EE licence boundary', () => {
   it('scans every entry point declared in package.json exports', () => {
     const missing = exportEntries.filter(entry => !entry.exists);
@@ -246,30 +376,38 @@ describe('EE licence boundary', () => {
 
   it('reaches no ee/ module through the resolved source graph', async () => {
     const madge = (await import('madge')).default;
-    // Entries are resolved against process.cwd(), so they are passed absolute.
+    // Roots are resolved against process.cwd(), so they are passed absolute.
     // `baseDir` only controls how graph keys are reported, which is why every
     // key below is repo-relative.
-    const result = await madge(
-      exportEntries.filter(entry => entry.exists).map(entry => entry.sourceAbsolute),
-      {
-        baseDir: REPO_ROOT,
-        // Absolute: filing-cabinet resolves this against process.cwd(), and a
-        // relative path silently yields an empty resolver that skips everything.
-        webpackConfig: WEBPACK_CONFIG,
-        fileExtensions: ['ts', 'tsx', 'js', 'jsx'],
-        detectiveOptions: { ts: { skipTypeImports: true }, tsx: { skipTypeImports: true } },
-      },
-    );
+    const result = await madge(sourceFiles, {
+      baseDir: REPO_ROOT,
+      // Absolute: filing-cabinet resolves this against process.cwd(), and a
+      // relative path silently yields an empty resolver that skips everything.
+      webpackConfig: WEBPACK_CONFIG,
+      fileExtensions: ['ts', 'tsx', 'js', 'jsx'],
+      detectiveOptions: { ts: { skipTypeImports: true }, tsx: { skipTypeImports: true } },
+    });
 
     const graph = result.obj() as Record<string, string[]>;
     const modules = Object.keys(graph);
+    const allSkipped = result.warnings().skipped;
+
+    // Report coverage on success, not only on failure. A boundary test that gets
+    // quieter as it sees less is a boundary test nobody can audit: the graph
+    // truncates at every specifier the source resolver cannot follow, and without
+    // these numbers a 9-node walk is indistinguishable from a 500-node one.
+    console.info(
+      `[ee-boundary] roots=${sourceFiles.length} modules=${modules.length} ` +
+        `core=${modules.filter(module => module.startsWith('packages/core/')).length} ` +
+        `unresolved=${allSkipped.length}`,
+    );
 
     // False-green guard 1: a boundary test that looked at nothing is worse than
     // no test, because it converts ignorance into a green check.
     if (modules.length === 0) {
       expect.fail(
         'EE boundary test scanned 0 modules, so it proved nothing.\n' +
-          'Resolution starts from the source files behind package.json exports. Check that those files exist ' +
+          'Resolution starts from every .ts file under src/. Check that those files exist ' +
           'and that dependencies are installed: pnpm install',
       );
     }
@@ -281,6 +419,24 @@ describe('EE licence boundary', () => {
         `EE boundary test scanned ${entryRoots.length - missingRoots.length} of the ${exportEntries.length} entry points in package.json exports. ` +
           `Every published entry must be scanned.\n` +
           `Not scanned: ${missingRoots.join(', ')}`,
+      );
+    }
+
+    // False-green guard 4 - the floor.
+    //
+    // While every module in src/ is an `export {}` stub the graph never leaves
+    // this package, so its green means "nine files import nothing". That is a
+    // tautology, and guard 1 cannot see it because 9 > 0. The moment contract.ts
+    // carries a real specifier the walk must reach @mastra/core, and if it does
+    // not, the resolver is broken rather than the boundary being clean.
+    const contractSpecifiers = readSpecifiers(path.join(SRC_DIR, 'contract.ts'));
+    const coreModules = modules.filter(module => module.startsWith('packages/core/'));
+    if (contractSpecifiers.length > 0 && coreModules.length === 0) {
+      expect.fail(
+        `EE boundary test resolved ${modules.length} modules and none of them were in packages/core, ` +
+          `even though src/contract.ts imports ${contractSpecifiers.map(s => `'${s}'`).join(', ')}.\n` +
+          `The walk never left this package, so it proved nothing about what @mastra/core drags in. ` +
+          `Check test/madge.webpack.config.cjs and the workspace alias table it reuses.`,
       );
     }
 
@@ -309,9 +465,8 @@ describe('EE licence boundary', () => {
         .filter(module => module.startsWith(kitPrefix))
         .flatMap(module => readSpecifiers(path.join(REPO_ROOT, module))),
     );
-    const skipped = result
-      .warnings()
-      .skipped.filter(specifier => !specifier.startsWith('node:') && !isBuiltin(specifier))
+    const skipped = allSkipped
+      .filter(specifier => !specifier.startsWith('node:') && !isBuiltin(specifier))
       .filter(specifier => !ALLOWED_UNRESOLVED.has(specifier))
       .filter(specifier => kitSpecifiers.has(specifier) || EE_SEGMENT.test(specifier));
     if (skipped.length > 0) {
@@ -334,7 +489,6 @@ describe('EE licence boundary', () => {
   });
 
   it('imports only allowlisted external specifiers', () => {
-    const sourceFiles = listFiles(SRC_DIR, file => file.endsWith('.ts') || file.endsWith('.tsx'));
     expect(sourceFiles.length).toBeGreaterThan(0);
 
     const violations: string[] = [];
@@ -370,7 +524,25 @@ describe('EE licence boundary', () => {
     expect(violations).toEqual([]);
   });
 
-  it.skipIf(!existsSync(DIST_DIR))('ships no enterprise identifiers in built output', () => {
+  // Deliberately not `it.skipIf`. On a fresh clone with no dist/ this assertion
+  // has nothing to read and says so, but a skip must never become the CI
+  // behaviour through a build-step regression: this is the only assertion that
+  // closes the gap `skipTypeImports` opens, and the local path to it is easy to
+  // scroll past. `turbo.json` makes `test` depend on this package's own `build`
+  // so the skip should not happen locally either.
+  it('ships no enterprise identifiers in built output', ctx => {
+    if (!existsSync(DIST_DIR)) {
+      const message =
+        'EE boundary test found no dist/, so the built-output assertion proved nothing.\n' +
+        'Build the package first: pnpm --filter ./mastracode/factory-auth build';
+      if (process.env.CI) expect.fail(message);
+      ctx.skip(message);
+      return;
+    }
+
+    // .js, .cjs and .d.ts only. Sourcemaps are not scanned: externals are peer
+    // dependencies and are never bundled, so `sourcesContent` can only hold this
+    // package's own source. Do not read this assertion as covering dist/**/*.map.
     const builtFiles = listFiles(
       DIST_DIR,
       file => file.endsWith('.js') || file.endsWith('.cjs') || file.endsWith('.d.ts'),
@@ -383,13 +555,38 @@ describe('EE licence boundary', () => {
       );
     }
 
+    // Names this package declares itself are not evidence of anything, even when
+    // enterprise code happens to use the same word. Subtracting them is what
+    // keeps a derived identifier set from going red on correct code the day
+    // src/capabilities.ts declares something with a colliding name. The residual
+    // risk is narrow and worth stating: a type-only leak of exactly a colliding
+    // name would not be reported here. The value path is covered by the graph
+    // assertion and the allowlist regardless.
+    const declaredHere = new Set<string>();
+    const declaration =
+      /\b(?:export\s+)?(?:declare\s+)?(?:async\s+)?(?:const|let|var|function|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/g;
+    for (const file of sourceFiles) {
+      for (const match of readFileSync(file, 'utf8').matchAll(declaration)) {
+        if (match[1]) declaredHere.add(match[1]);
+      }
+    }
+    const eeIdentifiers = deriveEeIdentifiers().filter(name => !declaredHere.has(name));
+    if (eeIdentifiers.length === 0) {
+      expect.fail(
+        `EE boundary test derived 0 enterprise identifiers from ${EE_SOURCE_DIRS.join(', ')}, so it proved nothing.\n` +
+          'Those directories are the source of truth for this assertion. If they moved, update EE_SOURCE_DIRS.',
+      );
+    }
+    console.info(`[ee-boundary] dist files=${builtFiles.length} ee identifiers=${eeIdentifiers.length}`);
+
     const violations: string[] = [];
     for (const file of builtFiles) {
       const relativeToPackage = path.relative(PACKAGE_ROOT, file).split(path.sep).join('/');
       const contents = readFileSync(file, 'utf8');
 
-      for (const identifier of EE_IDENTIFIERS) {
-        if (contents.includes(identifier)) {
+      for (const identifier of eeIdentifiers) {
+        // Whole word: `buildCapabilities` must not fire on `rebuildCapabilities`.
+        if (new RegExp(`(?<![\\w$])${identifier.replace(/\./g, '\\.')}(?![\\w$])`).test(contents)) {
           violations.push(`  ${relativeToPackage} contains the enterprise identifier '${identifier}'.`);
         }
       }
