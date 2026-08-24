@@ -121,6 +121,38 @@ jobs:
         working-directory: ./e2e-tests/pkg-outputs
         run: pnpm test
 
+  factory-auth-ee-boundary:
+    name: Verify the factory-auth EE boundary
+    needs: changes
+    runs-on: starsling-ubuntu-24.04
+    timeout-minutes: 30
+    if: needs.changes.outputs.has_code == 'true' && github.repository == 'mastra-ai/mastra'
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ secrets.TURBO_TEAM }}
+      TURBO_CACHE: remote:r
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@e8d4307400f9427dba7cb98e488d6ab85f1cec5f
+        timeout-minutes: 20
+
+      - name: Setup pnpm and Node.js
+        uses: ./.github/actions/setup-pnpm-node
+
+      # Nothing under mastracode/ is discovered by the root vitest project list:
+      # vitest.config.ts globs `mastracode/vitest.config.ts`, a file that does not
+      # exist. This job is the narrow fix. Widening that glob instead would switch
+      # on the whole factory and sdk suites repo-wide, which is a separate change.
+      - name: Build @mastra/factory-auth
+        run: pnpm turbo build --filter ./mastracode/factory-auth
+
+      - name: Run the EE boundary test
+        run: pnpm --filter ./mastracode/factory-auth test
+
   validator:
     name: Validate examples packages.json
     needs: changes

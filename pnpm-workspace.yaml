@@ -4,6 +4,7 @@ packages:
   - mastracode/factory
   - mastracode/factory-ui
   - mastracode/mastra-factory
+  - mastracode/factory-auth
   - docs
   - packages/_vendored/*
   - packages/_internals/*
