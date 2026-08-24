@@ -383,7 +383,7 @@
     <div class="sec-head">
       <h2>The kit</h2>
       <p>
-        <code>mastracode/auth-kit</code>, publishing as <code>@mastra/factory-auth</code> &mdash; sited in your own area rather than the
+        <code>mastracode/factory-auth</code>, publishing as <code>@mastra/factory-auth</code> &mdash; sited in your own area rather than the
         shared <code>packages/</code> tree so upstream merges stay cheap. Apache-2.0, eight modules, no EE anywhere in its graph.
         (<code>@mastra/auth</code> is already taken by an unrelated Apache JWT helper package; name is yours to settle.)
       </p>
@@ -464,7 +464,7 @@
           <div class="task">
             <div class="t">Scaffold the package and lock the boundary</div>
             <div class="d">Apache-2.0 header, tsdown build matching the sibling packages, the ESLint restricted-imports rule, and the CI module-graph test that fails on any <code>/ee</code> specifier. Write this test first &mdash; it is the constraint made executable.</div>
-            <div class="f">mastracode/auth-kit/{package.json, tsdown.config.ts, eslint.config.js, src/__tests__/no-ee.test.ts}</div>
+            <div class="f">mastracode/factory-auth/{package.json, tsdown.config.ts, eslint.config.js, src/__tests__/no-ee.test.ts}</div>
           </div>
           <div class="task">
             <div class="t">Write <code>contract</code>, <code>identity</code>, <code>state</code>, <code>session</code></div>
@@ -603,7 +603,7 @@
           <div class="task">
             <div class="t">Write the two documents that do not exist</div>
             <div class="d">A capability reference table, and a start-to-finish provider guide that ends with &ldquo;now run the conformance suite.&rdquo; Compile every example in CI so the guide cannot rot. Follow <code>docs/AGENTS.md</code> and the repo styleguides.</div>
-            <div class="f">docs/ &middot; mastracode/auth-kit/README.md</div>
+            <div class="f">docs/ &middot; mastracode/factory-auth/README.md</div>
           </div>
 
           <div class="gate">
