@@ -82,6 +82,8 @@ only through `src/contract.ts`.
 The ban is wider than the two obvious paths, because three Apache-2.0 specifiers reach enterprise
 code without naming it. Measured on this tree, in the runtime graph:
 
+Each row is that specifier walked on its own, so the numbers do not include this package's files.
+
 | Specifier                            | Modules | Inside `ee/` |
 | ------------------------------------ | ------: | -----------: |
 | `@mastra/core/server`                |      19 |        **0** |
@@ -104,6 +106,17 @@ Two checks enforce this:
 
 Lint reads source and runs without a build. The test catches what a dependency drags in, so it still
 holds after a version bump. Neither is sufficient alone.
+
+The graph is rooted at **every** `.ts` file under `src/`, not at the nine published entry points. A
+file no entry point imports still ships in the repo, and rooting at the exports map left it
+unwatched: a single relative import into a sibling package reaches enterprise code three hops later
+while naming no banned specifier, so both linters pass it.
+
+**A stated assumption.** The graph walker resolves workspace packages onto their TypeScript sources
+and stops at anything outside the repo. `enableGlobalVirtualStore: true` means every third-party
+package resolves outside the repo, so for those the walker checks nothing — what holds that line is
+the fail-closed allowlist, and a reviewer adding an entry to it is accepting that they, not the
+walker, have confirmed the package is free of enterprise code.
 
 ### Why the test resolves source, not built output
 
@@ -129,13 +142,23 @@ So an `import type { … } from '@mastra/core/auth/ee'`:
 - **trips lint** — the repo uses base `no-restricted-imports`, not the typescript-eslint variant with
   `allowTypeImports`, so it fires on type imports too;
 - **correctly does not trip** the runtime graph assertion, because the import carries no code;
-- **does trip** the built-output assertion, which scans `dist/**/*.d.ts` for enterprise identifiers.
-  Copying an enterprise declaration into a published Apache-2.0 package's type surface is a licence
-  problem even when nothing executes.
+- **does trip** the built-output assertion, which scans `dist/**/*.{js,cjs,d.ts}` for enterprise
+  identifiers. Copying an enterprise declaration into a published Apache-2.0 package's type surface is
+  a licence problem even when nothing executes.
 
 If you see that combination, the checks are working. Do not "fix" the graph assertion.
 
+The identifiers that assertion looks for are **derived** at test time from the enterprise sources
+rather than typed into the test, so the set tracks enterprise code as it grows and this Apache-2.0
+file carries no hand-copied roster of enterprise symbol names. Names this package declares itself are
+subtracted, so a future module of ours is free to reuse a word. Sourcemaps are not scanned:
+externals are peer dependencies and are never bundled, so `sourcesContent` can only hold this
+package's own source.
+
 ### Re-verify the boundary
+
+> For contributors to this package. If you are integrating a provider, you are done — the rest of
+> this file is about how the boundary is maintained.
 
 Both checks have to fail when the boundary breaks. A check nobody has watched fail isn't a check. Run
 this after you change the lint rule, the graph test, or the build config.

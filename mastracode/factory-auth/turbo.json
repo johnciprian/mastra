@@ -18,7 +18,11 @@
       "outputs": ["dist/**"]
     },
     "test": {
-      "dependsOn": ["^build"],
+      // `build`, not `^build`. `^build` is topological only, so this package's
+      // own build is not in the graph and the boundary test's built-output
+      // assertion has no dist/ to read. `build` already depends on `^build`, so
+      // dependencies are still built first.
+      "dependsOn": ["build"],
       "inputs": ["src/**", "test/**", "tsconfig.json", "package.json", "vitest.config.*", "!**/*.md"],
       "outputs": []
     }
