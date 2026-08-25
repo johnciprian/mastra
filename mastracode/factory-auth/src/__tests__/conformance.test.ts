@@ -45,6 +45,7 @@ import {
   authConformanceChecks,
   describeAuthProvider,
   formatConformanceFailure,
+  AUTH_OBLIGATION_COUNT,
   AUTH_OBLIGATION_GUIDANCE,
   CONFORMANCE_DOCS_URL,
 } from '../conformance/index.js';
@@ -54,6 +55,7 @@ import { parseStateId } from '../oauth-state.js';
 import { withSyntheticOrganizations } from '../organizations.js';
 import {
   AUTH_OBLIGATIONS,
+  AUTH_OBLIGATION_SUMMARY,
   FAKE_COOKIE_NAME,
   FAKE_TOKEN,
   fakeProvider,
@@ -84,7 +86,19 @@ async function runChecks(options: AuthProviderConformanceOptions): Promise<reado
   const outcomes: CheckOutcome[] = [];
   for (const check of authConformanceChecks(options)) {
     const provider = await options.createProvider();
-    const reason = check.skipReason(provider);
+    let reason: string | null;
+    try {
+      reason = check.skipReason(provider);
+    } catch (error) {
+      // A gate that throws is a red `it` in the adapter, because
+      // `describeAuthProvider` calls `skipReason` inside the test body with
+      // nothing around it. Recording it as a failure is what the reader sees.
+      // `requiresBrowserSession` is the gate that can do this: it calls
+      // `toAuthDescriptor`, which is documented as never throwing but is only as
+      // inert as the provider's property reads are.
+      outcomes.push({ status: 'failed', check, message: error instanceof Error ? error.message : String(error) });
+      continue;
+    }
     if (reason !== null) {
       outcomes.push({ status: 'skipped', check, reason });
       continue;
@@ -454,6 +468,502 @@ describe('missing fixtures are reported as missing fixtures', () => {
 });
 
 // ============================================================================
+// The red half for every check that is not an obligation
+// ============================================================================
+
+/**
+ * The other twelve checks, each shown going red.
+ *
+ * The four obligations have had a demonstrably-failing fake since this suite
+ * shipped, and the twelve contract and capability checks have not. A green run
+ * against `fullyCapableFake()` says nothing about them: a check whose condition
+ * can never be true passes every provider, and it passes them *silently*, which
+ * is the exact failure this whole lane exists because of. `contract/rejects-
+ * unknown-token` is the sharpest case - its own message calls it "the one check
+ * in the suite whose failure is a security finding" - and until now no test had
+ * ever seen it fail.
+ *
+ * One row per way a check can go red. Each builds the fully-capable fake and
+ * breaks exactly one thing, so the failure set is the claim: `fails` is what must
+ * go red and nothing else may.
+ */
+type Broken = Partial<Record<string, unknown>>;
+
+/** The fully-capable fake with one member replaced. Everything else is intact. */
+function brokenFake(overrides: Broken): IMastraAuthProvider {
+  return { ...(fullyCapableFake() as unknown as Broken), ...overrides } as unknown as IMastraAuthProvider;
+}
+
+/** A payload that `JSON.stringify` cannot render, for the reporter's last resort. */
+function circularPayload(): Record<string, unknown> {
+  const payload: Record<string, unknown> = { id: 'fake-user' };
+  payload.self = payload;
+  return payload;
+}
+
+interface RedCase {
+  /** What was broken, as the `it` title reads it. */
+  readonly label: string;
+  /** The provider under test. */
+  readonly provider: () => IMastraAuthProvider;
+  /** Every check id that must go red, and no other may. */
+  readonly fails: readonly string[];
+  /** Which of them {@link says} is about. Defaults to the first. */
+  readonly about?: string;
+  /** Text the reader has to find in that check's message. */
+  readonly says: RegExp;
+  /** Options the case needs beyond the defaults. */
+  readonly options?: Partial<AuthProviderConformanceOptions>;
+}
+
+const RED_CASES: readonly RedCase[] = [
+  {
+    label: 'authorizeUser is missing entirely, so this is not a provider',
+    provider: () => brokenFake({ authorizeUser: undefined }),
+    fails: ['contract/shape', 'contract/authorize-user'],
+    says: /provider\.authorizeUser is undefined, not a function/,
+  },
+  {
+    label: 'name is set to something that is not a string',
+    provider: () => brokenFake({ name: 42 }),
+    fails: ['contract/shape'],
+    says: /provider\.name is 42, which is neither a string nor absent/,
+  },
+  {
+    label: 'authenticateToken is missing, so nothing downstream can be asked anything',
+    provider: () => brokenFake({ authenticateToken: undefined }),
+    fails: [
+      'contract/shape',
+      'contract/rejects-unknown-token',
+      'contract/authorize-user',
+      'contract/map-user-to-resource-id',
+      'obligation/flatId',
+      'obligation/cookieAuth',
+      // The organization checks read an identity back before they compare the
+      // host-side resolver against it, so this one reports the same root cause
+      // rather than an organization defect.
+      'obligation/organizationId/deterministic',
+    ],
+    says: /provider\.authenticateToken is undefined, not a function/,
+  },
+  {
+    label: 'authenticateToken resolves a different user than the token belongs to',
+    provider: () =>
+      brokenFake({
+        async authenticateToken(token: string, request: Request) {
+          // A session id where a user id belongs - the `{ session, user }`
+          // mistake, in the shape that succeeds rather than the shape that
+          // returns null. The request authenticates and the data lands under a
+          // key that is not that person's. Both paths agree, so obligation 2 is
+          // untouched and this is a claim about obligation 1 alone.
+          const cookie = request.headers.get('cookie') ?? '';
+          const presented = token === FAKE_TOKEN || cookie.includes(FAKE_TOKEN);
+          return presented ? { id: 'sess_abc', organizationId: 'fake-org' } : null;
+        },
+      }),
+    fails: ['obligation/flatId'],
+    says: /resolved to a different user than the one this token belongs to/,
+  },
+  {
+    label: 'the cookie and the bearer token authenticate two different people',
+    provider: () =>
+      brokenFake({
+        async authenticateToken(token: string, request: Request) {
+          if (token === FAKE_TOKEN) return { id: 'fake-user', organizationId: 'fake-org' };
+          if (token !== '') return null;
+          const cookie = request.headers.get('cookie') ?? '';
+          // Two verification paths that have drifted, which is how they always
+          // drift: one of them was written later, for the browser.
+          return cookie.includes(FAKE_TOKEN) ? { id: 'somebody-else', organizationId: 'fake-org' } : null;
+        },
+      }),
+    fails: ['obligation/cookieAuth'],
+    says: /The cookie authenticated a different user than the bearer token did/,
+  },
+  {
+    label: 'a property read on the provider throws, so the descriptor cannot be derived',
+    provider: () => {
+      const provider = brokenFake({});
+      Object.defineProperty(provider, 'signIn', {
+        get() {
+          throw new Error('this getter has side effects');
+        },
+        configurable: true,
+      });
+      return provider;
+    },
+    // Only `contract/descriptor` reports this properly. The other two are gates
+    // that read `signIn` while deciding whether to skip - `requiresBrowserSession`
+    // through `toAuthDescriptor`, and `requiresCredentials` directly - and a gate
+    // throws outside any check body, so it surfaces as a raw error rather than as
+    // this suite's own diagnosis. See the note on the gate in `runChecks`.
+    fails: ['contract/descriptor', 'credentials/sign-up-enabled', 'obligation/cookieAuth'],
+    says: /toAuthDescriptor threw while inspecting this provider/,
+  },
+  {
+    label: 'every token authenticates, including one the provider should not know',
+    provider: () => fullyCapableFake({ token: [FAKE_TOKEN, 'conformance-rejected-token'] }),
+    fails: ['contract/rejects-unknown-token'],
+    says: /accepted a token it should not recognize/,
+  },
+  {
+    label: 'an unknown token throws instead of resolving null',
+    provider: () =>
+      brokenFake({
+        async authenticateToken(token: string) {
+          if (token !== FAKE_TOKEN) throw new Error('jwt malformed');
+          return { id: 'fake-user', organizationId: 'fake-org' };
+        },
+      }),
+    // The cookie path goes through the same method, so obligation 2 sees the
+    // throw as well. That is honest rather than collateral: this provider really
+    // does reject a browser navigation.
+    fails: ['contract/rejects-unknown-token', 'obligation/cookieAuth'],
+    says: /threw for an unknown token instead of resolving null/,
+  },
+  {
+    label: 'an empty token authenticates, so every anonymous request is somebody',
+    provider: () =>
+      brokenFake({
+        async authenticateToken() {
+          return { id: 'fake-user', organizationId: 'fake-org' };
+        },
+      }),
+    fails: ['contract/rejects-unknown-token', 'contract/rejects-anonymous-request'],
+    about: 'contract/rejects-anonymous-request',
+    says: /authenticated a request carrying no credentials at all/,
+  },
+  {
+    label: 'authorizeUser answers with an un-awaited Promise',
+    provider: () => brokenFake({ authorizeUser: () => Promise.resolve as unknown as boolean }),
+    fails: ['contract/authorize-user'],
+    says: /answered with something other than a boolean/,
+  },
+  {
+    label: 'authorizeUser throws for a payload its own authenticateToken produced',
+    provider: () =>
+      brokenFake({
+        authorizeUser: () => {
+          throw new Error('policy engine unreachable');
+        },
+      }),
+    fails: ['contract/authorize-user'],
+    says: /threw for a payload its own authenticateToken produced/,
+  },
+  {
+    label: 'mapUserToResourceId names a different user than the identity does',
+    provider: () => brokenFake({ mapUserToResourceId: () => 'some-other-key' }),
+    fails: ['contract/map-user-to-resource-id'],
+    says: /disagree about who this payload is/,
+  },
+  {
+    label: 'getLoginUrl throws for a state in this package’s format',
+    provider: () =>
+      brokenFake({
+        getLoginUrl: () => {
+          throw new Error('state must be a UUID');
+        },
+      }),
+    fails: ['obligation/stateCodec/login-url'],
+    says: /getLoginUrl threw for a state in this package/,
+  },
+  {
+    label: 'getLoginUrl returns a path rather than an absolute URL',
+    provider: () => brokenFake({ getLoginUrl: () => '/authorize?state=x' }),
+    fails: ['obligation/stateCodec/login-url'],
+    says: /did not return an absolute URL/,
+  },
+  {
+    label: 'the authorization URL carries no state at all',
+    provider: () => brokenFake({ getLoginUrl: () => 'https://fake-idp.test/authorize?redirect_uri=x' }),
+    fails: ['obligation/stateCodec/login-url'],
+    says: /no `state` query parameter, so nothing comes back on the callback/,
+  },
+  {
+    label: 'ensureOrganization throws instead of resolving an organization',
+    provider: () =>
+      brokenFake({
+        async ensureOrganization() {
+          throw new Error('organization directory unavailable');
+        },
+      }),
+    fails: ['obligation/organizationId/deterministic'],
+    says: /ensureOrganization threw instead of resolving an organization id/,
+  },
+  {
+    label: 'ensureOrganization mints a fresh organization on every call',
+    provider: () => {
+      let issued = 0;
+      return brokenFake({
+        async ensureOrganization() {
+          issued += 1;
+          return `org_${issued}`;
+        },
+      });
+    },
+    fails: ['obligation/organizationId/deterministic'],
+    says: /not deterministic: two calls for one user gave two organizations/,
+  },
+  {
+    label: 'getLoginButtonConfig returns a control with no label on it',
+    provider: () => brokenFake({ getLoginButtonConfig: () => ({ provider: 'fake', text: '' }) }),
+    fails: ['sso/login-button'],
+    says: /config\.text is "", expected a non-empty string/,
+  },
+  {
+    label: 'getLoginButtonConfig names no provider',
+    provider: () => brokenFake({ getLoginButtonConfig: () => ({ text: 'Sign in' }) }),
+    fails: ['sso/login-button'],
+    says: /config\.provider is undefined, expected a non-empty string/,
+  },
+  {
+    label: 'createSession throws, so a successful sign-in has nowhere to go',
+    provider: () =>
+      brokenFake({
+        async createSession() {
+          throw new Error('session store not configured');
+        },
+      }),
+    fails: ['sessions/round-trip'],
+    says: /createSession threw/,
+  },
+  {
+    label: 'getLoginButtonConfig throws, so the sign-in screen is blank',
+    provider: () =>
+      brokenFake({
+        getLoginButtonConfig: () => {
+          throw new Error('no branding configured');
+        },
+      }),
+    fails: ['sso/login-button'],
+    says: /getLoginButtonConfig threw/,
+  },
+  {
+    label: 'getLogoutUrl answers a relative path rather than an absolute URL',
+    provider: () => brokenFake({ getLogoutUrl: () => '/logout' }),
+    fails: ['sso/logout-url'],
+    says: /answered something that is not an absolute URL/,
+  },
+  {
+    label: 'getLogoutUrl throws instead of answering null',
+    provider: () =>
+      brokenFake({
+        getLogoutUrl: () => {
+          throw new Error('no session to end');
+        },
+      }),
+    fails: ['sso/logout-url'],
+    says: /getLogoutUrl threw/,
+  },
+  {
+    // Not the async case, which this check cannot currently see: `settle` awaits
+    // the return value, so an `async isSignUpEnabled()` arrives as the boolean it
+    // resolves to and the check passes. That is the one shape the check's own
+    // message says it exists for, and it is a defect in `src/conformance/index.ts`
+    // rather than a gap in this file - see the standing note below this table.
+    label: 'isSignUpEnabled answers a truthy string rather than a boolean',
+    provider: () => brokenFake({ isSignUpEnabled: () => 'yes' }),
+    fails: ['credentials/sign-up-enabled'],
+    says: /did not answer a literal boolean/,
+  },
+  {
+    label: 'createSession returns a session with no id',
+    provider: () => brokenFake({ createSession: async () => ({ userId: 'fake-user' }) }),
+    fails: ['sessions/round-trip'],
+    says: /createSession returned something with no session id/,
+  },
+  {
+    label: 'createSession files the session under a different user',
+    provider: () =>
+      brokenFake({ createSession: async () => ({ id: 'sess-1', userId: 'somebody-else', metadata: undefined }) }),
+    fails: ['sessions/round-trip'],
+    says: /returned a session belonging to a different user/,
+  },
+  {
+    label: 'a session that was just created does not validate',
+    provider: () => brokenFake({ validateSession: async () => null }),
+    fails: ['sessions/round-trip'],
+    says: /rejected a session this provider had just created/,
+  },
+  {
+    label: 'destroySession does nothing, so "sign out everywhere" is a lie',
+    provider: () => brokenFake({ destroySession: async () => {} }),
+    fails: ['sessions/round-trip'],
+    says: /A destroyed session still validates/,
+  },
+  {
+    label: 'handleAuthRequest answers something that is not a Response',
+    provider: () => brokenFake({ handleAuthRequest: async () => ({ status: 404 }) }),
+    fails: ['routes/answers-a-response'],
+    says: /resolved to something that is not a Response/,
+  },
+  {
+    label: 'handleAuthRequest throws for a route it does not serve',
+    provider: () =>
+      brokenFake({
+        handleAuthRequest: async () => {
+          throw new Error('unknown route');
+        },
+      }),
+    fails: ['routes/answers-a-response'],
+    says: /threw for a route it does not serve/,
+  },
+  {
+    label: 'init refuses to start over a field the host did not pass',
+    provider: () =>
+      brokenFake({
+        init: async () => {
+          throw new Error('AuthInitContext.database is required');
+        },
+      }),
+    fails: ['init/accepts-host-context'],
+    says: /init threw for a host context carrying only a public URL and allowed origins/,
+  },
+];
+
+describe.each(RED_CASES.map(redCase => [redCase.label, redCase] as const))(
+  'a provider where %s',
+  (_label: string, redCase: RedCase) => {
+    it('fails exactly the checks that are about it', async () => {
+      const outcomes = await runChecks(optionsFor(redCase.provider, redCase.options));
+      expect(
+        failures(outcomes)
+          .map(outcome => outcome.check.id)
+          .sort(),
+      ).toEqual([...redCase.fails].sort());
+    });
+
+    it('says what went wrong in terms the provider author can act on', async () => {
+      const outcomes = await runChecks(optionsFor(redCase.provider, redCase.options));
+      const about = redCase.about ?? redCase.fails[0]!;
+      const failed = failures(outcomes).find(outcome => outcome.check.id === about);
+      expect(failed, `${about} did not fail`).toBeDefined();
+      expect(failed!.message).toMatch(redCase.says);
+      // Every failure this suite emits is read by somebody who has never seen
+      // this repository, contract failures included.
+      expect(failed!.message).toContain('OBSERVED');
+      expect(failed!.message).toContain('WHY THIS EXISTS');
+      expect(failed!.message).toContain('HOW TO FIX IT');
+      expect(failed!.message).toContain(CONFORMANCE_DOCS_URL);
+    });
+  },
+);
+
+/**
+ * A standing note, because a reader of the table above will look for it.
+ *
+ * `credentials/sign-up-enabled` cannot fail for an `async isSignUpEnabled()`,
+ * which is the exact shape its own failure text is written about. `settle`
+ * awaits what the method returns, so a Promise resolving to `true` reaches the
+ * check as the boolean `true` and passes. `toAuthDescriptor` meanwhile treats
+ * that provider as sign-up-disabled, because it reads the Promise without
+ * awaiting and anything that is not literally `true` answers `false`. So the two
+ * halves of this package disagree about the same provider, and the half whose job
+ * is to notice is the half that cannot.
+ *
+ * Left as a finding rather than fixed here: the change is one line in
+ * `src/conformance/index.ts`, but it turns a green suite red for any published
+ * provider that has an async check, which is a decision for whoever owns that
+ * file rather than for a test sweep.
+ */
+describe('a provider that cannot be asked anything', () => {
+  /**
+   * `authenticateToken` throws for the token the suite was told it accepts.
+   *
+   * Distinct from the existing "rejected token fixture" case, which resolves
+   * null. A throw takes a different branch and produces different guidance -
+   * "your provider is not offline" rather than "your token is wrong" - and the
+   * checks that need an authenticated payload before they can ask their own
+   * question have to report that one fact rather than their own downstream
+   * confusion.
+   */
+  const throwsOnEverything = () =>
+    brokenFake({
+      async authenticateToken() {
+        throw new Error('getaddrinfo ENOTFOUND idp.test');
+      },
+    });
+
+  it('reports the throw as a fixture problem in every check that needs a payload', async () => {
+    const outcomes = await runChecks(optionsFor(throwsOnEverything));
+    const needAPayload = ['contract/authorize-user', 'contract/map-user-to-resource-id', 'obligation/flatId'];
+    for (const id of needAPayload) {
+      const failed = failures(outcomes).find(outcome => outcome.check.id === id);
+      expect(failed, `${id} did not fail`).toBeDefined();
+      expect(failed!.message).toContain('threw for the token this suite was told the provider accepts');
+    }
+  });
+
+  it('tells the reader the provider is not offline, which is the usual cause', async () => {
+    const outcomes = await runChecks(optionsFor(throwsOnEverything));
+    const failed = failures(outcomes).find(outcome => outcome.check.id === 'contract/authorize-user');
+    expect(failed?.message).toContain('is not offline');
+    expect(failed?.message).toContain('ENOTFOUND');
+  });
+});
+
+describe('a payload the reporter cannot serialize', () => {
+  /**
+   * `show()` renders every OBSERVED line, and its last resort is the branch
+   * nothing reached: a value `JSON.stringify` throws on. A circular payload is
+   * not exotic - an ORM row with a back-reference is one - and a reporter that
+   * threw while rendering a failure would replace "your provider is wrong" with
+   * "the conformance suite crashed".
+   */
+  it('renders a circular payload instead of throwing while reporting', async () => {
+    const outcomes = await runChecks(
+      optionsFor(() =>
+        brokenFake({
+          async authenticateToken() {
+            return circularPayload();
+          },
+        }),
+      ),
+    );
+    const failed = failures(outcomes).find(outcome => outcome.check.id === 'contract/rejects-unknown-token');
+    expect(failed?.message).toContain('[object Object]');
+  });
+});
+
+// ============================================================================
+// The obligations, numbered from one source
+// ============================================================================
+
+describe('the obligation roster', () => {
+  it('counts the obligations rather than restating how many there are', () => {
+    expect(AUTH_OBLIGATION_COUNT).toBe(AUTH_OBLIGATIONS.length);
+    // The number a provider author reads in "obligation 2 of 4". A literal here
+    // would agree with a stale count; this pins that the two come from the same
+    // array, which is the property that matters when a fifth is added.
+    expect(AUTH_OBLIGATION_COUNT).toBeGreaterThan(0);
+  });
+
+  it('gives each obligation guidance that is about that obligation', () => {
+    // The copy-paste this catches: guidance for `stateCodec` carrying
+    // `obligation: 'cookieAuth'`. Nothing else compares the key with the field,
+    // and the failure it produces - a message that names the wrong obligation and
+    // explains the wrong problem - looks like a correct message to every
+    // assertion that only checks the sections are present.
+    for (const obligation of AUTH_OBLIGATIONS) {
+      const guidance = AUTH_OBLIGATION_GUIDANCE[obligation];
+      expect(guidance.obligation, `guidance under '${obligation}' names a different obligation`).toBe(obligation);
+      expect(guidance.summary).toBe(AUTH_OBLIGATION_SUMMARY[obligation]);
+      expect(guidance.why.length).toBeGreaterThan(0);
+      expect(guidance.how.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('numbers them 1..n in the order the roster lists them', () => {
+    const ordinals = AUTH_OBLIGATIONS.map(obligation => AUTH_OBLIGATION_GUIDANCE[obligation].ordinal);
+    expect(ordinals).toEqual(AUTH_OBLIGATIONS.map((_obligation, index) => index + 1));
+  });
+
+  it('explains every obligation the roster names, and no more', () => {
+    expect(Object.keys(AUTH_OBLIGATION_GUIDANCE).sort()).toEqual([...AUTH_OBLIGATIONS].sort());
+  });
+});
+
+// ============================================================================
 // The message format
 // ============================================================================
 
@@ -519,4 +1029,25 @@ describeAuthProvider({
   token: FAKE_TOKEN,
   userId: 'fake-user',
   cookieHeader: `${FAKE_COOKIE_NAME}=${FAKE_TOKEN}`,
+});
+
+/**
+ * The same adapter, on the shape that actually skips.
+ *
+ * The registration above proves the adapter registers and runs, and it can prove
+ * nothing about the branch that reports a check as skipped - the fully-capable
+ * fake declares every capability, so that branch never executes. This one does:
+ * a bearer-token validator wrapped for organizations passes every check that
+ * applies to it and skips nine that do not.
+ *
+ * The distinction is the whole reason `describeAuthProvider` calls `ctx.skip`
+ * with a reason rather than quietly passing. A suite where "not applicable" and
+ * "correct" look identical goes green for a provider nobody checked, and this is
+ * the run where a reader can see the difference in the output.
+ */
+describeAuthProvider({
+  name: '@mastra/auth-fake (a bearer-token validator, wrapped for organizations)',
+  createProvider: () => withSyntheticOrganizations(fakeProvider({ user: { organizationId: undefined } })),
+  token: FAKE_TOKEN,
+  userId: 'fake-user',
 });

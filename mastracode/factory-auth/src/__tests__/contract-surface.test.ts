@@ -167,6 +167,57 @@ describe('the contract surface', () => {
     expect(contract.getWebRequest(honoLike)).toBeUndefined();
   });
 
+  it('reads a Hono context request through its raw Request, in preference to header()', () => {
+    // The shape a real host passes, and the branch neither fixture above
+    // reaches: Hono's `c.req` carries both, and `getRequestHeader` prefers
+    // `raw`. `./cookie` and `./testing` both read cookies through this function,
+    // so which branch wins decides whether a browser navigation authenticates.
+    // Nothing pinned it, and the failure it produces in a host - "signed in,
+    // then immediately signed out" - names nothing that would lead anyone here.
+    const raw = new Request('https://example.test/', { headers: { cookie: 'session=from-raw' } });
+    const honoContext = {
+      raw,
+      header: () => 'session=from-header',
+    };
+
+    expect(contract.getRequestHeader(honoContext, 'cookie')).toBe('session=from-raw');
+    expect(contract.getWebRequest(honoContext)).toBe(raw);
+  });
+
+  it('reads a bare { headers } fixture, which is what a test double usually is', () => {
+    // Documented as supported by `readSessionCookie` and by `./testing`'s fakes,
+    // and reached through a third branch again: no `raw`, no `header()`, just a
+    // Headers object. A fixture this simple is what most consumers will write.
+    const bare = { headers: new Headers({ cookie: 'session=from-headers' }) };
+
+    expect(contract.getRequestHeader(bare as never, 'cookie')).toBe('session=from-headers');
+    // Not a web Request and carrying no `raw`, so there is no Request to hand back.
+    expect(contract.getWebRequest(bare as never)).toBeUndefined();
+  });
+
+  it('exposes a base class that declares no optional capability of its own', () => {
+    // `toAuthDescriptor` reports `kind: 'none'` for a provider that extends this
+    // and adds nothing, and every Factory sign-in screen renders from that. The
+    // class comes from `@mastra/core/server`, so a member added to it there -
+    // a `getLoginUrl` stub, say - would change what every provider in the
+    // ecosystem advertises without a line of this package changing. This is the
+    // assertion that would notice.
+    class BareProvider extends contract.MastraAuthProvider {
+      async authenticateToken(): Promise<null> {
+        return null;
+      }
+      async authorizeUser(): Promise<boolean> {
+        return true;
+      }
+    }
+
+    const provider = new BareProvider();
+    expect(typeof provider.authenticateToken).toBe('function');
+    for (const guard of GUARD_NAMES) {
+      expect(contract[guard](provider as never), `a bare subclass must not satisfy ${guard}`).toBe(false);
+    }
+  });
+
   it('exposes exactly the expected runtime values and no more', () => {
     // An accidental `export *` would show up here rather than in a review.
     expect(Object.keys(contract).sort()).toEqual(EXPECTED_VALUE_EXPORTS);

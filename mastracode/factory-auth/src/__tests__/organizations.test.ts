@@ -437,6 +437,103 @@ describe('withSyntheticOrganizations: capability preservation', () => {
       (wrapped as { ensureOrganization: unknown }).ensureOrganization = async () => 'hijacked';
     }).toThrow(TypeError);
   });
+
+  it('refuses to have them redefined or deleted either, which is the same hijack by another verb', () => {
+    // `set` is one of three ways to replace a property, and pinning only that one
+    // leaves two doors open: `Object.defineProperty` and `delete` both reach a
+    // different proxy trap. A wrapper that refused assignment and allowed
+    // redefinition would let a caller install their own `isOrganizationAdmin`
+    // and be believed by everything downstream, and a wrapper that allowed
+    // deletion would silently drop the capability the wrapper exists to add -
+    // `isOrganizationsProvider` would start answering false on a provider a host
+    // had already been told has organizations.
+    const wrapped = withSyntheticOrganizations(provider());
+
+    expect(() => Object.defineProperty(wrapped, 'ensureOrganization', { value: async () => 'hijacked' })).toThrow(
+      TypeError,
+    );
+    expect(() => {
+      delete (wrapped as { isOrganizationAdmin?: unknown }).isOrganizationAdmin;
+    }).toThrow(TypeError);
+
+    expect(isOrganizationsProvider(wrapped)).toBe(true);
+  });
+
+  it('forwards defineProperty and delete for every other name', () => {
+    // The other half of the trap: the wrapper owns two names, not the object. A
+    // trap that refused everything would make a wrapped provider read-only, which
+    // is a behaviour change no host asked for.
+    const bare = provider();
+    const wrapped = withSyntheticOrganizations(bare);
+
+    Object.defineProperty(wrapped, 'issuer', { value: 'https://idp.test', configurable: true, enumerable: true });
+    expect((bare as { issuer?: string }).issuer).toBe('https://idp.test');
+
+    delete (wrapped as { name?: string }).name;
+    expect('name' in bare).toBe(false);
+  });
+
+  it('answers `in` from the provider for a name it does not own', () => {
+    const wrapped = withSyntheticOrganizations(provider(sso));
+
+    // The two the wrapper adds.
+    expect('ensureOrganization' in wrapped).toBe(true);
+    expect('isOrganizationAdmin' in wrapped).toBe(true);
+    // One the provider has.
+    expect('getLoginUrl' in wrapped).toBe(true);
+    // One nobody has. A `has` trap that answered true for everything would make
+    // `'signIn' in provider` - a shape check a host may well write - report a
+    // credentials sign-in that does not exist.
+    expect('signIn' in wrapped).toBe(false);
+  });
+});
+
+/**
+ * A provider that cannot grow new properties.
+ *
+ * `Object.preventExtensions` is not exotic - it is what a defensive provider
+ * does after wiring itself up - and it puts the proxy under invariants that
+ * would otherwise throw. A proxy may not report a property that a non-extensible
+ * target does not have, so `in`, `Object.keys` and `getOwnPropertyDescriptor`
+ * have to stop advertising the two members it adds. `get` is under no such
+ * invariant for a property the target does not define, so the members still
+ * work, and the structural guards - which ask `typeof provider.x === 'function'`,
+ * a read - still see them.
+ *
+ * Every one of those branches existed with no test behind it. Removing the
+ * extensibility checks turns an ordinary `Object.keys(wrapped)` into a
+ * TypeError, from inside a proxy, in a stack that names nothing useful.
+ */
+describe('withSyntheticOrganizations: a non-extensible provider', () => {
+  const sealed = () => Object.preventExtensions(provider(sso));
+
+  it('wraps without throwing, and the two members still work', async () => {
+    const wrapped = withSyntheticOrganizations(sealed());
+    await expect(wrapped.ensureOrganization('8f21ac')).resolves.toBe('user:8f21ac');
+    await expect(wrapped.isOrganizationAdmin('user:8f21ac', '8f21ac')).resolves.toBe(true);
+  });
+
+  it('is still an organizations provider, because the guards read rather than enumerate', () => {
+    const wrapped = withSyntheticOrganizations(sealed());
+    expect(isOrganizationsProvider(wrapped)).toBe(true);
+    expect(isSSOProvider(wrapped)).toBe(true);
+    expect(toAuthDescriptor(wrapped).features.organizations).toBe(true);
+  });
+
+  it('stops advertising the two members rather than breaking reflection', () => {
+    const wrapped = withSyntheticOrganizations(sealed());
+
+    // Each of these would be a TypeError if the proxy claimed a property the
+    // non-extensible target does not have.
+    expect(() => Object.keys(wrapped)).not.toThrow();
+    expect(Object.keys(wrapped)).not.toContain('ensureOrganization');
+    expect('ensureOrganization' in wrapped).toBe(false);
+    expect(Object.getOwnPropertyDescriptor(wrapped, 'ensureOrganization')).toBeUndefined();
+
+    // Names the provider really has are reported as usual.
+    expect(Object.keys(wrapped)).toContain('getLoginUrl');
+    expect('getLoginUrl' in wrapped).toBe(true);
+  });
 });
 
 /**
@@ -519,6 +616,28 @@ describe('withSyntheticOrganizations: wrapping edge cases', () => {
     const twice = withSyntheticOrganizations(withSyntheticOrganizations(provider(organizations)));
     await expect(twice.ensureOrganization('8f21ac')).resolves.toBe('org_01H8XYZ');
     expect(organizations.ensureOrganization).toHaveBeenCalledTimes(1);
+  });
+
+  it('hands back a pinned method unbound rather than throwing a proxy invariant', () => {
+    // A method pinned as non-writable AND non-configurable may not be reported by
+    // a proxy as any other value, and a bound function is another value. So the
+    // wrapper returns it as it found it. That is a real trade, not a formality:
+    // reading `wrapped.authenticateToken` would otherwise throw a TypeError about
+    // proxy invariants from a stack that names no file anyone would look in.
+    //
+    // The cost is that `this` is no longer set for a detached call of that one
+    // method, which is why the wrapper binds everything it is allowed to.
+    const bare = provider();
+    const authenticateToken = async () => ({ id: '8f21ac' });
+    Object.defineProperty(bare, 'authenticateToken', {
+      value: authenticateToken,
+      writable: false,
+      configurable: false,
+    });
+
+    const wrapped = withSyntheticOrganizations(bare);
+    expect(wrapped.authenticateToken).toBe(authenticateToken);
+    expect(isOrganizationsProvider(wrapped)).toBe(true);
   });
 
   // A frozen provider cannot be wrapped correctly by anything: a proxy may not
