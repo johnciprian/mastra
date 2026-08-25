@@ -66,7 +66,16 @@ if (!fs.existsSync(spaPath)) {
 }
 
 // 4. Web Factory skills
-for (const skillName of ['configure-factory-rules', 'factory-plan', 'factory-review', 'factory-triage']) {
+// Must match FACTORY_SKILL_NAMES in mastracode/factory/src/workspace.ts. A skill
+// missing here ships without ever failing the deploy gate.
+for (const skillName of [
+  'configure-factory-rules',
+  'factory-complete-issue',
+  'factory-plan',
+  'factory-rereview',
+  'factory-review',
+  'factory-triage',
+]) {
   const relativeSkillPath = path.join('factory-skills', skillName, 'SKILL.md');
   const skillPath = path.join(outputDir, relativeSkillPath);
   if (!fs.existsSync(skillPath)) {
