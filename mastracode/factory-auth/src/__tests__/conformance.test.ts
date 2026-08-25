@@ -41,6 +41,7 @@
  *    all four sections and a documentation URL.
  */
 import { describe, expect, it } from 'vitest';
+import { toAuthDescriptor } from '../capabilities.js';
 import {
   authConformanceChecks,
   describeAuthProvider,
@@ -90,13 +91,19 @@ async function runChecks(options: AuthProviderConformanceOptions): Promise<reado
     try {
       reason = check.skipReason(provider);
     } catch (error) {
-      // A gate that throws is a red `it` in the adapter, because
-      // `describeAuthProvider` calls `skipReason` inside the test body with
-      // nothing around it. Recording it as a failure is what the reader sees.
-      // `requiresBrowserSession` is the gate that can do this: it calls
-      // `toAuthDescriptor`, which is documented as never throwing but is only as
-      // inert as the provider's property reads are.
-      outcomes.push({ status: 'failed', check, message: error instanceof Error ? error.message : String(error) });
+      // Mirrors `describeAuthProvider`, which catches a throwing gate and skips
+      // with a pointer at `contract/descriptor` rather than surfacing a raw
+      // error from whichever gate happened to touch the broken property first.
+      // If this branch is ever reached, the adapter and the real runner have
+      // drifted - the runner should have caught it - so it is recorded as a
+      // failure that names itself.
+      outcomes.push({
+        status: 'failed',
+        check,
+        message: `the gate threw and describeAuthProvider did not catch it: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      });
       continue;
     }
     if (reason !== null) {
@@ -592,12 +599,13 @@ const RED_CASES: readonly RedCase[] = [
       });
       return provider;
     },
-    // Only `contract/descriptor` reports this properly. The other two are gates
-    // that read `signIn` while deciding whether to skip - `requiresBrowserSession`
-    // through `toAuthDescriptor`, and `requiresCredentials` directly - and a gate
-    // throws outside any check body, so it surfaces as a raw error rather than as
-    // this suite's own diagnosis. See the note on the gate in `runChecks`.
-    fails: ['contract/descriptor', 'credentials/sign-up-enabled', 'obligation/cookieAuth'],
+    // `contract/descriptor` is the only check that reports this, and that is now
+    // by design. The two gates that read `signIn` while deciding whether to skip
+    // - `requiresBrowserSession` through `toAuthDescriptor`, and
+    // `requiresCredentials` directly - used to throw outside any check body and
+    // surface a raw error, so one broken getter produced three failures, two of
+    // which named the wrong thing. They skip and point here instead.
+    fails: ['contract/descriptor'],
     says: /toAuthDescriptor threw while inspecting this provider/,
   },
   {
@@ -756,13 +764,23 @@ const RED_CASES: readonly RedCase[] = [
     says: /getLogoutUrl threw/,
   },
   {
-    // Not the async case, which this check cannot currently see: `settle` awaits
-    // the return value, so an `async isSignUpEnabled()` arrives as the boolean it
-    // resolves to and the check passes. That is the one shape the check's own
-    // message says it exists for, and it is a defect in `src/conformance/index.ts`
-    // rather than a gap in this file - see the standing note below this table.
     label: 'isSignUpEnabled answers a truthy string rather than a boolean',
     provider: () => brokenFake({ isSignUpEnabled: () => 'yes' }),
+    fails: ['credentials/sign-up-enabled'],
+    says: /did not answer a literal boolean/,
+  },
+  {
+    // The shape the check's own failure text is written about, and the one it
+    // used to be blind to: `settle` awaited the return value, so a Promise
+    // resolving to `true` arrived as the boolean `true` and passed.
+    label: 'isSignUpEnabled is async, so it answers a Promise rather than a boolean',
+    provider: () => brokenFake({ isSignUpEnabled: async () => true }),
+    fails: ['credentials/sign-up-enabled'],
+    says: /did not answer a literal boolean/,
+  },
+  {
+    label: 'isSignUpEnabled answers a Promise that resolves false',
+    provider: () => brokenFake({ isSignUpEnabled: async () => false }),
     fails: ['credentials/sign-up-enabled'],
     says: /did not answer a literal boolean/,
   },
@@ -850,22 +868,106 @@ describe.each(RED_CASES.map(redCase => [redCase.label, redCase] as const))(
 );
 
 /**
- * A standing note, because a reader of the table above will look for it.
+ * The two halves of this package have to agree about the same provider, and
+ * these are the tests that say so.
  *
- * `credentials/sign-up-enabled` cannot fail for an `async isSignUpEnabled()`,
- * which is the exact shape its own failure text is written about. `settle`
- * awaits what the method returns, so a Promise resolving to `true` reaches the
- * check as the boolean `true` and passes. `toAuthDescriptor` meanwhile treats
- * that provider as sign-up-disabled, because it reads the Promise without
- * awaiting and anything that is not literally `true` answers `false`. So the two
- * halves of this package disagree about the same provider, and the half whose job
- * is to notice is the half that cannot.
+ * `credentials/sign-up-enabled` and `toAuthDescriptor` both read
+ * `isSignUpEnabled`, and for a while they disagreed: the check awaited what the
+ * method returned, so an `async isSignUpEnabled()` reached it as the boolean it
+ * resolved to and passed, while the descriptor read the un-awaited Promise and
+ * reported the same provider as sign-up-disabled. The half whose job it is to
+ * notice was the half that could not.
  *
- * Left as a finding rather than fixed here: the change is one line in
- * `src/conformance/index.ts`, but it turns a green suite red for any published
- * provider that has an async check, which is a decision for whoever owns that
- * file rather than for a test sweep.
+ * Both now judge the returned value without awaiting it, so a provider the suite
+ * passes is exactly a provider the descriptor reads correctly. That is the
+ * property worth protecting, so it is asserted directly rather than left to the
+ * two tables to imply.
  */
+describe('the suite and the descriptor agree about isSignUpEnabled', () => {
+  it.each([
+    ['a literal true', () => true, true],
+    ['a literal false', () => false, false],
+    ['an absent method', undefined, true],
+  ])('%s: both halves agree, and the check passes', async (_label, isSignUpEnabled, expected) => {
+    const make = () => brokenFake(isSignUpEnabled === undefined ? {} : { isSignUpEnabled });
+    expect(toAuthDescriptor(make()).signIn.signUpEnabled).toBe(expected);
+    const outcomes = await runChecks(optionsFor(make));
+    const outcome = outcomes.find(candidate => candidate.check.id === 'credentials/sign-up-enabled');
+    expect(outcome?.status, JSON.stringify(outcome)).not.toBe('failed');
+  });
+
+  it.each([
+    ['an async method', async () => true],
+    ['a truthy string', () => 'yes'],
+    ['a truthy number', () => 1],
+  ])('%s: the descriptor says false, and the check says so out loud', async (_label, isSignUpEnabled) => {
+    // The descriptor's answer is the safe one, but on its own it is silent: the
+    // provider author sees a sign-up link quietly missing and nothing else. The
+    // check is what turns that into a sentence they can act on.
+    const make = () => brokenFake({ isSignUpEnabled } as never);
+    expect(toAuthDescriptor(make()).signIn.signUpEnabled).toBe(false);
+    const outcomes = await runChecks(optionsFor(make));
+    const failed = failures(outcomes).find(outcome => outcome.check.id === 'credentials/sign-up-enabled');
+    expect(failed, 'the check did not fail').toBeDefined();
+    expect(failed!.message).toMatch(/did not answer a literal boolean/);
+  });
+
+  it('does not leave a rejected Promise unhandled while reporting one', async () => {
+    // The check reports the Promise rather than awaiting it, so a Promise that
+    // rejects later would otherwise be an unhandled rejection that fails an
+    // unrelated test in the same run.
+    const make = () => brokenFake({ isSignUpEnabled: () => Promise.reject(new Error('lookup failed')) } as never);
+    const outcomes = await runChecks(optionsFor(make));
+    const failed = failures(outcomes).find(outcome => outcome.check.id === 'credentials/sign-up-enabled');
+    expect(failed).toBeDefined();
+    await new Promise(resolve => setTimeout(resolve, 10));
+  });
+});
+
+/**
+ * A gate that cannot read the provider skips and points at the check whose job
+ * it is to report that, rather than throwing a raw error of its own.
+ */
+describe('a provider whose property read throws', () => {
+  const withThrowingGetter = (property: string) => () => {
+    const provider = brokenFake({});
+    Object.defineProperty(provider, property, {
+      get() {
+        throw new Error('this getter has side effects');
+      },
+      configurable: true,
+    });
+    return provider;
+  };
+
+  it('reports it once, from contract/descriptor', async () => {
+    const outcomes = await runChecks(optionsFor(withThrowingGetter('signIn')));
+    const failed = failures(outcomes);
+    expect(failed.map(outcome => outcome.check.id)).toEqual(['contract/descriptor']);
+    expect(failed[0]!.message).toMatch(/toAuthDescriptor threw while inspecting this provider/);
+  });
+
+  it.each([
+    ['obligation/cookieAuth', 'signIn'],
+    ['credentials/sign-up-enabled', 'signIn'],
+  ])('skips %s with a pointer rather than throwing from its gate', async (id, property) => {
+    const outcomes = await runChecks(optionsFor(withThrowingGetter(property)));
+    const outcome = outcomes.find(candidate => candidate.check.id === id);
+    expect(outcome?.status, JSON.stringify(outcome)).toBe('skipped');
+    expect(outcome!.status === 'skipped' && outcome.reason).toMatch(/could not tell whether it applies/);
+    expect(outcome!.status === 'skipped' && outcome.reason).toMatch(/contract\/descriptor/);
+  });
+
+  it('covers a gate that inspects an optional method inline, not just the two named ones', async () => {
+    // `mapUserToResourceId`, `getLogoutUrl` and `isSignUpEnabled` are read by
+    // inline gates rather than by a named function, which is why the backstop
+    // lives in the runner as well as in those two gates.
+    const outcomes = await runChecks(optionsFor(withThrowingGetter('mapUserToResourceId')));
+    const outcome = outcomes.find(candidate => candidate.check.id === 'contract/map-user-to-resource-id');
+    expect(outcome?.status, JSON.stringify(outcome)).toBe('skipped');
+    expect(outcome!.status === 'skipped' && outcome.reason).toMatch(/could not tell whether it applies/);
+  });
+});
 describe('a provider that cannot be asked anything', () => {
   /**
    * `authenticateToken` throws for the token the suite was told it accepts.

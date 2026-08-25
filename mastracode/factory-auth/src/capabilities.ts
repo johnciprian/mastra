@@ -349,18 +349,39 @@ export function toAuthDescriptor(
  * accounts. See {@link toAuthDescriptor} for why a throw answers `false` and an
  * absent method answers `true`.
  *
- * Anything that is not literally `true` or absent answers `false`, and that
- * strictness is the point rather than defensiveness. `isSignUpEnabled` is
- * declared synchronous, but nothing stops a provider writing `async
- * isSignUpEnabled()`, and an `async` method returns a Promise - which is truthy.
- * A loose check would send `signUpEnabled: true` to the SPA for a deployment
- * that had switched sign-up off, and the SPA would render a sign-up link on it.
- * Nothing would look broken to anyone, which is the failure this field's whole
- * polarity discussion is about.
+ * Three answers, and the middle one is the easy thing to get wrong:
+ *
+ * - `true` for a literal `true`.
+ * - `true` for `null` and `undefined` alike, which is what an absent method and
+ *   a method that answers nothing both look like. Neither is a provider saying
+ *   "sign-up is off"; a provider that means that returns `false`. The contract's
+ *   documented default when nobody says otherwise is that sign-up is on.
+ * - `false` for everything else, including a throw.
+ *
+ * That last line is the strict one, and the strictness is the point rather than
+ * defensiveness. `isSignUpEnabled` is declared synchronous, but nothing stops a
+ * provider writing `async isSignUpEnabled()`, and an `async` method returns a
+ * Promise - which is truthy. A loose check would send `signUpEnabled: true` to
+ * the SPA for a deployment that had switched sign-up off, and the SPA would
+ * render a sign-up link on it. Nothing would look broken to anyone, which is the
+ * failure this field's whole polarity discussion is about.
+ *
+ * The `credentials/sign-up-enabled` conformance check fails a provider whose
+ * method returns anything but a literal boolean, so a provider that reaches the
+ * third case here is one the suite has already told its author about.
  */
 function readSignUpEnabled(provider: { isSignUpEnabled?: () => boolean }): boolean {
   try {
-    const enabled = provider.isSignUpEnabled?.();
+    const enabled: unknown = provider.isSignUpEnabled?.();
+    // A Promise is about to be judged `false`, not awaited. Attach a sink first:
+    // an `async isSignUpEnabled()` that rejects would otherwise leave an
+    // unhandled rejection behind, and Node makes those fatal. This function is
+    // documented as never throwing, and taking the process down a tick later
+    // would be a worse version of throwing.
+    if (isThenable(enabled)) {
+      enabled.then(NOOP, NOOP);
+      return false;
+    }
     // `== null` covers both an absent method and one that returned `undefined`:
     // the contract's documented default is "sign-up is on unless you say
     // otherwise". Everything else has to be exactly `true`.
@@ -368,4 +389,14 @@ function readSignUpEnabled(provider: { isSignUpEnabled?: () => boolean }): boole
   } catch {
     return false;
   }
+}
+
+const NOOP = (): void => {};
+
+/** Whether a value is Promise-like, without awaiting it. */
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    (typeof value === 'object' && value !== null && typeof (value as PromiseLike<unknown>).then === 'function') ||
+    (typeof value === 'function' && typeof (value as unknown as PromiseLike<unknown>).then === 'function')
+  );
 }

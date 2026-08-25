@@ -458,6 +458,16 @@ function requestWith(fixtures: Fixtures, headers: Record<string, string> = {}): 
 /** What a call did: resolved with a value, or rejected with an error. */
 type Outcome<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown };
 
+const NOOP = (): void => {};
+
+/** Whether a value is Promise-like, without awaiting it. */
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    (typeof value === 'object' && value !== null && typeof (value as PromiseLike<unknown>).then === 'function') ||
+    (typeof value === 'function' && typeof (value as unknown as PromiseLike<unknown>).then === 'function')
+  );
+}
+
 async function settle<T>(body: () => Promise<T> | T): Promise<Outcome<T>> {
   try {
     return { ok: true, value: await body() };
@@ -568,8 +578,35 @@ function requiresSSO(provider: IMastraAuthProvider): string | null {
         'URL and no OAuth `state` to agree about. Implement ISSOProvider and this check applies.';
 }
 
+/**
+ * The reason a gate gives up, when reading the provider is what broke.
+ *
+ * A gate runs before the check body, with nothing around it, so a provider whose
+ * property read throws - a getter with side effects is the realistic case - used
+ * to surface a raw `Error` from the gate instead of a diagnosis. Two checks did
+ * that, and neither of them is the check whose job it is to report it:
+ * `contract/descriptor` exists for exactly this and says what to do about it.
+ *
+ * So a gate that cannot decide skips and points there. Skipping is honest -
+ * whether the check applies is genuinely unknown - and it leaves one clear
+ * failure in the run rather than three, two of which name the wrong thing.
+ */
+function unreadable(what: string, error: unknown): string {
+  return (
+    `This check could not tell whether it applies: reading ${what} on the provider threw ` +
+    `(${show(error)}). A property read is not supposed to have side effects. See the ` +
+    '`contract/descriptor` check in this same run, which reports this properly and says how to fix it.'
+  );
+}
+
 function requiresBrowserSession(provider: IMastraAuthProvider): string | null {
-  return toAuthDescriptor(provider).features.logout
+  let logout: boolean;
+  try {
+    logout = toAuthDescriptor(provider).features.logout;
+  } catch (error) {
+    return unreadable('the capability methods that make up the descriptor', error);
+  }
+  return logout
     ? null
     : 'This provider cannot put a session in a browser: no hosted login, no credentials sign-in, no ' +
         'server-side sessions, and no auth routes of its own. A browser never holds a cookie for it, ' +
@@ -578,9 +615,13 @@ function requiresBrowserSession(provider: IMastraAuthProvider): string | null {
 }
 
 function requiresCredentials(provider: IMastraAuthProvider): string | null {
-  return isCredentialsProvider(provider)
-    ? null
-    : 'This provider declares no credentials sign-in (isCredentialsProvider is false).';
+  let credentials: boolean;
+  try {
+    credentials = isCredentialsProvider(provider);
+  } catch (error) {
+    return unreadable('`signIn`', error);
+  }
+  return credentials ? null : 'This provider declares no credentials sign-in (isCredentialsProvider is false).';
 }
 
 function requiresSessions(provider: IMastraAuthProvider): string | null {
@@ -631,6 +672,30 @@ function obligationSection(obligation: AuthObligation): string {
 export function authConformanceChecks(options: AuthProviderConformanceOptions): readonly AuthConformanceCheck[] {
   const fixtures = readFixtures(options);
 
+  return buildChecks(fixtures).map(check => ({
+    ...check,
+    // Every gate gets the backstop, not just the runner.
+    //
+    // A gate runs before the check body with nothing around it, so a provider
+    // whose property read throws - a getter with side effects is the realistic
+    // case - would surface a raw error from whichever gate happened to touch it
+    // first. `requiresBrowserSession` and `requiresCredentials` catch that
+    // themselves and name the read that broke; this covers the gates that
+    // inspect an optional method inline. Either way the run ends with one honest
+    // failure from `contract/descriptor` rather than several naming the wrong
+    // thing. Wrapping here rather than in `describeAuthProvider` means an
+    // adapter that walks these checks itself behaves the same way.
+    skipReason(provider) {
+      try {
+        return check.skipReason(provider);
+      } catch (error) {
+        return unreadable('a capability method', error);
+      }
+    },
+  }));
+}
+
+function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
   return [
     // ------------------------------------------------------------------
     // The base contract
@@ -1275,13 +1340,35 @@ export function authConformanceChecks(options: AuthProviderConformanceOptions): 
       },
       async run(provider) {
         if (!isCredentialsProvider(provider) || provider.isSignUpEnabled === undefined) return;
-        const outcome = await settle(() => provider.isSignUpEnabled?.());
-        if (outcome.ok && typeof outcome.value === 'boolean') return;
+        // Wrapped in an object on purpose, and this is the whole check.
+        //
+        // `settle` awaits what the body returns. Handing it the call directly
+        // meant an `async isSignUpEnabled()` resolving to `true` arrived here as
+        // the boolean `true` and passed - the one shape the failure text below
+        // is written about, and the shape `toAuthDescriptor` independently
+        // treats as sign-up-disabled. The two halves of this package disagreed
+        // about the same provider, and the half whose job is to notice was the
+        // half that could not. The wrapper keeps `await` away from the returned
+        // value so the check can see what the method actually returned.
+        //
+        // `capabilities.ts` `readSignUpEnabled` makes the matching judgement:
+        // `true` only for a literal `true`, everything else `false`. The two
+        // must stay in step, because a provider that passes this check is
+        // exactly a provider the descriptor reads correctly.
+        const outcome = await settle(() => ({ returned: provider.isSignUpEnabled?.() as unknown }));
+        if (outcome.ok) {
+          // A returned Promise is about to be reported as a failure, not
+          // awaited. Attach a sink so a later rejection is not an unhandled one
+          // that fails an unrelated test.
+          const returned = outcome.value.returned;
+          if (isThenable(returned)) returned.then(NOOP, NOOP);
+          if (typeof returned === 'boolean') return;
+        }
         fail(fixtures, {
           headline: 'isSignUpEnabled did not answer a literal boolean.',
           observed: [
             outcome.ok
-              ? `isSignUpEnabled() returned ${show(outcome.value)}.`
+              ? `isSignUpEnabled() returned ${show(outcome.value.returned)}.`
               : `isSignUpEnabled() threw: ${show(outcome.error)}`,
           ],
           why:
@@ -1492,6 +1579,7 @@ export function describeAuthProvider(options: AuthProviderConformanceOptions): v
             // a provider that mutates itself on first use is exercised from a
             // clean start every time.
             const provider = await options.createProvider();
+            // Safe to call unguarded: `authConformanceChecks` wraps every gate.
             const skip = check.skipReason(provider);
             if (skip !== null) {
               ctx.skip(skip);

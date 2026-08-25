@@ -406,4 +406,30 @@ describe('signUpEnabled fails closed', () => {
     const descriptor = toAuthDescriptor(credentialsProvider(() => Promise.resolve(true)));
     expect(typeof descriptor.signIn.signUpEnabled).toBe('boolean');
   });
+
+  it('does not leave a rejected Promise unhandled', async () => {
+    // The descriptor judges a Promise `false` rather than awaiting it, so a
+    // rejecting `async isSignUpEnabled()` would otherwise leave an unhandled
+    // rejection behind - which Node makes fatal. This function is documented as
+    // never throwing, and taking the process down a tick later would be a worse
+    // version of throwing.
+    const descriptor = toAuthDescriptor(credentialsProvider(() => Promise.reject(new Error('lookup failed'))));
+    expect(descriptor.signIn.signUpEnabled).toBe(false);
+    // If the rejection were unhandled, this turn of the loop is where the run
+    // would fail.
+    await new Promise(resolve => setTimeout(resolve, 10));
+  });
+
+  it('does not call a thenable twice while deciding', () => {
+    // The Promise branch returns early, so the value is read once.
+    let calls = 0;
+    const descriptor = toAuthDescriptor(
+      credentialsProvider(() => {
+        calls += 1;
+        return Promise.resolve(true);
+      }),
+    );
+    expect(descriptor.signIn.signUpEnabled).toBe(false);
+    expect(calls).toBe(1);
+  });
 });
