@@ -273,7 +273,21 @@ export interface AuthDescriptorOverrides {
  * that does not implement `isSignUpEnabled` gets `true`, because the contract
  * documents that as the default. A provider whose implementation *throws* gets
  * `false`, because at that point we do not know, and hiding a sign-up link fails
- * closed while showing one fails open.
+ * closed while showing one fails open. A provider that returns anything other
+ * than a boolean - an `async` method returning a Promise is the realistic case -
+ * also gets `false`, for the same reason.
+ *
+ * THE RULE THIS PACKAGE FOLLOWS FOR A MISBEHAVING PROVIDER
+ *
+ * Fail in the direction that is safe for the caller, which is not the same
+ * direction every time and is why this is worth stating once. Here, a provider
+ * that misbehaves gets the restrictive answer, because the output drives what a
+ * UI offers and offering too much is the harm. In `./identity`,
+ * `toAuthIdentity` deliberately does the opposite and lets a provider's throw
+ * propagate, because there the output decides *who someone is*, and swallowing
+ * the error would resolve an authentication failure to a plausible-looking
+ * identity. Same rule, opposite mechanics: never let a broken provider produce
+ * an answer that grants something.
  *
  * `features.logout` asks whether anything exists to sign out of, so it takes a
  * third guard as well: `isAuthHttpHandler` means the provider mounts its own
@@ -334,10 +348,23 @@ export function toAuthDescriptor(
  * Whether the provider that just satisfied `isCredentialsProvider` allows new
  * accounts. See {@link toAuthDescriptor} for why a throw answers `false` and an
  * absent method answers `true`.
+ *
+ * Anything that is not literally `true` or absent answers `false`, and that
+ * strictness is the point rather than defensiveness. `isSignUpEnabled` is
+ * declared synchronous, but nothing stops a provider writing `async
+ * isSignUpEnabled()`, and an `async` method returns a Promise - which is truthy.
+ * A loose check would send `signUpEnabled: true` to the SPA for a deployment
+ * that had switched sign-up off, and the SPA would render a sign-up link on it.
+ * Nothing would look broken to anyone, which is the failure this field's whole
+ * polarity discussion is about.
  */
 function readSignUpEnabled(provider: { isSignUpEnabled?: () => boolean }): boolean {
   try {
-    return provider.isSignUpEnabled?.() ?? true;
+    const enabled = provider.isSignUpEnabled?.();
+    // `== null` covers both an absent method and one that returned `undefined`:
+    // the contract's documented default is "sign-up is on unless you say
+    // otherwise". Everything else has to be exactly `true`.
+    return enabled == null ? true : enabled === true;
   } catch {
     return false;
   }

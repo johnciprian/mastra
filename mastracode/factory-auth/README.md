@@ -94,6 +94,44 @@ The root export holds the pure layer only, so a browser bundle can import it. `.
 re-exported from the root: `./conformance` is the one module that imports vitest, which is why vitest
 is an optional peer dependency.
 
+## Session cookies, and what they do not cover
+
+`./cookie` mints and reads one signed, `HttpOnly` cookie under a name it declares. Two things about
+it are worth knowing before you deploy.
+
+**The cookie name depends on your deployment shape.** In the default configuration the name is
+`__Host-mastra_factory_session`. The `__Host-` prefix makes a browser refuse to store the cookie
+unless it is `Secure`, carries no `Domain`, and has `Path=/`, which means it can only have been set
+by your exact host over HTTPS. That is what stops a page on a sibling subdomain from setting a
+same-named cookie of its own on the shared parent domain and having the browser send both.
+
+Setting `domain`, setting a `path` other than `/`, or setting `secure: false` for local HTTP each
+make the prefix illegal, and those deployments get the plain `mastra_factory_session` instead — along
+with the exposure the prefix removes. Ask `sessionCookieName(site)` rather than hardcoding either.
+
+If the browser does send two cookies with our name that both verify to different values,
+`readSessionCookie` returns `null` rather than choosing between them. Send `clearSessionCookie` when
+you see that: choosing by position would hand the choice to whoever controls the header order.
+
+**Cross-site deployments need their own CSRF defence, and this package does not ship one.** A
+`crossSite: true` deployment gets `SameSite=None`, because `Lax` is not sent on a cross-site request
+at all and the user would appear signed out on every call. `SameSite=None` means the browser attaches
+the cookie to requests your site did not initiate, which is the condition CSRF needs.
+
+Same-site deployments get `SameSite=Lax`, which is a meaningful defence on its own: the cookie is not
+sent on a cross-site `POST`. Cross-site deployments have no such default and must add one. The usual
+choices, in rough order of preference:
+
+- Check the `Origin` header on every state-changing request against an allowlist you configure, and
+  reject the request when it is absent or unrecognised. Cheapest, and enough for most APIs.
+- Require a header a form post cannot set — an `Authorization` bearer token, or a custom header your
+  SPA always sends. A cross-site form cannot add either, and a cross-site `fetch` that tries is
+  stopped by CORS preflight.
+- A double-submit or synchroniser token, if you already have somewhere to keep one.
+
+Do this in the host, not in a provider. Nothing in this package inspects `Origin`, and a future
+version that did would still not know your allowlist.
+
 ## The EE boundary
 
 This package is Apache-2.0. Its module graph must not contain any file under an `ee/` directory, at

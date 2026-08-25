@@ -63,6 +63,16 @@ import { randomUUID } from 'node:crypto';
 /**
  * The single significant delimiter, exported so a provider implementing the
  * other half of the contract does not have to hardcode it.
+ *
+ * `|` is not a legal URI character. RFC 3986 puts it outside both `unreserved`
+ * and `reserved`, so a `state` carrying one has to be percent-encoded before it
+ * goes into a query string. Most HTTP clients do that for you - `URLSearchParams`
+ * and `URL.searchParams` both encode it to `%7C`, and a provider's `getLoginUrl`
+ * that builds its URL through either is already correct. A provider that
+ * concatenates the value into a URL string by hand is not, and will send a `|`
+ * an intermediary may reject or rewrite. Encode the value, not this delimiter:
+ * {@link decodeState} reads whatever the provider echoes back, and the callback
+ * layer will have decoded the query string before it reaches you.
  */
 export const OAUTH_STATE_DELIMITER = '|';
 
@@ -102,9 +112,20 @@ export interface DecodedOAuthState {
  * - anything that is not an absolute path, which covers `https://evil.com` and
  *   `javascript:alert(1)` in one rule;
  * - `//evil.com` and `/\evil.com`, which are protocol-relative URLs that a
- *   naive "starts with a slash" check waves straight through;
- * - anything containing a control character, because a `returnTo` normally ends
- *   up in a `Location` header and a raw CR or LF there is response splitting.
+ *   naive "starts with a slash" check waves straight through.
+ *
+ * Then percent-encodes every character outside printable ASCII, which subsumes
+ * the control-character rule and fixes a real crash.
+ *
+ * A `Location` header is a ByteString: every character has to fit in one byte.
+ * `/日本` does not, so handing it to a redirect throws - `TypeError: Cannot
+ * convert argument to a ByteString` under a `Response`, `ERR_INVALID_CHAR` under
+ * `node:http`. Reached through an OAuth callback that anyone can call, that is an
+ * unauthenticated 500, and it also means a legitimate non-ASCII route could never
+ * be returned to. Encoding gives back a path that is both safe to put in a header
+ * and still the right path: a CR becomes the three characters `%0D` rather than a
+ * line break, and `/日本` becomes `/%E6%97%A5%E6%9C%AC`, which the router
+ * decodes to the same route.
  *
  * Deliberately not a URL parser. A parser would have to decide what to do with
  * every exotic-but-valid URL, and this only needs to answer one question: is
@@ -114,9 +135,14 @@ function sanitizeReturnTo(candidate: string | null | undefined): string {
   if (!candidate) return DEFAULT_RETURN_TO;
   if (!candidate.startsWith('/')) return DEFAULT_RETURN_TO;
   if (candidate.startsWith('//') || candidate.startsWith('/\\')) return DEFAULT_RETURN_TO;
-  // eslint-disable-next-line no-control-regex -- matching control characters is the point.
-  if (/[\u0000-\u001f\u007f]/.test(candidate)) return DEFAULT_RETURN_TO;
-  return candidate;
+  try {
+    // `u` so an astral character is one match rather than two lone surrogates.
+    // `encodeURIComponent` throws on a lone surrogate, which is unpaired input
+    // rather than a path, so the whole candidate is discarded.
+    return candidate.replace(/[^\u0020-\u007e]/gu, character => encodeURIComponent(character));
+  } catch {
+    return DEFAULT_RETURN_TO;
+  }
 }
 
 /**
@@ -186,7 +212,13 @@ export function encodeState(returnTo?: string | null, id: string = randomUUID())
  * @returns The id, or `null` when the input is absent or its id half is empty.
  */
 export function parseStateId(raw: string | null | undefined): string | null {
-  if (!raw) return null;
+  // Not just `!raw`. This value comes off a query string, and a query-string
+  // parser is entitled to hand back something other than a string: Express's
+  // `qs` turns `?state=a&state=b` into an array and `?state[x]=y` into an
+  // object. Without this guard an array flows straight through `indexOf` and out
+  // of a function declared to return `string | null`, and a number throws where
+  // the contract says it never does.
+  if (typeof raw !== 'string' || raw.length === 0) return null;
   const delimiter = raw.indexOf(OAUTH_STATE_DELIMITER);
   if (delimiter === -1) return raw;
   if (delimiter === 0) return null;
@@ -208,8 +240,13 @@ export function parseStateId(raw: string | null | undefined): string | null {
  *   value with a malformed percent escape.
  * - `returnTo` is always safe to hand to a redirect: it begins with exactly one
  *   `/`, is never protocol-relative (`//evil.com`, `/\evil.com`), never carries
- *   a scheme, and contains no control characters. When the input does not yield
- *   such a path, it is {@link DEFAULT_RETURN_TO}.
+ *   a scheme, and is printable ASCII throughout, so it can go into a `Location`
+ *   header without throwing. When the input does not yield such a path, it is
+ *   {@link DEFAULT_RETURN_TO}.
+ * - **Hand it to the redirect verbatim. Do not decode it again.** It has already
+ *   been percent-decoded once, and anything still encoded is encoded on purpose:
+ *   a second `decodeURIComponent` would turn `/%2F%2Fevil.com` back into
+ *   `//evil.com` and undo the check above.
  * - A `returnTo` that contains the delimiter round trips through
  *   {@link encodeState} unchanged.
  *
@@ -229,7 +266,10 @@ export function parseStateId(raw: string | null | undefined): string | null {
  */
 export function decodeState(raw: string | null | undefined): DecodedOAuthState {
   const id = parseStateId(raw);
-  if (!raw) return { id, returnTo: DEFAULT_RETURN_TO };
+  // See `parseStateId` for why this is a `typeof` check rather than `!raw`: a
+  // query-string parser can hand back an array or an object, and the totality
+  // promised above has to hold for those too.
+  if (typeof raw !== 'string' || raw.length === 0) return { id, returnTo: DEFAULT_RETURN_TO };
 
   const delimiter = raw.indexOf(OAUTH_STATE_DELIMITER);
   if (delimiter === -1) return { id, returnTo: DEFAULT_RETURN_TO };

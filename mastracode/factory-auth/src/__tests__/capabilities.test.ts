@@ -356,3 +356,54 @@ describe('the descriptor as a whole', () => {
     expect(toAuthDescriptor(exploding).signIn.kind).toBe('both');
   });
 });
+
+describe('signUpEnabled fails closed', () => {
+  // The field drives whether the SPA renders a sign-up link, so a wrong `true`
+  // shows sign-up on a deployment that turned it off, and nothing looks broken
+  // to anyone. `isSignUpEnabled` is declared synchronous, but nothing stops a
+  // provider writing `async isSignUpEnabled()`, and an async method returns a
+  // Promise - which is truthy.
+  const credentialsProvider = (isSignUpEnabled: unknown) => ({ signIn: () => {}, isSignUpEnabled }) as never;
+
+  it('is true when the method is absent, which is the documented default', () => {
+    expect(toAuthDescriptor({ signIn: () => {} } as never).signIn.signUpEnabled).toBe(true);
+  });
+
+  it('is true only for a literal true', () => {
+    expect(toAuthDescriptor(credentialsProvider(() => true)).signIn.signUpEnabled).toBe(true);
+  });
+
+  it.each([
+    ['undefined, same as being absent', () => undefined],
+    ['null, which reads as "I do not implement this" rather than "disabled"', () => null],
+  ])('is true when the method returns %s', (_label, isSignUpEnabled) => {
+    // The absence of an answer is not the same as a wrong answer. A provider
+    // that means "sign-up is off" returns `false`; `null` and `undefined` are
+    // what an optional method that is not really implemented gives back, and the
+    // contract's documented default for that is `true`. Everything else has to
+    // be exactly `true`.
+    expect(toAuthDescriptor(credentialsProvider(isSignUpEnabled)).signIn.signUpEnabled).toBe(true);
+  });
+
+  it.each([
+    ['a resolved Promise, which an async method returns', () => Promise.resolve(true)],
+    ['a pending Promise', () => new Promise(() => {})],
+    ['a truthy string', () => 'yes'],
+    ['a truthy number', () => 1],
+    ['a truthy object', () => ({})],
+    ['false', () => false],
+    [
+      'a throw',
+      () => {
+        throw new Error('provider exploded');
+      },
+    ],
+  ])('is false for %s', (_label, isSignUpEnabled) => {
+    expect(toAuthDescriptor(credentialsProvider(isSignUpEnabled)).signIn.signUpEnabled).toBe(false);
+  });
+
+  it('never lets a Promise leak into the descriptor', () => {
+    const descriptor = toAuthDescriptor(credentialsProvider(() => Promise.resolve(true)));
+    expect(typeof descriptor.signIn.signUpEnabled).toBe('boolean');
+  });
+});
