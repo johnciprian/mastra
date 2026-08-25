@@ -10,9 +10,9 @@ already works.
 This package targets the Mastra Factory. Providers that only gate `/api/*` need `@mastra/core/server`
 and nothing here.
 
-> **Status: scaffold.** The package layout, the exports map, and both halves of the licence boundary
-> are in place. The modules themselves are stubs. Each one names the task that fills it in its file
-> header.
+> **Status: in progress.** The package layout, the exports map, both halves of the licence boundary,
+> and `./contract` are in place. The remaining modules are stubs, and each one names the task that
+> fills it in its file header.
 
 ## What this isn't
 
@@ -60,6 +60,31 @@ Then run the conformance suite. It fails with the name of whichever obligation y
 
 `./capabilities` answers **which** capabilities a provider has. The capability interfaces themselves
 are in `./contract`.
+
+### What `./contract` re-exports
+
+Everything comes from `@mastra/core/server`, and nothing in this package imports that entry point
+anywhere else.
+
+- `MastraAuthProvider` — the base class a provider extends.
+- Seven capability guards: `isSSOProvider`, `isSessionProvider`, `isUserProvider`,
+  `isCredentialsProvider`, `isOrganizationsProvider`, `isAuthHttpHandler`, and `hasAuthInit`. Note
+  the `has` prefix on the last one, and note there is no guard for `IMastraAuthProvider` — implementing
+  the base contract is a precondition, not a capability. All seven are structural, so a plain object
+  with the right methods satisfies them.
+- The types: `IMastraAuthProvider`, `MastraAuthProviderOptions`, `AuthInitContext`, `IAuthHttpHandler`,
+  `IAuthInit`, `ICredentialsProvider`, `IOrganizationsProvider`, `ISessionProvider`, `ISSOProvider`,
+  `IUserProvider`.
+- Framework-neutral request primitives: `getRequestHeader`, `getWebRequest`, and the types
+  `MastraAuthRequest` and `HonoRequestLike`. They come from a core module with zero imports, and they
+  are how `./cookie` reads a `Cookie` header without this package depending on `hono`.
+
+Four symbols on `@mastra/core/server` are permanently off limits here: `MastraAuthConfig`, `ApiRoute`,
+`ApiRouteHandler` and `StudioConfig`. Each is defined in terms of enterprise interfaces, and core rolls
+those declarations into its emitted types, so re-exporting one would copy enterprise declaration text
+into this package's published type surface. `src/__tests__/contract-surface.test.ts` asserts all four
+stay out, of source and of `dist/`. A host application should import them from `@mastra/core/server`
+at the point of use instead.
 
 `./oauth-state` is the OAuth `state` parameter: a nonce plus where to return the user after login. It
 has nothing to do with `FactoryAuthState` in the web app.
