@@ -415,6 +415,32 @@ describe('toAuthIdentity with a provider mapper', () => {
     ).toBeNull();
   });
 
+  it('does not read an array from the mapper as a payload either', () => {
+    // The same Array check the built-in path has, on the path that skips the
+    // built-in path entirely. `typeof [] === 'object'`, so a mapper that returned
+    // a list of candidate identities - a plausible mistake for a provider whose
+    // token names several subjects - would otherwise be read as a keyed object,
+    // and one carrying an `id` property would resolve to a user nobody chose.
+    expect(
+      toAuthIdentity(
+        { sub: 'from_sub' },
+        mapperProvider(() => [] as unknown as null),
+      ),
+    ).toBeNull();
+    expect(
+      toAuthIdentity(
+        { sub: 'from_sub' },
+        mapperProvider(() => [{ id: 'first_of_many' }] as unknown as null),
+      ),
+    ).toBeNull();
+    expect(
+      toAuthIdentity(
+        { sub: 'from_sub' },
+        mapperProvider(() => Object.assign(['x'], { id: 'user_smuggled' }) as unknown as null),
+      ),
+    ).toBeNull();
+  });
+
   it('normalizes what the mapper returns rather than trusting it', () => {
     // A mapper chooses which fields. It does not get to break the invariant the
     // type promises and the conformance suite asserts.

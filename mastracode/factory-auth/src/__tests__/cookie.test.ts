@@ -46,6 +46,23 @@ function honoRequest(cookieHeader: string | undefined): MastraAuthRequest {
 }
 
 /**
+ * A Hono context request as Hono actually builds one: a `raw` web `Request`
+ * alongside the `header()` accessor.
+ *
+ * This is the shape a real host passes, and `getRequestHeader` reads `raw` in
+ * preference to calling `header()`. The bare `header()`-only object above is a
+ * test fixture; this one is production.
+ */
+function honoContextRequest(cookieHeader: string): MastraAuthRequest {
+  return {
+    raw: new Request('https://example.test/', { headers: { cookie: cookieHeader } }),
+    header: () => {
+      throw new Error('header() should not be reached when a raw Request is present');
+    },
+  } as unknown as MastraAuthRequest;
+}
+
+/**
  * The name `mint()` actually writes. The default deployment shape is eligible
  * for the `__Host-` prefix, so a test that hand-built a header around
  * `SESSION_COOKIE_NAME` would be testing a cookie the code no longer mints.
@@ -76,6 +93,16 @@ describe('mint and read', () => {
   it('reads through a Hono-shaped request as well as a web Request', () => {
     const value = cookieValueOf(mint('session-token'));
     expect(readSessionCookie(honoRequest(headerFor(value)), { secret: SECRET, now: NOW })).toBe('session-token');
+  });
+
+  it('reads through a Hono context that carries a raw Request', () => {
+    // The shape a real host passes, and the one neither fixture above models:
+    // Hono's `c.req` has both `raw` and `header()`, and `getRequestHeader` reads
+    // `raw` first. Nothing in this package pinned that branch, so a change to
+    // which one is preferred would have shown up as "signed in, then immediately
+    // signed out" in a host rather than as a red test here.
+    const value = cookieValueOf(mint('session-token'));
+    expect(readSessionCookie(honoContextRequest(headerFor(value)), { secret: SECRET, now: NOW })).toBe('session-token');
   });
 
   it('finds the cookie among others', () => {
@@ -156,6 +183,21 @@ describe('rejects a cookie it did not sign', () => {
     ['unrelated text', 'not-a-cookie-at-all'],
   ])('rejects %s without throwing', (_label, value) => {
     expect(read(value)).toBeNull();
+  });
+
+  it('rejects an expiry it cannot represent exactly, even though the signature verifies', () => {
+    // 10^16 milliseconds is all digits, so it passes the format check, and it is
+    // signed by this module, so it verifies. It is also past
+    // Number.MAX_SAFE_INTEGER, which means `Number(expiresAt)` is a value the
+    // server cannot compare reliably: two different expiries that far out are the
+    // same double. An expiry the server cannot evaluate is not an expiry, and the
+    // safe direction for one is to reject.
+    const value = cookieValueOf(mint('session-token', { maxAgeSeconds: 10_000_000_000_000, now: 0 }));
+    const expiresAt = value.split('.')[2]!;
+    expect(expiresAt).toMatch(/^\d+$/);
+    expect(Number.isSafeInteger(Number(expiresAt))).toBe(false);
+
+    expect(readSessionCookie(webRequest(headerFor(value)), { secret: SECRET, now: NOW })).toBeNull();
   });
 
   it('rejects an expired cookie', () => {
@@ -361,6 +403,23 @@ describe('secret handling', () => {
     expect(() => mintSessionCookie('t', { secret, crossSite: false })).not.toThrow();
   });
 
+  it.each([
+    ['undefined, which is what a missing config key gives you', undefined],
+    ['null', null],
+    ['a number', 12345678901234567890],
+    ['a Buffer, which is a plausible thing to reach for', Buffer.alloc(32)],
+    ['an object', { secret: 'a'.repeat(32) }],
+  ])('refuses a secret that is %s, rather than measuring its bytes', (_label, secret) => {
+    // `Buffer.byteLength` accepts a Buffer and a TypedArray and throws a
+    // TypeError on a number, so without this guard the three cases below split
+    // three ways: a Buffer would be silently accepted and then HMAC'd as a
+    // different key than the string a second instance configured, a number would
+    // crash with a message about byteLength, and undefined would crash too. One
+    // check, one message, naming the option.
+    expect(() => mintSessionCookie('t', { secret: secret as never, crossSite: false })).toThrow(/not a string/);
+    expect(() => readSessionCookie(webRequest('a=b'), { secret: secret as never })).toThrow(/not a string/);
+  });
+
   it('counts bytes rather than characters', () => {
     // `é` is two bytes in UTF-8, so 16 of them is 32 bytes from a string whose
     // `length` is 16. The key an HMAC uses is the bytes, so that is what is
@@ -423,6 +482,39 @@ describe('cookie tossing', () => {
     ['Secure is off for local http', { crossSite: false, secure: false }],
   ])('falls back to the plain name when %s, because the prefix would be illegal', (_label, site) => {
     expect(sessionCookieName(site)).toBe(SESSION_COOKIE_NAME);
+  });
+
+  it('refuses to name a cookie for a deployment shape that cannot exist', () => {
+    // Cross-site plus `secure: false` is not a deployment, it is a contradiction:
+    // every browser drops a SameSite=None cookie that is not Secure, so there is
+    // no name to give one. `mintSessionCookie` already throws for it, and this
+    // pins that asking only for the name throws too. A `sessionCookieName` that
+    // derived `secure` itself rather than going through the same derivation would
+    // answer 'mastra_factory_session' here - a name for a cookie that will never
+    // be stored, handed to whoever wrote the proxy rule or the log filter.
+    expect(() => sessionCookieName({ crossSite: true, secure: false })).toThrow(/SameSite=None without Secure/);
+  });
+
+  it('lets a __Host- cookie that does not verify suppress an unprefixed one that does', () => {
+    // Rule 1 is about the NAME, not about the value: a browser only stores a
+    // __Host- cookie for the exact host over HTTPS, so its presence is proof of
+    // origin and the unprefixed name stops being a candidate at all. That has to
+    // hold when the host-scoped cookie is stale or forged, which is the only case
+    // where the two rules could be confused for one another - "prefer the one
+    // that works" would quietly hand the session back to whoever set the
+    // unprefixed cookie on the parent domain.
+    const staleHostScoped = cookieValueOf(
+      mintSessionCookie('EXPIRED', { secret: SECRET, crossSite: false, now: NOW, maxAgeSeconds: 60 }),
+    );
+    const tossed = cookieValueOf(mint('ATTACKER'));
+    const header = `${SESSION_COOKIE_HOST_NAME}=${staleHostScoped}; ${SESSION_COOKIE_NAME}=${tossed}`;
+
+    // The unprefixed cookie is perfectly valid on its own, which is what makes
+    // this a claim about the rule rather than about verification.
+    expect(readSessionCookie(webRequest(`${SESSION_COOKIE_NAME}=${tossed}`), { secret: SECRET, now: NOW })).toBe(
+      'ATTACKER',
+    );
+    expect(readSessionCookie(webRequest(header), { secret: SECRET, now: NOW + 120_000 })).toBeNull();
   });
 });
 

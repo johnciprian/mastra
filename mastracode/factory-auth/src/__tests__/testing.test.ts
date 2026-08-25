@@ -473,6 +473,34 @@ describe('withCredentials', () => {
     await expect(provider.signIn('a@b.test', 'hunter2', request())).resolves.toBeDefined();
   });
 
+  it('always puts a real token in the cookie, even on a fake that accepts none', async () => {
+    // `token: []` is a fake that authenticates nothing - a legitimate thing to
+    // build when the test is about the rejection path. `signIn` still has to name
+    // a token in the Set-Cookie it hands back, and `fake_session=undefined` is a
+    // cookie that looks valid to a host and reads as the string "undefined" to
+    // everything downstream.
+    const result = await withCredentials(fakeProvider({ token: [] })).signIn('a@b.test', 'fake-password', request());
+
+    expect(result.token).toBe(FAKE_TOKEN);
+    expect(result.cookies?.[0]).toContain(`${FAKE_COOKIE_NAME}=${FAKE_TOKEN}`);
+    expect(result.cookies?.[0]).not.toContain('undefined');
+  });
+
+  it('holds signUp to the same password as signIn, and says which method refused', async () => {
+    // `signUp` had its own copy of the check and no test behind it, so a fake
+    // that accepted any password on the sign-up path would have looked correct.
+    // That matters more than it sounds: a host test asserting "a bad password is
+    // rejected" would pass against a double that never rejects one, and the
+    // assertion would be about nothing.
+    const provider = withCredentials(fakeProvider(), { password: 'hunter2' });
+
+    await expect(provider.signUp('a@b.test', 'wrong', 'A', request())).rejects.toThrow(/rejected signUp/);
+    await expect(provider.signUp('a@b.test', 'wrong', 'A', request())).rejects.toThrow(/password 'wrong'/);
+    await expect(provider.signUp('a@b.test', 'hunter2', 'A', request())).resolves.toMatchObject({
+      user: { email: 'a@b.test', name: 'A' },
+    });
+  });
+
   it('reports sign-up the four ways the descriptor has to handle', async () => {
     expect(toAuthDescriptor(withCredentials(fakeProvider())).signIn.signUpEnabled).toBe(true);
     expect(toAuthDescriptor(withCredentials(fakeProvider(), { signUpEnabled: false })).signIn.signUpEnabled).toBe(
