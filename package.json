@@ -91,7 +91,7 @@
     "lint-staged": "lint-staged",
     "lint": "pnpm turbo --filter \"!./examples/**/*\" --filter \"!./docs/**/*\" --filter \"!./explorations/**/*\" --filter \"!@internal/playground\" lint lint:format",
     "lint:eslint": "pnpm turbo --filter \"!./examples/**/*\" --filter \"!./docs/**/*\" --filter \"!./explorations/**/*\" --filter \"!@internal/playground\" lint",
-    "lint:format": "oxfmt --check . '!docs/**/*' '!examples/**/*' '!explorations/**/*' '!observability/_examples/**/*'",
+    "lint:format": "oxfmt --check . '!docs/**/*' '!examples/**/*' '!explorations/**/*' '!observability/_examples/**/*' '!.plans/**/*'",
     "preinstall": "npx only-allow pnpm",
     "prepare": "husky",
     "list-changed-files": "(git diff --name-only --diff-filter=ACMR $(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo 'main')...HEAD && git diff --name-only --diff-filter=ACMR && git diff --cached --name-only --diff-filter=ACMR) | sort -u",
