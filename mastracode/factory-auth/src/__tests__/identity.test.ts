@@ -177,6 +177,19 @@ describe('toAuthIdentity', () => {
       ).toBeNull();
     });
 
+    it('does not read an array as a payload', () => {
+      // `typeof [] === 'object'`, so without an explicit Array check an array
+      // would be treated as a keyed payload. It has no `id`, so the result is
+      // the same null - which is exactly why the check needs its own test: the
+      // outcome does not distinguish a working guard from a missing one.
+      expect(toAuthIdentity([])).toBeNull();
+      expect(toAuthIdentity(['id_from_array'])).toBeNull();
+      expect(toAuthIdentity(Object.assign(['x'], { id: 'user_smuggled' }))).toBeNull();
+      // Nested, where the wrapper shape would otherwise pick it up.
+      expect(toAuthIdentity({ session: {}, user: ['user_1'] })).toBeNull();
+      expect(toAuthIdentity({ session: [], user: { id: 'user_1' } })?.id).toBeUndefined();
+    });
+
     it('needs both halves to be objects before it is a wrapper', () => {
       // Only `user`: not the wrapper, so the top level is read flat.
       expect(toAuthIdentity({ id: 'top_level', user: { id: 'nested' } })?.id).toBe('top_level');
