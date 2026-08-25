@@ -12,7 +12,7 @@ import { mintSessionCookie, readSessionCookie } from '@mastra/factory-auth/cooki
 import { encodeState, decodeState } from '@mastra/factory-auth/oauth-state';
 ```
 
-Nine entry points are published and stable: the root, `./contract`, `./identity`, `./capabilities`, `./organizations`, `./cookie`, `./oauth-state`, `./testing` and `./conformance`. The root export holds the pure layer — types, structural guards and pure functions — so a UI can import it without reaching server code. `./organizations`, `./testing` and `./conformance` are declared but not yet filled in.
+Nine entry points are published and stable: the root, `./contract`, `./identity`, `./capabilities`, `./organizations`, `./cookie`, `./oauth-state`, `./testing` and `./conformance`. The root export holds the pure layer — types, structural guards and pure functions — so a UI can import it without reaching server code.
 
 **The licence boundary**
 
