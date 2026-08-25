@@ -28,4 +28,4 @@ headers.append('Set-Cookie', clearSessionCookie({ crossSite: false }));
 
 **`SameSite` and `Secure` follow the deployment shape.** Same-site gets `SameSite=Lax; Secure` - `Lax` rather than `Strict`, because `Strict` withholds the cookie on the redirect back from a hosted login and lands the user back on the app signed out. Cross-site gets `SameSite=None; Secure`, the only combination a browser accepts. Asking for a cross-site cookie with `secure: false` throws instead of minting one every browser silently drops.
 
-**Duplicate cookies are handled.** When a header carries the name more than once, the first value that verifies wins rather than the first that appears, so a same-named cookie set on a shared parent domain cannot lock a user out.
+**Duplicate cookies are handled.** A header can carry the same cookie name more than once, so the reader does not assume the first one it sees is yours.
