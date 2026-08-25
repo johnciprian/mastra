@@ -26,6 +26,9 @@ importers:
       '@mastra/factory':
         specifier: link:../factory
         version: link:../factory
+      '@mastra/factory-auth':
+        specifier: link:../factory-auth
+        version: link:../factory-auth
       '@mastra/libsql':
         specifier: link:../../stores/libsql
         version: link:../../stores/libsql
