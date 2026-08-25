@@ -10,10 +10,6 @@ already works.
 This package targets the Mastra Factory. Providers that only gate `/api/*` need `@mastra/core/server`
 and nothing here.
 
-> **Status: in progress.** The package layout, the exports map, both halves of the licence boundary,
-> and `./contract` are in place. The remaining modules are stubs, and each one names the task that
-> fills it in its file header.
-
 ## What this isn't
 
 - Not an auth provider. It never talks to an identity system, and it contains no vendor code.
@@ -25,41 +21,230 @@ and nothing here.
 
 ## Start here
 
-Four things decide whether a provider can run the Factory. The conformance suite checks all four.
+Four things decide whether a provider can run the Factory. No interface states them and nothing
+stated them before this package. The conformance suite checks all four.
 
-1. `authenticateToken` returns an object with a flat `id`. `uid` and `sub` work too, because
-   `toAuthIdentity` normalizes them.
+1. `authenticateToken` returns a payload with a flat, resolvable id — `id`, `uid` or `sub`, read in
+   that order.
 2. `authenticateToken` reads the `Cookie` header when the bearer token is empty. A browser
    navigation sends no `Authorization` header, so an empty token means "read the cookie".
 3. Login and callback both use `encodeState` and `decodeState` from this package.
-4. Every identity resolves to an organization id. Implement `IOrganizationsProvider`, or wrap the
-   provider with `withSyntheticOrganizations`.
+4. Every identity resolves to an organization id, from the provider or from a wrapper.
 
 ```ts
-import { toAuthIdentity, isSSOProvider } from '@mastra/factory-auth';
+import { MastraAuthProvider, getRequestHeader } from '@mastra/factory-auth';
+import type { MastraAuthRequest } from '@mastra/factory-auth';
 import { withSyntheticOrganizations } from '@mastra/factory-auth/organizations';
 
-export const auth = withSyntheticOrganizations(new MyOidcProvider());
+type Claims = { sub: string; email?: string };
+
+class MyOidcProvider extends MastraAuthProvider<Claims> {
+  constructor(private verify: (token: string) => Promise<Claims | null>) {
+    super({ name: 'my-oidc' });
+  }
+
+  async authenticateToken(token: string, request: MastraAuthRequest) {
+    // 2. An empty token means a browser sent this, so look where a browser puts one.
+    const cookies = getRequestHeader(request, 'cookie') ?? '';
+    const bearer = token || (/(?:^|;\s*)my_session=([^;]*)/.exec(cookies)?.[1] ?? '');
+    if (!bearer) return null;
+    return this.verify(bearer); // 1. `sub` is one of the keys toAuthIdentity reads.
+  }
+
+  authorizeUser() {
+    return true;
+  }
+}
+
+// 4. Wrapping is the one-line way to satisfy the organization obligation.
+export const createAuth = (verify: (token: string) => Promise<Claims | null>) =>
+  withSyntheticOrganizations(new MyOidcProvider(verify));
 ```
 
-Then run the conformance suite. It fails with the name of whichever obligation you missed.
+Taking the verifier as an argument rather than building one inside the class is worth doing for its
+own sake: it is what lets the [conformance suite](#run-the-conformance-suite) run your provider
+offline, with no identity provider and no environment variables.
+
+Then run the suite. It fails with the name of whichever obligation you missed, the call it made, and
+the fix as code.
+
+## The EE boundary
+
+This package is Apache-2.0. Its module graph must not contain any file under an `ee/` directory, at
+any depth, including through a dependency.
+
+One import decides it. `@mastra/core/auth` is banned outright, not only `@mastra/core/auth/ee`: its
+barrel re-exports `./ee`, and that module runs code as it loads. `@mastra/core/server` is safe, and
+it re-exports the contract interfaces and the guards by name. Import from `@mastra/core/server`, and
+only through `src/contract.ts`.
+
+The ban is wider than the two obvious paths, because three Apache-2.0 specifiers reach enterprise
+code without naming it. Measured on this tree, in the runtime graph:
+
+Each row is that specifier walked on its own, so the numbers do not include this package's files.
+
+| Specifier                            | Modules | Inside `ee/` |
+| ------------------------------------ | ------: | -----------: |
+| `@mastra/core/server`                |      19 |        **0** |
+| `@mastra/core/auth`                  |      22 |       **11** |
+| `@mastra/core` (root barrel)         |     713 |       **14** |
+| `@mastra/auth-workos` (any provider) |       - |       **11** |
+
+`@mastra/core` names no `ee` path anywhere, yet its graph reaches enterprise code through
+`packages/core/src/tools/tool-builder/builder.ts`, which imports the runtime value
+`MastraFGAPermissions` from `../../auth/ee`. Tree-shaking will not drop it. The provider packages get
+there through their own FGA and RBAC providers.
+
+Two checks enforce this:
+
+- ESLint and oxlint `no-restricted-imports` fail on a banned specifier in this package's source. Both
+  linters carry the rule, because `lint` is `oxlint . && eslint .` and lint-staged runs oxlint first.
+- `src/__tests__/no-ee-boundary.test.ts` resolves the module graph and fails on any module inside an
+  `ee/` directory, on any external specifier outside a fail-closed allowlist, and on any enterprise
+  identifier in built output.
+
+Lint reads source and runs without a build. The test catches what a dependency drags in, so it still
+holds after a version bump. Neither is sufficient alone.
+
+Consuming this package puts you under none of this. The boundary is a promise the package makes to
+you, not a constraint it passes on — see [Stability and versioning](#stability-and-versioning). How
+the two checks are kept honest is in [Contributing](#contributing).
+
+## Run the conformance suite
+
+You publish a provider from your own repository and want to know whether it can run the Factory.
+Three lines of setup answer that, offline.
+
+`vitest` is an **optional** peer dependency of this package, so your package manager will not install
+it for you. `./conformance` is the only entry point that imports it; every other one is runner-free.
+
+```shell
+pnpm add -D @mastra/factory-auth vitest
+```
+
+Add one test file. It needs no network, no identity provider and no environment variables — the
+provider your factory returns has to authenticate the `token` fixture on its own, which is the same
+injected-verifier setup your unit tests already need.
+
+```ts
+// src/conformance.test.ts
+import { describeAuthProvider } from '@mastra/factory-auth/conformance';
+import { createAuth } from './auth-provider.js';
+
+const TOKEN = 'a-token-my-verifier-accepts';
+
+describeAuthProvider({
+  name: '@mastra/auth-my-provider',
+  createProvider: () => createAuth(async token => (token === TOKEN ? { sub: 'user_123' } : null)),
+  token: TOKEN,
+  userId: 'user_123',
+  cookieHeader: `my_session=${TOKEN}`,
+});
+```
+
+Three options are required — `name`, `createProvider` and `token` — because they are the three facts
+no guard can derive. Everything else defaults. Two have no default on purpose:
+
+- **`cookieHeader`**, the header a signed-in browser sends. Required once your provider can put a
+  session in a browser, which is obligation 2's gate. A suite that guessed a cookie name would report
+  the guess missing as an obligation failure, and a false red looks exactly like a true one.
+- **`sso.reachedTokenExchange`**, only if your token exchange does not go through global `fetch`.
+  The suite replaces `fetch` to make "reached the network" observable; an SDK holding its own agent
+  needs to tell it what that looks like.
+
+Run it with vitest:
+
+```shell
+pnpm vitest run src/conformance.test.ts
+```
+
+The provider above answers with:
+
+```
+ Test Files  1 passed (1)
+      Tests  8 passed | 10 skipped (18)
+```
+
+Ten skipped is the normal shape of a first run, not a warning. Add `--reporter=verbose` to see one
+`describe` per section, one `it` per check, and the reason attached to every skip:
+
+```
+ ✓ src/conformance.test.ts > auth provider conformance: @mastra/auth-my-provider > the base contract
+     > implements IMastraAuthProvider
+ ✓ ... > obligation 1 of 4 - flatId > authenticateToken resolves to an identity with a non-empty id
+ ↓ ... > obligation 2 of 4 - cookieAuth > authenticateToken reads the Cookie header when the bearer
+     token is empty [This provider cannot put a session in a browser: no hosted login, no credentials
+     sign-in, no server-side sessions, and no auth routes of its own. ...]
+ ✓ ... > obligation 4 of 4 - organizationId > satisfies isOrganizationsProvider, on its own or
+     through the wrapper
+```
+
+**Skipped, never quietly passed.** A check is skipped only when a structural guard says the provider
+does not _declare_ the capability the check is about, and the skip carries the reason, as above. It
+is never skipped because a provider declared a capability and then did not deliver it.
+
+Obligation 2 is skipped in that run, and the reason is worth reading rather than scrolling past. The
+provider is a pure bearer-token validator — no hosted login, no credentials sign-in, no server-side
+sessions, no auth routes — so a browser never holds a session for it and there is no cookie to read.
+That is a supported shape, and the `cookieHeader` fixture goes unused until the provider grows one of
+those four capabilities. The moment it does, the check applies and the fixture is required.
+
+Obligation 4 is the exception, deliberately: it is not gated on `isOrganizationsProvider`, because
+gating it there would skip the only check that notices. A provider without organizations fails it and
+is told the one-line fix:
+
+```
+AssertionError: Auth conformance violation: @mastra/auth-my-provider does not meet obligation 4 of 4,
+'organizationId'.
+
+  This provider resolves no organization: isOrganizationsProvider(provider) is false.
+
+OBSERVED
+  isOrganizationsProvider(provider) is false.
+    provider.ensureOrganization  is undefined
+    provider.isOrganizationAdmin is undefined
+  ...
+
+WHY THIS EXISTS
+  Every organization-scoped surface in the Factory writes to one column that is not nullable. ...
+
+HOW TO FIX IT
+  If your provider has no organizations, wrap it once. ...
+
+    import { withSyntheticOrganizations } from '@mastra/factory-auth/organizations';
+
+    export const auth = withSyntheticOrganizations(new MyProvider());
+  ...
+```
+
+Every failure carries those four parts and a docs link. If you would rather run the checks from a
+script, a different runner, or a CLI, `authConformanceChecks(options)` returns the same list as data
+and takes no dependency on vitest to iterate.
 
 ## What's in the package
 
-| Import                               | Answers                                                    |
-| ------------------------------------ | ---------------------------------------------------------- |
-| `@mastra/factory-auth`               | The pure layer: contract, identity, capabilities.          |
-| `@mastra/factory-auth/contract`      | The same contract symbols, narrower import.                |
-| `@mastra/factory-auth/identity`      | What is this provider's user, in one shape?                |
-| `@mastra/factory-auth/capabilities`  | Which capabilities does this provider have?                |
-| `@mastra/factory-auth/organizations` | Which organization does this identity belong to?           |
-| `@mastra/factory-auth/cookie`        | How does the host mint, read and clear its session cookie? |
-| `@mastra/factory-auth/oauth-state`   | How is the OAuth `state` parameter encoded and decoded?    |
-| `@mastra/factory-auth/testing`       | Test doubles, for code that consumes a provider.           |
-| `@mastra/factory-auth/conformance`   | The suite, for code that implements a provider.            |
+| Import                               | Answers                                                    | Main exports                                                                        |
+| ------------------------------------ | ---------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `@mastra/factory-auth`               | The pure layer: contract, identity, capabilities.          | everything from `./contract`, `./identity` and `./capabilities`                     |
+| `@mastra/factory-auth/contract`      | The same contract symbols, narrower import.                | `MastraAuthProvider`, the seven guards, `getRequestHeader`, `getWebRequest`         |
+| `@mastra/factory-auth/identity`      | What is this provider's user, in one shape?                | `toAuthIdentity`, `AuthIdentity`, `IIdentityProvider`, `isIdentityProvider`         |
+| `@mastra/factory-auth/capabilities`  | Which capabilities does this provider have?                | `toAuthDescriptor`, `AuthDescriptor`                                                |
+| `@mastra/factory-auth/organizations` | Which organization does this identity belong to?           | `withSyntheticOrganizations`, `resolveOrganizationId`, `syntheticOrganizationId`    |
+| `@mastra/factory-auth/cookie`        | How does the host mint, read and clear its session cookie? | `mintSessionCookie`, `readSessionCookie`, `clearSessionCookie`, `sessionCookieName` |
+| `@mastra/factory-auth/oauth-state`   | How is the OAuth `state` parameter encoded and decoded?    | `encodeState`, `decodeState`, `parseStateId`                                        |
+| `@mastra/factory-auth/testing`       | Test doubles, for code that consumes a provider.           | `fakeProvider`, `fullyCapableFake`, `fakeViolating`, six `with*` mixins             |
+| `@mastra/factory-auth/conformance`   | The suite, for code that implements a provider.            | `describeAuthProvider`, `authConformanceChecks`                                     |
 
 `./capabilities` answers **which** capabilities a provider has. The capability interfaces themselves
 are in `./contract`.
+
+`./oauth-state` is the OAuth `state` parameter: a nonce plus where to return the user after login. It
+has nothing to do with `FactoryAuthState` in the web app.
+
+The root export holds the pure layer only, so a browser bundle can import it. `./cookie` and
+`./oauth-state` are server-only. `./testing` and `./conformance` are test-time and are never
+re-exported from the root: `./conformance` is the one module that imports vitest, which is why vitest
+is an optional peer dependency.
 
 ### What `./contract` re-exports
 
@@ -86,13 +271,104 @@ into this package's published type surface. `src/__tests__/contract-surface.test
 stay out, of source and of `dist/`. A host application should import them from `@mastra/core/server`
 at the point of use instead.
 
-`./oauth-state` is the OAuth `state` parameter: a nonce plus where to return the user after login. It
-has nothing to do with `FactoryAuthState` in the web app.
+## Stability and versioning
 
-The root export holds the pure layer only, so a browser bundle can import it. `./cookie` and
-`./oauth-state` are server-only. `./testing` and `./conformance` are test-time and are never
-re-exported from the root: `./conformance` is the one module that imports vitest, which is why vitest
-is an optional peer dependency.
+This package re-exports a contract it does not own. `./contract` takes every symbol from
+`@mastra/core/server` by specifier, and the published `dist/contract.d.ts` re-exports them the same
+way, so the types your compiler sees resolve from the `@mastra/core` you installed rather than from a
+copy frozen here. That is deliberate — a provider built against your core and a host built against
+ours still agree about one contract — and most of the policy below follows from it.
+
+`@mastra/core` is a peer dependency, ranged `>=1.61.0-0 <2.0.0-0`. `vitest` is an optional peer,
+needed only by `./conformance`.
+
+**What is covered.** The nine entry points in the `exports` map and every symbol they export.
+Anything reached by a deep path into `dist/` is not; the exports map is the surface.
+
+### What each bump means
+
+**Patch** — a defect fixed with no change to a signature or a documented value. Conformance failure
+text, skip reasons, and the wording of every error message in the package are patch-level and may
+change at any time. Don't assert on them.
+
+**Minor** — new exports, a new optional field, a widened input. Three widenings have a visible edge,
+so they are named rather than left to be discovered:
+
+- `toAuthIdentity` learning a new payload shape can only turn "this token names nobody" into an
+  identity, never the reverse. If you rely on a particular payload resolving to `null`, implement
+  `toIdentity` and say so; shape detection is not a denial mechanism.
+- `toAuthDescriptor` gaining a `features` field, because `@mastra/core/server` gained a capability
+  guard. Code that switches exhaustively over the descriptor sees a new case.
+- The internal layout of the signed session cookie value. Those bytes are not part of the contract —
+  only `readSessionCookie` ever reads what `mintSessionCookie` produced — but changing them signs
+  everybody out once, so it ships as a minor with an upgrade note rather than as a patch. The cookie
+  _name_ is part of the contract; ask `sessionCookieName(site)` rather than hardcoding it.
+
+**Major** — a removed or renamed export, a narrowed input, a changed return type, and two things that
+break you without being type errors:
+
+- **A new conformance check that a currently conforming provider can fail.** A fifth obligation, or a
+  tightened existing check, turns CI red in a repository this package does not own, so it is filed as
+  a major even though no signature moved. Loosening a check, adding a skip gate, or rewriting a
+  message is a patch.
+- **A change to the synthetic organization id format.** `user:${userId}` is a storage key. Changing
+  the prefix or the derivation orphans every row written under the old one, and nothing reports an
+  error when it happens, so it is a major and it ships with a migration note.
+
+### What you may build on
+
+Two wire formats are documented and are part of the contract:
+
+- The OAuth `state` string: an id, a `|`, and a percent-encoded `returnTo`. Only the first `|` is
+  significant, so a `returnTo` containing one round trips unchanged. Encoding `/agents/42` under the
+  id `abc-123` gives `abc-123|%2Fagents%2F42`.
+- The synthetic organization id: the prefix `user:` followed by the provider's user id, unchanged.
+  `resolveOrganizationId({ id: '8f21ac' })` is `user:8f21ac`, in every process and every deploy.
+
+The four obligation names are stable string literals — `flatId`, `cookieAuth`, `stateCodec`,
+`organizationId`. `fakeViolating('cookieAuth')` and a filter over `authConformanceChecks` both key on
+them, and `AUTH_OBLIGATIONS` is their order.
+
+### What can change under you with no release here
+
+The types of everything `./contract` re-exports. They resolve from your installed `@mastra/core`, so
+a core release that adds an optional member to `ISSOProvider` reaches you the moment you update core,
+with no version of this package involved. Within core 1.x that can only be additive; core's own
+semver holds that line, and this package's peer range is how it is expressed.
+
+If `@mastra/core` moves or removes a re-exported symbol, one file changes here — `src/contract.ts` —
+and the release is a major with a narrowed peer range. There is no shim. A symbol that is gone from
+core is gone from `./contract`, because the alternative is this package inventing a second definition
+of a contract it does not own.
+
+### The EE boundary is part of the contract
+
+This is the one that reads like an implementation detail, so it is written as a promise instead:
+**this package's runtime module graph contains no file under an `ee/` directory, and its published
+types carry no enterprise declaration.** You may build on that. It is what makes it safe to take
+`@mastra/factory-auth` into an Apache-2.0 codebase, and it is the reason the package exists in its
+own directory rather than as a folder in a provider.
+
+Two consequences, and they bind releases rather than describing them:
+
+- **The boundary is never traded for a feature.** If a symbol can only be re-exported by pulling
+  enterprise code into the graph, it is not re-exported, in any bump. `MastraAuthConfig`, `ApiRoute`,
+  `ApiRouteHandler` and `StudioConfig` are out permanently, not pending. Import them from
+  `@mastra/core/server` at the point of use in your host, which is not under this constraint.
+- **A release that has to drop a re-export to keep the boundary is a major, and the boundary wins.**
+  There is no version of this package that ships with `ee/` in its graph, so "keep the export" is not
+  one of the available options.
+
+If either check that enforces the boundary goes green when it should be red, that is a release
+blocker rather than a bug to schedule. The procedure for proving they still fail is in
+[Contributing](#contributing).
+
+### Before 1.0
+
+The package is `0.x`. Breaking changes are filed as `major` changesets and carry upgrade notes, but
+`0.x` does not give you semver's compatibility promise across minor versions, so read the changelog
+before you bump. Nothing here is marked experimental and nothing is behind a flag: the nine entry
+points are the whole published surface, and the policy above is what they are held to.
 
 ## Session cookies, and what they do not cover
 
@@ -132,43 +408,21 @@ choices, in rough order of preference:
 Do this in the host, not in a provider. Nothing in this package inspects `Origin`, and a future
 version that did would still not know your allowlist.
 
-## The EE boundary
+## Contributing
 
-This package is Apache-2.0. Its module graph must not contain any file under an `ee/` directory, at
-any depth, including through a dependency.
+> Everything below is about how this package is maintained. If you are writing or integrating a
+> provider, the sections above are the whole story.
 
-One import decides it. `@mastra/core/auth` is banned outright, not only `@mastra/core/auth/ee`: its
-barrel re-exports `./ee`, and that module runs code as it loads. `@mastra/core/server` is safe, and
-it re-exports the contract interfaces and the guards by name. Import from `@mastra/core/server`, and
-only through `src/contract.ts`.
+Development happens in the `mastra-ai/mastra` monorepo, under `mastracode/factory-auth`.
 
-The ban is wider than the two obvious paths, because three Apache-2.0 specifiers reach enterprise
-code without naming it. Measured on this tree, in the runtime graph:
+```shell
+pnpm install
+pnpm turbo build --filter ./mastracode/factory-auth
+pnpm --filter ./mastracode/factory-auth test
+pnpm --filter ./mastracode/factory-auth lint
+```
 
-Each row is that specifier walked on its own, so the numbers do not include this package's files.
-
-| Specifier                            | Modules | Inside `ee/` |
-| ------------------------------------ | ------: | -----------: |
-| `@mastra/core/server`                |      19 |        **0** |
-| `@mastra/core/auth`                  |      22 |       **11** |
-| `@mastra/core` (root barrel)         |     713 |       **14** |
-| `@mastra/auth-workos` (any provider) |       - |       **11** |
-
-`@mastra/core` names no `ee` path anywhere, yet its graph reaches enterprise code through
-`packages/core/src/tools/tool-builder/builder.ts`, which imports the runtime value
-`MastraFGAPermissions` from `../../auth/ee`. Tree-shaking will not drop it. The provider packages get
-there through their own FGA and RBAC providers.
-
-Two checks enforce this:
-
-- ESLint and oxlint `no-restricted-imports` fail on a banned specifier in this package's source. Both
-  linters carry the rule, because `lint` is `oxlint . && eslint .` and lint-staged runs oxlint first.
-- `src/__tests__/no-ee-boundary.test.ts` resolves the module graph and fails on any module inside an
-  `ee/` directory, on any external specifier outside a fail-closed allowlist, and on any enterprise
-  identifier in built output.
-
-Lint reads source and runs without a build. The test catches what a dependency drags in, so it still
-holds after a version bump. Neither is sufficient alone.
+### How the boundary check is scoped
 
 The graph is rooted at **every** `.ts` file under `src/`, not at the nine published entry points. A
 file no entry point imports still ships in the repo, and rooting at the exports map left it
@@ -219,9 +473,6 @@ externals are peer dependencies and are never bundled, so `sourcesContent` can o
 package's own source.
 
 ### Re-verify the boundary
-
-> For contributors to this package. If you are integrating a provider, you are done — the rest of
-> this file is about how the boundary is maintained.
 
 Both checks have to fail when the boundary breaks. A check nobody has watched fail isn't a check. Run
 this after you change the lint rule, the graph test, or the build config.
