@@ -621,7 +621,7 @@
     },
     {
       "id": "B18",
-      "status": "pending",
+      "status": "done",
       "title": "Flip the compat flag on by default and soak",
       "lane": "B",
       "size": "S",

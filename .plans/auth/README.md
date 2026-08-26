@@ -65,7 +65,7 @@ so the boundary is a build error rather than a code-review habit.
 
 ## Status
 
-**61 of 65 original tasks done**, plus **18 post-plan follow-ups** filed by the re-grade
+**62 of 65 original tasks done**, plus **18 post-plan follow-ups** filed by the re-grade
 (`P1`–`P18`), of which `P12` is done and 17 are pending. Each task in `tasks.json` carries a `status` field (`done` /
 `pending` / `held`) — that file is the source of truth for progress; update it when a
 task merges.
@@ -73,18 +73,27 @@ task merges.
 | Lane | | Done |
 | --- | --- | --- |
 | K | Kit foundation (`mastracode/factory-auth`) | 21 / 21 ✅ |
-| B | Backend seam (`mastracode/factory`) | 17 / 19 |
+| B | Backend seam (`mastracode/factory`) | 18 / 19 |
 | U | UI seam (`factory-ui`) | 8 / 9 |
 | C | Conformance and providers | 7 / 7 ✅ |
 | D | Documentation | 6 / 6 ✅ |
 | R | Release | 2 / 3 |
 
-`B18`, `B19`, `U9` and `R3` remain. The plan defers all four by one release; the re-grade
-disputed that for `B18` and was right to. `B18` is now deferred by an explicit decision
-instead: the task is "flip the flag on by default **and soak**", and the soak is the
-substance — landing the one-line default here would look complete while the thing it
-exists to prove has not happened. `B19`, `U9` and `R3` are downstream of that soak by
-construction. `P12` no longer blocks it.
+`B18` is **done**: `MASTRACODE_AUTH_IDENTITY_V2` now defaults **on**, with
+`=false` retained as the rollback, by explicit decision to soak post-merge.
+
+`B19`, `U9` and `R3` remain, and are gated on that soak rather than on effort. `B19`
+deletes the flag and the legacy reader; `U9` drops the legacy `signUpDisabled` field from
+the wire. Doing either before the soak removes the rollback the soak exists to exercise.
+
+**The rollback is the direction that costs, not the upgrade** — measured in `B18`, and the
+opposite of what the changeset originally claimed. Enabling changes nothing for a
+provider-cookie deployment (WorkOS, Okta, better-auth): the host reads no cookie of its
+own, so `requestAuthToken` yields `''`, which is the provider's documented signal to read
+the `Cookie` header itself. Rolling *back* signs people out — a session minted by the host
+under v2 lives in the host's signed cookie, and the legacy path never reads it. That hits
+tokens-only providers with a session secret configured, and only them. Worth knowing
+before anyone reaches for `=false` under pressure.
 
 The kit ships as `@mastra/factory-auth@0.1.0`: nine entry points, 833 tests at 98%
 statements / 100% lines, an enforced Apache-2.0/EE boundary, and a `describeAuthProvider`
@@ -99,7 +108,7 @@ Measured against the A− exit criteria in `remediation-plan.html`, at
 | Seam | Audit | Target | **Actual** | Blocking gap |
 | --- | --- | --- | --- | --- |
 | Contract design | B+ | A− | **B+** | PKCE read side is declared nowhere and broken under the Factory |
-| Backend seam | B− | A− | **B** | the identity migration is switched off by default |
+| Backend seam | B− | A− | **B+** | migration is on by default; the soak has not run |
 | UI seam | D+ | A− | **B** | the seam's own CI gate is never run by CI |
 | Testability | B− | A− | **C+** | 2,853 host tests outside the PR gate; 6 of 11 providers conform |
 | Documentation | D | A− | **A−** ✅ | reached, with two filed corrections |
@@ -117,10 +126,11 @@ substantial and most of it is durable.
 It did not deliver a swappable auth layer. Three things stand between here and that claim,
 and none is a matter of polish:
 
-1. **The identity migration is written, tested, and switched off.** Everything the contract
+1. **The identity migration is on by default but has not soaked.** Everything the contract
    seam added — declared identity, the `toIdentity()` escape hatch, host-owned session
-   cookies — is behind `MASTRACODE_AUTH_IDENTITY_V2`, which defaults off and is empty in
-   `mastracode/web/.env.schema`. No deployment runs it.
+   cookies — is now the default path (`B18`). `MASTRACODE_AUTH_IDENTITY_V2=false` remains
+   the rollback for one release. What has not happened is the soak: no deployment has run
+   this under real traffic yet, which is the whole reason the rollback is retained.
 2. **The two largest test suites never run on a pull request.** `mastracode/factory` and
    `mastracode/factory-ui` are 2,853 green tests that cannot fail a merge, including the UI
    seam's own anti-regression gate.
@@ -180,7 +190,7 @@ provider-owned session cookie (`P11`).
 
 **Does the flag being off change this grade? Yes, and it is the reason for the grade.**
 
-`MASTRACODE_AUTH_IDENTITY_V2` defaults off (`auth.ts:54-76`) and is empty in
+`MASTRACODE_AUTH_IDENTITY_V2` now defaults **on** (`B18`, `auth.ts:54-76`) and is documented in
 `mastracode/web/.env.schema:170`. With it off, three things are true of every deployment:
 identity is still the shipped shape-sniffer `legacyFactoryAuthUser`, not `toAuthIdentity`
 (`auth.ts:416`); the host does not own its session cookie, so `readSessionCookie` never
