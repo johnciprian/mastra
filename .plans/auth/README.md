@@ -99,3 +99,42 @@ to match; these are the ones that changed the shape of the work.
 - **`auth/better-auth` defect:** `handleAuthRequest` returns a clean 503 when migrations
   fail but *throws* when the instance was never built — two shapes of "auth isn't ready",
   one 500 and one 503, on a public route.
+
+### Provider defects found by conformance (C2)
+
+The first run against the two providers that actually run the Factory found four real
+defects. None is a small fix; each has product or data consequences, so all four are
+recorded rather than patched. They are pinned as `knownFailures` in each package's
+conformance test.
+
+- **`auth/workos` — `ISessionProvider` is a no-op facade.** `validateSession` returns
+  `null` unconditionally (`auth/workos/src/auth-provider.ts:712`); all seven members are
+  no-ops "kept for interface compatibility". Because `isSessionProvider` tests only two
+  members *for existence*, the guard reports a capability that isn't there, and
+  `toAuthDescriptor` then advertises `features.sessionRevocation: true` — so a UI offers
+  "sign out everywhere" against a provider that cannot. Remedies (a real session store, or
+  dropping `ISessionProvider` from a published v1.6.4) are both provider decisions.
+- **`auth/studio` — `getLoginUrl` drops `state`.** It extracts the `returnTo` half into
+  `post_login_redirect` and discards the rest, so the id half a host compares for CSRF
+  never returns. The Factory already carries a `mastra_factory_return_to` cookie as a
+  workaround, which corroborates it.
+- **`auth/studio` — `ensureOrganization(userId)` returns `undefined`** unless a cookie was
+  previously cached for that user, so bearer/CLI users never get an org bootstrapped. The
+  interface hands it only a user id, so a correct implementation must work from one.
+- **`auth/studio` — `createSession(userId)` without metadata** mints an id
+  `validateSession` can never accept. The host always passes `metadata.accessToken` today,
+  which is why nothing noticed, but `metadata` is optional in the declared contract.
+
+### Contract weaknesses this surfaced
+
+- **`isSessionProvider` narrows on 2 of 7 declared members** — seen independently three
+  times: building the descriptor, quantified across all seven guards by the docs stream
+  (`ISSOProvider` 2/3/5, `ISessionProvider` 2/7/7, `IUserProvider` 1/2/4,
+  `ICredentialsProvider` 1/2/5), and now causing a live wrong answer in `auth/workos`.
+- **`mapUserToResourceId` is un-implementable as a prototype method.**
+  `packages/_internals/auth/src/provider/index.ts:85` assigns
+  `this.mapUserToResourceId = options?.mapUserToResourceId` unconditionally, so a provider
+  that doesn't forward the option gets an own `undefined` shadowing its own prototype
+  method, and the conformance check silently skips. Fix belongs in `_internals/auth`.
+- **The conformance suite never exercises `IUserProvider` or `isOrganizationAdmin`.**
+  Adding checks is a **major** under the kit's semver policy, so it needs scheduling.
