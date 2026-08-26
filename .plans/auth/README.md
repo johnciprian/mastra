@@ -149,11 +149,27 @@ conformance test.
   but nothing that returns clear-cookie headers, and `getClearSessionHeaders` lives on
   `ISessionProvider`, whose guard and interface demand all seven members. A hosted-login
   provider that mints its own cookie therefore has no supported way to clear it on logout.
-- **PKCE has a mechanism but no contract.** `CompositeAuth.setCallbackCookieHeader` is
-  documented in a `.d.ts` comment as "forward cookie header to SSO provider for PKCE
-  validation", and `getLoginCookies` is plainly the channel for the verifier — but neither
-  appears in any interface doc, and the conformance suite has no check for it. A provider
-  can pass conformance with no PKCE at all.
+- **PKCE is broken under the Factory, not merely undocumented.** `getLoginCookies` (write
+  side) is declared on `ISSOProvider` and is called by the Factory. `setCallbackCookieHeader`
+  (read side) is **not declared on `ISSOProvider` at all** — an undeclared duck-typed hook,
+  called only from `packages/server/src/server/handlers/auth.ts:492` and forwarded by
+  `CompositeAuth`. It appears **zero times** in `mastracode/factory/src/`. So under the
+  Factory a PKCE provider can write its verifier cookie at login and has no way to read it
+  back at callback; documenting it would document something that does not work.
+  `auth/supabase`'s own package comment independently gives this as its reason for
+  declining a hosted login. Fix: declare the read side on `ISSOProvider` as optional, call
+  it from the Factory callback, then document. The conformance suite also has no PKCE
+  check, so a provider passes everything with none.
+- **`auth/cloud` has never run in the PR gate.** `auth/cloud/vitest.config.ts` declares no
+  `name`, so the project resolves to `@mastra/auth-cloud`, which matches neither `unit:*`
+  nor `typecheck:*` in `test-suite.yml`. Same bug class as the `mastracode/vitest.config.ts`
+  glob pointing at a file that does not exist — this is the second instance. Found
+  prospectively by C7's reachability check.
+- **Clearing a provider-owned cookie works but is unblessed.** `mastracode/factory/src/auth.ts`
+  reads `getClearSessionHeaders` off the provider as `Partial<ISessionProvider>` and honours
+  it without requiring the other six members — `@mastra/auth-better-auth` relies on exactly
+  this. Nothing is broken; it is simply documented by no interface, which is why a fresh
+  reader invented their own method for it.
 
 ### Unsettled: the organization fallback — decide before B18
 

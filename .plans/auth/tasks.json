@@ -887,7 +887,7 @@
     },
     {
       "id": "C7",
-      "status": "pending",
+      "status": "done",
       "title": "Conformance wired into CI for every shipped provider",
       "lane": "C",
       "size": "S",
@@ -954,7 +954,7 @@
     },
     {
       "id": "D4",
-      "status": "pending",
+      "status": "done",
       "title": "CI type-checks every doc example",
       "lane": "D",
       "size": "M",
@@ -970,7 +970,7 @@
     },
     {
       "id": "D5",
-      "status": "ran-found-defects",
+      "status": "done",
       "title": "Validate the guide on a real reader",
       "lane": "D",
       "size": "M",
