@@ -531,6 +531,55 @@ function providerClearCookies(provider: IMastraAuthProvider): string[] {
 }
 
 /**
+ * Revoke the caller's session server-side, where the provider can.
+ *
+ * `ISessionProvider` declares seven members and the guard tests two, so both
+ * halves are checked as methods rather than inferred: a provider can satisfy
+ * `isSessionProvider` with no `destroySession` at all. Mirrors what
+ * `packages/server` does at its own logout — read the session id off the
+ * request, then destroy it.
+ *
+ * Best-effort by design. A provider that throws here has still had its cookies
+ * cleared by the caller, so the browser is signed out either way; failing the
+ * whole request would leave the person looking at an error while their cookie
+ * was already gone.
+ */
+async function revokeProviderSession(provider: IMastraAuthProvider, c: Context): Promise<void> {
+  const session = provider as Partial<ISessionProvider>;
+  if (typeof session.getSessionIdFromRequest !== 'function' || typeof session.destroySession !== 'function') return;
+  try {
+    const sessionId = session.getSessionIdFromRequest(c.req.raw);
+    if (!sessionId) return;
+    await session.destroySession(sessionId);
+  } catch {
+    // Already-expired or unknown session: nothing left to revoke.
+  }
+}
+
+/**
+ * Whether a GET `/auth/logout` came from a real browser navigation rather than
+ * a sub-resource load on somebody else's page.
+ *
+ * A GET that signs the caller out is CSRF-triggerable: `<img src="/auth/logout">`
+ * on any page silently ends the visitor's session. `Sec-Fetch-Dest` is what
+ * separates the two — a top-level navigation sends `document`, an `<img>` sends
+ * `image`, a `<script>` sends `script`. It is a forbidden header name, so a
+ * page cannot set it, which is what makes it usable as a defence rather than a
+ * hint.
+ *
+ * A request with no `Sec-Fetch-Dest` is allowed through: browsers that predate
+ * the header exist, and refusing them would break sign-out for those people
+ * rather than protecting them. That is the residual gap, and it is why this is
+ * a shim on a deprecated route rather than the answer — `POST /auth/logout`
+ * needs no such inference.
+ */
+function isLogoutNavigation(c: Context): boolean {
+  const destination = c.req.header('Sec-Fetch-Dest');
+  if (!destination) return true;
+  return destination === 'document';
+}
+
+/**
  * Every `Set-Cookie` a sign-out should emit: the provider's own clearing
  * cookies, plus this host's when it owns one.
  *
@@ -908,20 +957,18 @@ function providerAuthRoutes(provider: IMastraAuthProvider, publicUrl?: string): 
       },
       {
         path: '/auth/logout',
+        method: 'POST',
+        handler: c => ssoLogout(provider, c),
+      },
+      {
+        // Deprecated for one release: the SPA and any bookmarked link still
+        // navigate here with GET. See `isLogoutNavigation` for what this
+        // refuses, and `ssoLogout` for what it does otherwise.
+        path: '/auth/logout',
         method: 'GET',
-        handler: async c => {
-          let logoutUrl: string | null = null;
-          try {
-            logoutUrl = (await provider.getLogoutUrl?.('/', c.req.raw)) ?? null;
-          } catch {
-            logoutUrl = null;
-          }
-          // Clear the session cookie regardless of whether the provider
-          // returned a logout URL.
-          for (const cookie of sessionClearCookies(provider)) {
-            c.header('Set-Cookie', cookie, { append: true });
-          }
-          return c.redirect(logoutUrl ?? '/');
+        handler: c => {
+          if (!isLogoutNavigation(c)) return c.redirect('/');
+          return ssoLogout(provider, c);
         },
       },
     );
@@ -939,32 +986,79 @@ function providerAuthRoutes(provider: IMastraAuthProvider, publicUrl?: string): 
       },
       {
         path: '/auth/logout',
+        method: 'POST',
+        handler: c => handlerLogout(provider, c),
+      },
+      {
+        // Deprecated for one release; see the SSO branch above.
+        path: '/auth/logout',
         method: 'GET',
-        handler: async c => {
-          // Revoke the session server-side through the provider's own sign-out
-          // endpoint and forward its clearing cookies; fall back to our clear
-          // cookies regardless.
-          try {
-            const origin = new URL(c.req.url).origin;
-            const response = await provider.handleAuthRequest(
-              new Request(`${origin}/auth/api/sign-out`, { method: 'POST', headers: c.req.raw.headers }),
-            );
-            for (const cookie of response.headers.getSetCookie()) {
-              c.header('Set-Cookie', cookie, { append: true });
-            }
-          } catch {
-            // No/invalid session: nothing to revoke.
-          }
-          for (const cookie of sessionClearCookies(provider)) {
-            c.header('Set-Cookie', cookie, { append: true });
-          }
-          return c.redirect('/');
+        handler: c => {
+          if (!isLogoutNavigation(c)) return c.redirect('/');
+          return handlerLogout(provider, c);
         },
       },
     );
   }
 
   return routes;
+}
+
+/**
+ * Sign out of a hosted-login provider: revoke server-side where the provider
+ * supports it, clear every session cookie, then hand the browser on to the
+ * provider's logout page when it has one.
+ *
+ * The order matters. Revocation reads the session id off the request, so it has
+ * to happen before anything about the request is invalidated, and the cookies
+ * are cleared whether or not the provider gave us a logout URL — a sign-out
+ * that depends on a remote call succeeding is a sign-out that sometimes does
+ * not happen.
+ */
+async function ssoLogout(provider: IMastraAuthProvider & Partial<ISSOLogout>, c: Context): Promise<Response> {
+  await revokeProviderSession(provider, c);
+  let logoutUrl: string | null = null;
+  try {
+    logoutUrl = (await provider.getLogoutUrl?.('/', c.req.raw)) ?? null;
+  } catch {
+    logoutUrl = null;
+  }
+  for (const cookie of sessionClearCookies(provider)) {
+    c.header('Set-Cookie', cookie, { append: true });
+  }
+  return c.redirect(logoutUrl ?? '/');
+}
+
+/** The slice of `ISSOProvider` {@link ssoLogout} needs. */
+interface ISSOLogout {
+  getLogoutUrl?: (returnTo: string, request: Request) => Promise<string | null> | string | null;
+}
+
+/**
+ * Sign out of a provider that serves its own auth routes: post to its sign-out
+ * endpoint, forward whatever clearing cookies it answers with, and clear ours
+ * regardless.
+ */
+async function handlerLogout(
+  provider: IMastraAuthProvider & { handleAuthRequest: (request: Request) => Promise<Response> },
+  c: Context,
+): Promise<Response> {
+  await revokeProviderSession(provider, c);
+  try {
+    const origin = new URL(c.req.url).origin;
+    const response = await provider.handleAuthRequest(
+      new Request(`${origin}/auth/api/sign-out`, { method: 'POST', headers: c.req.raw.headers }),
+    );
+    for (const cookie of response.headers.getSetCookie()) {
+      c.header('Set-Cookie', cookie, { append: true });
+    }
+  } catch {
+    // No/invalid session: nothing to revoke.
+  }
+  for (const cookie of sessionClearCookies(provider)) {
+    c.header('Set-Cookie', cookie, { append: true });
+  }
+  return c.redirect('/');
 }
 
 /**

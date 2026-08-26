@@ -209,15 +209,26 @@ describe('mountFactoryAuth with an explicit custom provider', () => {
 describe('buildAuthRoutes', () => {
   it('derives SSO routes plus /auth/me as unauthenticated apiRoutes', () => {
     const routes = buildAuthRoutes(fakeProvider(ssoCapability()));
-    const paths = routes.map(r => r.path);
-    expect(paths).toEqual(['/auth/login', '/auth/callback', '/auth/logout', '/auth/me']);
+    // Logout is two entries: POST is the real route, GET the deprecated shim.
+    expect(routes.map(r => `${String(r.method)} ${r.path}`)).toEqual([
+      'GET /auth/login',
+      'GET /auth/callback',
+      'POST /auth/logout',
+      'GET /auth/logout',
+      'GET /auth/me',
+    ]);
     expect(routes.every(r => r.requiresAuth === false)).toBe(true);
   });
 
   it('derives handler routes plus /auth/me for an HTTP-handler-shaped provider', () => {
     const routes = buildAuthRoutes(fakeProvider(httpHandlerCapability()));
-    const paths = routes.map(r => r.path);
-    expect(paths).toEqual(['/auth/api/*', '/auth/login', '/auth/logout', '/auth/me']);
+    expect(routes.map(r => `${String(r.method)} ${r.path}`)).toEqual([
+      'ALL /auth/api/*',
+      'GET /auth/login',
+      'POST /auth/logout',
+      'GET /auth/logout',
+      'GET /auth/me',
+    ]);
     expect(routes.every(r => r.requiresAuth === false)).toBe(true);
   });
 
@@ -1023,6 +1034,166 @@ describe('session cookie', () => {
     it('emits nothing when the provider offers no clearing header', async () => {
       const cookies = await clearCookiesFor('');
       expect(cookies.some(cookie => cookie.startsWith('fake_session='))).toBe(false);
+    });
+  });
+});
+
+/**
+ * B10: signing out revokes the session server-side, and POST is the route that
+ * does it.
+ *
+ * A GET that ends a session is CSRF-triggerable — `<img src="/auth/logout">` on
+ * any page signs the visitor out. POST is the documented route and needs no
+ * inference about who asked. GET survives one more release because the SPA's
+ * sign-out is still a top-level navigation to it, and it is guarded by
+ * `Sec-Fetch-Dest`, which a page cannot forge.
+ */
+describe('logout', () => {
+  /** SSO provider with a full session capability, so revocation is reachable. */
+  function revocableProvider(overrides: Record<string, unknown> = {}) {
+    const destroySession = vi.fn(async () => {});
+    const getSessionIdFromRequest = vi.fn(() => 'sess-1');
+    const provider = fakeProvider({
+      ...ssoCapability(),
+      createSession: vi.fn(),
+      validateSession: vi.fn(),
+      getSessionIdFromRequest,
+      destroySession,
+      ...overrides,
+    });
+    return { provider, destroySession, getSessionIdFromRequest };
+  }
+
+  function appFor(provider: IMastraAuthProvider): Hono {
+    const app = new Hono();
+    mountFactoryAuth(app, { provider });
+    return app;
+  }
+
+  describe('POST is the route that signs you out', () => {
+    it('revokes the provider session, clears cookies, and redirects', async () => {
+      const { provider, destroySession, getSessionIdFromRequest } = revocableProvider();
+      const res = await appFor(provider).request('/auth/logout', { method: 'POST' });
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('https://fake.example/logout');
+      expect(getSessionIdFromRequest).toHaveBeenCalled();
+      expect(destroySession).toHaveBeenCalledWith('sess-1');
+      expect(res.headers.getSetCookie().some(cookie => cookie.includes('Max-Age=0'))).toBe(true);
+    });
+
+    it('still clears cookies when the provider cannot revoke', async () => {
+      // isSessionProvider narrows on createSession/validateSession alone, so a
+      // provider can pass the guard with no destroySession to call. Signing out
+      // of the browser must not depend on that.
+      const provider = fakeProvider({ ...ssoCapability(), createSession: vi.fn(), validateSession: vi.fn() });
+      const res = await appFor(provider).request('/auth/logout', { method: 'POST' });
+
+      expect(res.status).toBe(302);
+      expect(res.headers.getSetCookie().some(cookie => cookie.includes('Max-Age=0'))).toBe(true);
+    });
+
+    it('still clears cookies when revocation throws', async () => {
+      const { provider } = revocableProvider({
+        destroySession: vi.fn(async () => {
+          throw new Error('session store unreachable');
+        }),
+      });
+      const res = await appFor(provider).request('/auth/logout', { method: 'POST' });
+
+      expect(res.status).toBe(302);
+      expect(res.headers.getSetCookie().some(cookie => cookie.includes('Max-Age=0'))).toBe(true);
+    });
+
+    it('does not revoke when the request carries no session id', async () => {
+      const { provider, destroySession } = revocableProvider({ getSessionIdFromRequest: vi.fn(() => undefined) });
+      await appFor(provider).request('/auth/logout', { method: 'POST' });
+      expect(destroySession).not.toHaveBeenCalled();
+    });
+
+    it('revokes on the handler-shaped provider too, alongside its own sign-out call', async () => {
+      const handleAuthRequest = vi.fn(async () => new Response(null, { status: 200 }));
+      const destroySession = vi.fn(async () => {});
+      const provider = fakeProvider({
+        ...httpHandlerCapability({ handleAuthRequest }),
+        createSession: vi.fn(),
+        validateSession: vi.fn(),
+        getSessionIdFromRequest: vi.fn(() => 'sess-2'),
+        destroySession,
+      });
+
+      const res = await appFor(provider).request('/auth/logout', { method: 'POST' });
+      expect(res.status).toBe(302);
+      expect(destroySession).toHaveBeenCalledWith('sess-2');
+      expect(new URL((handleAuthRequest.mock.calls[0]![0] as Request).url).pathname).toBe('/auth/api/sign-out');
+    });
+  });
+
+  describe('the deprecated GET shim', () => {
+    it('still signs out a real browser navigation', async () => {
+      // The SPA's sign-out is window.location.assign('/auth/logout'), and a
+      // bookmarked link is the same request. Neither may quietly stop working
+      // while they are the only sign-out the product has.
+      const { provider, destroySession } = revocableProvider();
+      const res = await appFor(provider).request('/auth/logout', {
+        headers: { 'Sec-Fetch-Dest': 'document' },
+      });
+
+      expect(res.status).toBe(302);
+      expect(destroySession).toHaveBeenCalledWith('sess-1');
+      expect(res.headers.getSetCookie().some(cookie => cookie.includes('Max-Age=0'))).toBe(true);
+    });
+
+    it('signs out a browser too old to send Sec-Fetch-Dest', async () => {
+      // The residual gap, and the reason this is a shim rather than the answer:
+      // with no header there is nothing to distinguish a navigation from an
+      // <img>, and refusing would break sign-out for those people instead.
+      const { provider, destroySession } = revocableProvider();
+      const res = await appFor(provider).request('/auth/logout');
+
+      expect(res.status).toBe(302);
+      expect(destroySession).toHaveBeenCalled();
+    });
+
+    it.each(['image', 'script', 'iframe', 'style', 'font', 'empty'])(
+      'refuses to sign out a request whose Sec-Fetch-Dest is %j',
+      async destination => {
+        // `<img src="/auth/logout">` on any page. The response still redirects,
+        // so nothing looks broken to the attacker's page — it simply does not
+        // touch the session.
+        const { provider, destroySession } = revocableProvider();
+        const res = await appFor(provider).request('/auth/logout', {
+          headers: { 'Sec-Fetch-Dest': destination },
+        });
+
+        expect(res.status).toBe(302);
+        expect(res.headers.get('location')).toBe('/');
+        expect(destroySession).not.toHaveBeenCalled();
+        expect(res.headers.getSetCookie()).toEqual([]);
+      },
+    );
+
+    it('guards the handler-shaped provider the same way', async () => {
+      const handleAuthRequest = vi.fn(async () => new Response(null, { status: 200 }));
+      const provider = fakeProvider(httpHandlerCapability({ handleAuthRequest }));
+      const res = await appFor(provider).request('/auth/logout', {
+        headers: { 'Sec-Fetch-Dest': 'image' },
+      });
+
+      expect(res.status).toBe(302);
+      expect(handleAuthRequest).not.toHaveBeenCalled();
+    });
+
+    it('POST is never subject to the shim guard', async () => {
+      // A cross-origin form POST cannot carry the SPA's cookies as SameSite=Lax,
+      // and POST is the route we tell people to use, so it does not inspect
+      // Sec-Fetch-Dest at all.
+      const { provider, destroySession } = revocableProvider();
+      await appFor(provider).request('/auth/logout', {
+        method: 'POST',
+        headers: { 'Sec-Fetch-Dest': 'empty' },
+      });
+      expect(destroySession).toHaveBeenCalled();
     });
   });
 });
