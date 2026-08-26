@@ -989,6 +989,19 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
               "'@mastra/factory-auth/cookie' gives you that name.",
           });
         }
+        // The bearer path runs FIRST, and the order is the check.
+        //
+        // The failure below tells the reader "the credential is good and the
+        // Cookie header is not being read". That is a claim about the bearer
+        // path, and until it was made in front of a real provider nothing
+        // established it: a provider that authenticates *nobody* - one that
+        // failed to initialize is exactly that - reached the message and was
+        // told its cookie parsing was at fault, which sends somebody to write
+        // cookie parsing for a provider that never started. Going through
+        // `authenticated` first reports that as the fixture problem it is, which
+        // is the same job `authenticated` already does for every other check.
+        const viaBearer = toAuthIdentity(await authenticated(provider, fixtures), provider)?.id;
+
         const request = requestWith(fixtures, { cookie: fixtures.cookieHeader });
         const outcome = await settle(() => provider.authenticateToken('', request));
         const value = outcome.ok ? outcome.value : null;
@@ -1010,7 +1023,6 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         // `userId` fixture. A provider that fails obligation 1 resolves no
         // identity on either path, and this check must not report that as a
         // second, different defect - obligation 1 owns it.
-        const viaBearer = toAuthIdentity(await authenticated(provider, fixtures), provider)?.id;
         const viaCookie = toAuthIdentity(outcome.value, provider)?.id;
         if (viaBearer !== undefined && viaCookie !== viaBearer) {
           fail(fixtures, {
