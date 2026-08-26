@@ -184,7 +184,36 @@ export type ValidationErrorHook = (
   context: ValidationErrorContext,
 ) => ValidationErrorResponse | undefined | void;
 
-export type StoredResourceScopeConfig =
+/**
+ * Resolve the stored-resource scope for the current request.
+ *
+ * Declared with the bivariance hack (the same one `AuthenticateTokenFn` and
+ * `AuthorizeUserFn` use) so a resolver written against a concrete user type
+ * stays assignable to the `unknown`-typed slot `ServerConfig` holds. Without
+ * it, `strictFunctionTypes` checks the parameter contravariantly and
+ * `StoredResourceScopeConfig<MyUser>` could not be handed to `server.storedResources`.
+ */
+export type StoredResourceScopeResolver<TUser = unknown> = {
+  bivarianceHack(context: {
+    requestContext?: RequestContext;
+    user?: TUser;
+  }): string | undefined | null | Promise<string | undefined | null>;
+}['bivarianceHack'];
+
+/**
+ * `TUser` names the shape `resolve` receives. It defaults to `unknown`, which
+ * is what an inline config gets, so declare the config against your own user
+ * type to read fields off it without a cast:
+ *
+ * ```typescript
+ * const scope: StoredResourceScopeConfig<MyUser> = {
+ *   metadataKey: 'organizationId',
+ *   resolve: ({ user }) => user?.organizationId,
+ * };
+ * new Mastra({ server: { storedResources: { scope } } });
+ * ```
+ */
+export type StoredResourceScopeConfig<TUser = unknown> =
   | boolean
   | {
       /**
@@ -197,10 +226,7 @@ export type StoredResourceScopeConfig =
        * Resolve the stored-resource scope for the current request. When omitted,
        * Mastra uses MASTRA_RESOURCE_ID_KEY from the request context.
        */
-      resolve?: (context: {
-        requestContext?: RequestContext;
-        user?: unknown;
-      }) => string | undefined | null | Promise<string | undefined | null>;
+      resolve?: StoredResourceScopeResolver<TUser>;
       /**
        * When true, scoped stored-resource routes fail if no scope can be resolved.
        *
@@ -209,12 +235,12 @@ export type StoredResourceScopeConfig =
       requireScope?: boolean;
     };
 
-export type StoredResourcesConfig = {
+export type StoredResourcesConfig<TUser = unknown> = {
   /**
    * Opt-in tenant/resource scoping for stored resources. When enabled, stored
    * resource handlers persist and filter a scope value in record metadata.
    */
-  scope?: StoredResourceScopeConfig;
+  scope?: StoredResourceScopeConfig<TUser>;
 };
 
 export type ServerConfig = {

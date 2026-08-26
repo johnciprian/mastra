@@ -80,8 +80,12 @@ export type {
 /**
  * Framework-neutral request primitives.
  *
- * These come from `packages/core/src/server/request-types.ts`, a file with zero
- * imports, so they carry no framework and no transitive graph at all.
+ * These come from `packages/core/src/server/request-types.ts`, which since P26
+ * re-exports them from `@internal/auth/types` rather than declaring its own
+ * copy - core had two divergent versions and `./server` exported the wrong one.
+ * That module imports nothing itself, so these still carry no framework and no
+ * transitive graph, and `@mastra/core/server` already bundled the same code by
+ * way of `MastraAuthProvider`.
  *
  * They are re-exported here rather than left to callers because of what this
  * module claims to be. `./cookie` has to read a `Cookie` header and
