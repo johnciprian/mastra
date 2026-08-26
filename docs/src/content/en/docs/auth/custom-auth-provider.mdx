@@ -12,9 +12,17 @@ Custom auth providers allow you to implement authentication for identity systems
 
 `authenticateToken` and `authorizeUser` are the whole base contract. To add a hosted login, server-side sessions, an email and password form, or organization membership, implement one of the optional capability interfaces described in [Auth capability interfaces](/reference/auth/capability-interfaces).
 
-Implementing the contract isn't sufficient on its own. A provider can typecheck cleanly and still fail to run a deployment, because some requirements sit outside the interfaces entirely. Read [Provider obligations](/docs/auth/provider-obligations) before you publish a provider.
+:::note
 
-For a build that starts from an empty file and ends with a passing conformance suite, follow [Write an auth provider](/docs/auth/write-a-provider).
+This page and [Write an auth provider](/docs/auth/write-a-provider) both build providers, for different jobs.
+
+This page covers gating an API with your own provider, using `@mastra/core/server` directly. It's the right page when your provider only has to protect `/api/*` for an application you control.
+
+[Write an auth provider](/docs/auth/write-a-provider) covers publishing a provider that runs the Software Factory, using `@mastra/factory-auth`. Follow that page when your provider needs a browser sign-in, organizations, or a conformance suite. Its examples import `MastraAuthRequest` from the kit rather than `HonoRequest` from `hono`, and they satisfy the four [provider obligations](/docs/auth/provider-obligations) that no interface states.
+
+The base contract is the same either way. The kit re-exports it from `@mastra/core/server` and adds the pieces the Factory needs on top.
+
+:::
 
 ## Overview
 
@@ -223,6 +231,12 @@ const issuer = getTokenIssuer(decoded)
 ```
 
 ### Example: JWKS-based Provider
+
+:::warning
+
+This example gates an API. It doesn't meet the [provider obligations](/docs/auth/provider-obligations), so don't take it as a starting point for a Factory provider. It resolves no organization, which fails the `organizationId` obligation. It also builds its verifier inside the constructor from environment variables, which leaves it untestable offline. [Write an auth provider](/docs/auth/write-a-provider) shows the conforming shape.
+
+:::
 
 ```typescript
 import { MastraAuthProvider } from '@mastra/core/server'

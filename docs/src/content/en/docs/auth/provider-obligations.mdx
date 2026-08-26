@@ -52,9 +52,10 @@ The worse variant resolves the wrong field. A `{ session, user }` payload carrie
 
 Return the id at the top level, under `id`, `uid`, or `sub`:
 
-```typescript title="src/auth-provider.ts"
-async authenticateToken(token: string, request: MastraAuthRequest) {
+```typescript title="src/auth-provider.ts" docscheck=member docscheck-scaffold=oidc-provider
+async authenticateToken(token: string) {
   const claims = await this.verify(token)
+  if (claims === null) return null
   return { id: claims.sub, email: claims.email }
 }
 ```
@@ -63,17 +64,14 @@ Precedence is `id`, then `uid`, then `sub`, so a payload carrying both `id` and 
 
 When you can't change the payload shape, implement `IIdentityProvider` and map it yourself. `toAuthIdentity` hands the whole job to a provider that implements `toIdentity`:
 
-```typescript title="src/auth-provider.ts"
-import { MastraAuthProvider } from '@mastra/factory-auth'
-import type { IIdentityProvider } from '@mastra/factory-auth/identity'
-
-class MyProvider extends MastraAuthProvider implements IIdentityProvider {
-  toIdentity(raw: unknown) {
-    const user = (raw as { data?: { user?: { id?: string } } }).data?.user
-    return user?.id ? { id: user.id, email: user.email } : null
-  }
+```typescript title="src/auth-provider.ts" docscheck=member docscheck-scaffold=provider
+toIdentity(raw: unknown) {
+  const user = (raw as { data?: { user?: { id?: string; email?: string } } }).data?.user
+  return user?.id ? { id: user.id, email: user.email } : null
 }
 ```
+
+Declare the capability on the class with `implements IIdentityProvider`, importing the type from `@mastra/factory-auth/identity`.
 
 Your mapper's answer is final, including when it's `null`. The built-in shape detection doesn't run as a fallback, because a mapper returns `null` for reasons only it knows. The payload might be a service account. A required custom claim might be missing. Every such payload still carries a `sub`, so a fallback would hand back an identity the provider had already refused, and the refusal would be invisible. To opt into the built-in behavior for shapes you don't handle, call `toAuthIdentity(raw)` yourself with no provider argument.
 
@@ -93,7 +91,7 @@ The person sees "signed in, then immediately signed out." A provider that reads 
 
 Fall back to the `Cookie` header when `token` is empty. `getRequestHeader` is re-exported from the kit and reads a plain `Request`, a Hono context request, and anything shaped like one, so it costs you no web-framework dependency:
 
-```typescript title="src/auth-provider.ts"
+```typescript title="src/auth-provider.ts" docscheck=member docscheck-scaffold=provider
 import { getRequestHeader } from '@mastra/factory-auth/contract'
 
 async authenticateToken(token: string, request: MastraAuthRequest) {
@@ -130,7 +128,7 @@ A provider that keys its own state store on one substring and looks it up under 
 
 Treat `state` as opaque. Put exactly what you were handed into the authorization URL:
 
-```typescript title="src/auth-provider.ts"
+```typescript title="src/auth-provider.ts" docscheck=member docscheck-scaffold=provider
 getLoginUrl(redirectUri: string, state: string) {
   const url = new URL(`${this.issuer}/authorize`)
   url.searchParams.set('redirect_uri', redirectUri)
@@ -143,7 +141,7 @@ getLoginUrl(redirectUri: string, state: string) {
 
 If you keep a state store, key it on the same value the callback hands back. The host passes `handleCallback` the raw `state` from the query string, so that whole string is the key:
 
-```typescript title="src/auth-provider.ts"
+```typescript title="src/auth-provider.ts" docscheck=member docscheck-scaffold=provider
 getLoginUrl(redirectUri: string, state: string) {
   this.states.set(state, { redirectUri })
   // ...
@@ -157,7 +155,7 @@ async handleCallback(code: string, state: string) {
 
 To read the two halves, use the codec from `@mastra/factory-auth/oauth-state` rather than splitting by hand. `parseStateId(state)` gives the id, and `decodeState(state).returnTo` gives the destination:
 
-```typescript title="src/auth-routes.ts"
+```typescript title="src/auth-routes.ts" docscheck=statements docscheck-scaffold=provider
 import { decodeState, encodeState, parseStateId } from '@mastra/factory-auth/oauth-state'
 
 // At login. Stash `stateId` somewhere the browser can't forge.
@@ -165,7 +163,7 @@ const stateId = crypto.randomUUID()
 const state = encodeState(returnTo, stateId)
 
 // On the callback, with `raw` read from the query string.
-if (parseStateId(raw) !== stateId) return unauthorized()
+if (parseStateId(raw) !== stateId) throw new Error('State mismatch: refuse the callback.')
 const { returnTo: destination } = decodeState(raw)
 ```
 
@@ -191,7 +189,7 @@ A non-deterministic `ensureOrganization` fails differently and worse. An id that
 
 If your provider has no organizations, wrap it once. Every capability it had is preserved and one is added:
 
-```typescript title="src/mastra/index.ts"
+```typescript title="src/mastra/index.ts" docscheck-scaffold=auth-provider
 import { withSyntheticOrganizations } from '@mastra/factory-auth/organizations'
 
 export const auth = withSyntheticOrganizations(new MyProvider())
@@ -256,7 +254,27 @@ Failures name the obligation in the test path before you read the message, and e
 
 Set `sso.reachedTokenExchange` only if your token exchange bypasses global `fetch`, since the suite replaces `fetch` to make "reached the network" observable.
 
+`rejectedToken` names a token your provider must refuse, and defaults to `'conformance-rejected-token'`. Override it only if that string means something to your provider.
+
 Taking your verifier as a constructor argument rather than building one inside the class is what lets the suite run your provider offline. That's worth doing for its own sake, and it's the same setup your unit tests already need.
+
+### Releasing with a check you can't fix yet
+
+A provider can be real, useful, and not conforming, where the defect is well understood and the fix isn't small. Record the failure rather than hiding it:
+
+```typescript title="src/conformance.test.ts" docscheck=skip docscheck-reason="an options fragment, shown without the surrounding describeAuthProvider call it belongs to"
+knownFailures: [
+  {
+    check: 'sessions/round-trip',
+    code: 'sessions/round-trip#validate-rejects-fresh-session',
+    reason: 'validateSession returns null unconditionally. Tracked in ACME-482.',
+  },
+],
+```
+
+An entry isn't an exclusion. The suite checks it in both directions on every run and fails when a recorded check starts passing, when it stops applying, or when it fails for a reason other than the one recorded. The entry therefore can't outlive the defect, and it can't quietly spread to cover a second one. Fixing the defect forces you to delete its entry in the same change.
+
+Without this, a team facing one red check picks from three bad options. They can weaken the suite. They can leave the build red until people stop reading it. They can drop the provider from conformance. All three end with nobody knowing the provider is broken.
 
 ## Related
 

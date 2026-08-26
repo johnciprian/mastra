@@ -16,13 +16,16 @@ You need a TypeScript package and an identity system that can verify a token. No
 
 ## Install the kit
 
-`@mastra/factory-auth` carries the contract, the helpers, and the conformance suite. `vitest` is an optional peer of the kit, needed only by the suite, so your package manager won't install it for you:
+`@mastra/factory-auth` carries the contract, the helpers, and the conformance suite. It re-exports the contract from `@mastra/core`, which is a required peer, so install that too. `vitest` is an optional peer of the kit, needed only by the suite, so your package manager won't install it for you:
 
 ```bash npm2yarn
+npm install @mastra/core
 npm install --save-dev @mastra/factory-auth vitest
 ```
 
-Whether the kit is a development dependency or a runtime one depends on what you end up importing. A provider that uses the kit only for its conformance suite keeps it in `devDependencies`, which is how `@mastra/auth-supabase` and `@mastra/auth-firebase` declare it. A provider that imports a helper on the request path needs it in `dependencies`, which is how `@mastra/auth-okta` declares it after adopting the kit's OAuth state codec. Start with a development dependency and move it if step four sends you to the codec.
+Inside an existing Mastra application `@mastra/core` is already there. A standalone provider package needs it named explicitly, and it belongs in `peerDependencies` when you publish so your provider and its host agree on one copy of the contract.
+
+Whether the kit is a development dependency or a runtime one depends on what you end up importing. A provider that uses the kit only for its conformance suite keeps it in `devDependencies`, which is how `@mastra/auth-supabase` and `@mastra/auth-firebase` declare it. A provider that imports a helper on the request path needs it in `dependencies`, which is how `@mastra/auth-okta` declares it after adopting the kit's OAuth state codec. Start with a development dependency and move it if the hosted-login step sends you to the codec.
 
 ## Take your verifier as an argument
 
@@ -34,12 +37,19 @@ export interface AcmeAuthOptions extends MastraAuthProviderOptions<AcmeUser> {
   clientId: string
   clientSecret: string
   verify: (token: string) => Promise<AcmeUser | null>
+  cookieName?: string
 }
 ```
 
 Injecting the verifier is how the suite runs your provider offline, with no network and no environment variables. Published providers each pick the seam that suits them. `@mastra/auth-okta` swaps its remote JWKS for a local key set built in the test file, so `jose` runs its real verification path against keys the test holds. `@mastra/auth-supabase` accepts a `client` option and receives a stand-in that answers the way GoTrue answers.
 
 Building the verifier inside the constructor works right up until you try to test it, and then it costs more to undo than it saved.
+
+:::note
+
+**Verifying an OIDC token? Don't write the crypto.** `@mastra/auth` provides `verifyJwks(token, jwksUri)` for JWKS-backed providers and `verifyHmac(token, secret)` for shared-secret JWTs. Either one is the whole body of the `verify` function above. See [Helper utilities](/docs/auth/custom-auth-provider#helper-utilities). Reaching for `SubtleCrypto` to check an RS256 signature by hand is roughly a hundred lines that these already cover.
+
+:::
 
 ## Validate a token, and read the cookie
 
@@ -71,11 +81,17 @@ function readCookie(header: string, name: string): string {
 }
 
 export class AcmeAuth extends MastraAuthProvider<AcmeUser> {
+  protected issuer: string
+  protected clientId: string
+  protected clientSecret: string
   private verify: (token: string) => Promise<AcmeUser | null>
   private cookieName: string
 
   constructor(options: AcmeAuthOptions) {
     super({ name: options.name ?? 'acme' })
+    this.issuer = options.issuer
+    this.clientId = options.clientId
+    this.clientSecret = options.clientSecret
     this.verify = options.verify
     this.cookieName = options.cookieName ?? DEFAULT_COOKIE_NAME
     this.registerOptions(options)
@@ -107,6 +123,17 @@ The returned user has its id at the top level under `id`, which satisfies the `f
 The `catch` returns `null` rather than rethrowing. An unknown token is the ordinary state of a public endpoint, and a host treats a throw as a bug: it logs a stack trace per unauthenticated request and answers 401 with nothing useful in it.
 
 `authorizeUser` returning `true` is the right default for a provider to publish. Authorization policy that depends on infrastructure the contract never mentions belongs in a deployment rather than in a provider's default. `@mastra/auth-supabase` changed its default to exactly this after the old one denied every request in any project lacking a `users` table with an `isAdmin` column.
+
+`registerOptions` is a `protected` method on `MastraAuthProvider`, and calling it at the end of your constructor is what lets a deployment configure your provider without subclassing it. It reads four fields off the options object you were handed:
+
+| Option | Effect |
+| - | - |
+| `authorizeUser` | Replaces your `authorizeUser` with the caller's function, bound to the provider. |
+| `mapUserToResourceId` | Installs the optional method that scopes memory resources. |
+| `protected` | Path patterns the host requires authentication for. |
+| `public` | Path patterns the host lets through unauthenticated. |
+
+Skip the call and those four options are accepted by your type and then silently ignored, which is the kind of defect nobody reports because nothing errors. [Custom auth provider](/docs/auth/custom-auth-provider#configuration-options) documents the path-pattern syntax.
 
 ## Run the conformance suite now
 
@@ -179,8 +206,21 @@ The wrapper keeps every capability the provider already had and adds `ensureOrga
 
 Point `createProvider` at the wrapped export so the suite exercises the same composition:
 
-```typescript title="src/conformance.test.ts"
+```typescript title="src/conformance.test.ts" docscheck=replace
+import { describeAuthProvider } from '@mastra/factory-auth/conformance'
 import { withSyntheticOrganizations } from '@mastra/factory-auth/organizations'
+
+import { AcmeAuth } from './auth-provider'
+import type { AcmeUser } from './auth-provider'
+
+const TOKEN = 'acme-conformance-token'
+const USER_ID = 'acme_user_123'
+
+const USER: AcmeUser = { id: USER_ID, email: 'conformance@example.test' }
+
+async function verify(token: string): Promise<AcmeUser | null> {
+  return token === TOKEN ? USER : null
+}
 
 function createProvider() {
   return withSyntheticOrganizations(
@@ -192,6 +232,14 @@ function createProvider() {
     }),
   )
 }
+
+describeAuthProvider({
+  name: '@acme/auth-acme',
+  createProvider,
+  token: TOKEN,
+  userId: USER_ID,
+  cookieHeader: `acme_session=${TOKEN}`,
+})
 ```
 
 Wrapping is worth doing even when your provider does have organizations. `ensureOrganization` is documented as best-effort and may resolve `undefined`, which a host can't store. The wrapper fills that gap and never overrides an answer you gave.
@@ -200,15 +248,77 @@ Wrapping is worth doing even when your provider does have organizations. `ensure
 
 A hosted login means implementing `ISSOProvider`: send the browser to a page your identity provider owns, then handle the callback. Adding it turns on the `stateCodec` obligation.
 
-The host mints `state` and hands it to `getLoginUrl`. When the identity provider echoes it back, the host passes the raw query-string value to `handleCallback`. Treat it as opaque in both directions:
+The host mints `state` and hands it to `getLoginUrl`. When the identity provider echoes it back, the host passes the raw query-string value to `handleCallback`. Treat it as opaque in both directions.
 
-```typescript title="src/auth-provider.ts"
-import type { ISSOProvider } from '@mastra/factory-auth'
+Here is the finished `src/auth-provider.ts`. Everything above the hosted-login methods is unchanged apart from the `implements` clause and the added `ISSOProvider` import:
+
+```typescript title="src/auth-provider.ts" docscheck=replace
+import { MastraAuthProvider } from '@mastra/factory-auth'
+import type {
+  ISSOProvider,
+  MastraAuthProviderOptions,
+  MastraAuthRequest,
+} from '@mastra/factory-auth'
+import { getRequestHeader } from '@mastra/factory-auth/contract'
+
+export interface AcmeUser {
+  id: string
+  email?: string
+  name?: string
+}
+
+export interface AcmeAuthOptions extends MastraAuthProviderOptions<AcmeUser> {
+  issuer: string
+  clientId: string
+  clientSecret: string
+  verify: (token: string) => Promise<AcmeUser | null>
+  cookieName?: string
+}
+
+const DEFAULT_COOKIE_NAME = 'acme_session'
+
+function readCookie(header: string, name: string): string {
+  for (const pair of header.split(';')) {
+    const separator = pair.indexOf('=')
+    if (separator === -1) continue
+    if (pair.slice(0, separator).trim() !== name) continue
+    return decodeURIComponent(pair.slice(separator + 1).trim())
+  }
+  return ''
+}
 
 export class AcmeAuth extends MastraAuthProvider<AcmeUser> implements ISSOProvider<AcmeUser> {
+  protected issuer: string
+  protected clientId: string
+  protected clientSecret: string
+  private verify: (token: string) => Promise<AcmeUser | null>
+  private cookieName: string
   private states = new Map<string, { redirectUri: string }>()
 
-  // ... constructor, authenticateToken and authorizeUser as above
+  constructor(options: AcmeAuthOptions) {
+    super({ name: options.name ?? 'acme' })
+    this.issuer = options.issuer
+    this.clientId = options.clientId
+    this.clientSecret = options.clientSecret
+    this.verify = options.verify
+    this.cookieName = options.cookieName ?? DEFAULT_COOKIE_NAME
+    this.registerOptions(options)
+  }
+
+  async authenticateToken(token: string, request: MastraAuthRequest): Promise<AcmeUser | null> {
+    const header = getRequestHeader(request, 'cookie') ?? ''
+    const bearer = token || readCookie(header, this.cookieName)
+    if (!bearer) return null
+    try {
+      return await this.verify(bearer)
+    } catch {
+      return null
+    }
+  }
+
+  authorizeUser(): boolean {
+    return true
+  }
 
   getLoginUrl(redirectUri: string, state: string): string {
     this.states.set(state, { redirectUri })
@@ -224,10 +334,12 @@ export class AcmeAuth extends MastraAuthProvider<AcmeUser> implements ISSOProvid
     const stored = this.states.get(state)
     if (stored === undefined) throw new Error('Unknown or expired OAuth state.')
 
+    // RFC 6749 requires a form-encoded body here. A JSON body is rejected by
+    // every conforming token endpoint.
     const response = await fetch(`${this.issuer}/token`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
         grant_type: 'authorization_code',
         client_id: this.clientId,
         client_secret: this.clientSecret,
@@ -235,13 +347,20 @@ export class AcmeAuth extends MastraAuthProvider<AcmeUser> implements ISSOProvid
         code,
       }),
     })
-    const tokens = (await response.json()) as { access_token: string }
+    const tokens = (await response.json()) as { access_token: string; expires_in?: number }
     const user = await this.verify(tokens.access_token)
     if (user === null) throw new Error('The token exchange returned a token this provider rejects.')
 
     return {
       user,
-      tokens: { accessToken: tokens.access_token },
+      tokens: {
+        accessToken: tokens.access_token,
+        // `expiresAt` is a Date, while OAuth reports `expires_in` in seconds.
+        expiresAt:
+          tokens.expires_in === undefined
+            ? undefined
+            : new Date(Date.now() + tokens.expires_in * 1000),
+      },
       cookies: [
         `${this.cookieName}=${encodeURIComponent(tokens.access_token)}; Path=/; HttpOnly; SameSite=Lax`,
       ],
@@ -254,7 +373,9 @@ export class AcmeAuth extends MastraAuthProvider<AcmeUser> implements ISSOProvid
 }
 ```
 
-`getLoginButtonConfig` and `handleCallback` carry no return type annotation, and that's deliberate. `@mastra/core/server` exports the capability interfaces but not the payload types they traffic in, so `implements ISSOProvider<AcmeUser>` is what constrains those returns. TypeScript checks them against the interface without an import you can't make.
+`getLoginButtonConfig` and `handleCallback` carry no return type annotation, and that's deliberate. `@mastra/core/server` exports the capability interfaces but not the payload types they traffic in, so the `implements` clause is what constrains those returns. TypeScript checks them against the interface without an import you can't make.
+
+Both shapes inside `handleCallback` catch people out, and neither is guessable from the method signature. RFC 6749 requires a form-encoded body at the token endpoint, so a JSON body is refused by every conforming identity provider. And `tokens.expiresAt` is a `Date`, while an OAuth response reports `expires_in` as a number of seconds, so it needs converting rather than passing through.
 
 The `cookies` array is how a browser ends up holding the session your `authenticateToken` already knows how to read. Both halves now use the same credential and the same verification path, which is what keeps the cookie and the header from naming different people.
 
@@ -266,7 +387,7 @@ Keying a state store on one substring and reading it with another rejects every 
 
 When a host hands you the id half instead of the whole value, normalize both sides through the kit's codec rather than slicing by hand:
 
-```typescript title="src/auth-provider.ts"
+```typescript title="src/state-key.ts"
 import { parseStateId } from '@mastra/factory-auth/oauth-state'
 
 /** Both halves of the round trip agree on this key, whichever spelling arrives. */
@@ -285,7 +406,7 @@ A provider in that position validates bearer tokens and does nothing else, and t
 
 Declare the limit in the open rather than leaving it to be inferred from a missing method. Both published bearer-only providers export a constant saying so:
 
-```typescript title="src/index.ts"
+```typescript title="src/index.ts" docscheck=replace
 export const FACTORY_BROWSER_SIGN_IN = {
   supported: false,
   reason: 'Acme issues tokens to clients and has no server-side hosted login.',
@@ -295,9 +416,23 @@ export const FACTORY_BROWSER_SIGN_IN = {
 
 Then assert the shape, so a later change that adds a hosted login fails these tests and tells you this file needs rewriting:
 
-```typescript title="src/conformance.test.ts"
+```typescript title="src/browser-flow.test.ts"
 import { toAuthDescriptor } from '@mastra/factory-auth/capabilities'
+import { withSyntheticOrganizations } from '@mastra/factory-auth/organizations'
 import { describe, expect, it } from 'vitest'
+
+import { AcmeAuth } from './auth-provider'
+import { FACTORY_BROWSER_SIGN_IN } from './index'
+
+const createProvider = () =>
+  withSyntheticOrganizations(
+    new AcmeAuth({
+      issuer: 'https://idp.acme.test',
+      clientId: 'acme-client-id',
+      clientSecret: 'acme-client-secret',
+      verify: async () => null,
+    }),
+  )
 
 describe('the Factory browser flow', () => {
   it('declares that it cannot sign anybody in from a browser', () => {
