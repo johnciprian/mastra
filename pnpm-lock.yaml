@@ -467,6 +467,9 @@ importers:
       '@internal/types-builder':
         specifier: workspace:*
         version: link:../../packages/_types-builder
+      '@mastra/factory-auth':
+        specifier: workspace:*
+        version: link:../../mastracode/factory-auth
       '@types/node':
         specifier: 22.19.15
         version: 22.19.15
@@ -553,6 +556,9 @@ importers:
       '@internal/types-builder':
         specifier: workspace:*
         version: link:../../packages/_types-builder
+      '@mastra/factory-auth':
+        specifier: workspace:*
+        version: link:../../mastracode/factory-auth
       '@types/node':
         specifier: 22.19.15
         version: 22.19.15
@@ -676,6 +682,9 @@ importers:
       '@internal/types-builder':
         specifier: workspace:*
         version: link:../../packages/_types-builder
+      '@mastra/factory-auth':
+        specifier: workspace:*
+        version: link:../../mastracode/factory-auth
       '@types/node':
         specifier: 22.19.15
         version: 22.19.15
@@ -713,6 +722,9 @@ importers:
       '@mastra/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@mastra/factory-auth':
+        specifier: workspace:*
+        version: link:../../mastracode/factory-auth
       '@types/node':
         specifier: 22.19.15
         version: 22.19.15

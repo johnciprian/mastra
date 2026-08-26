@@ -54,10 +54,14 @@
  *
  * WHY THE ALLOWLIST EXISTS AND WHY IT CANNOT GROW QUIETLY
  *
- * Five providers ship today with no conformance suite. Writing five suites is
- * not this task, and leaving the gate red until somebody stops reading it is
- * the outcome every part of this system is designed to avoid. So they are
+ * Five providers once shipped with no conformance suite. Writing five suites
+ * was not that task, and leaving the gate red until somebody stops reading it
+ * is the outcome every part of this system is designed to avoid. So they were
  * recorded, in {@link NO_CONFORMANCE_YET}, each with a reason.
+ *
+ * That list is now empty: every shipped provider runs conformance. The
+ * mechanism stays, because the case it exists for is the next provider that
+ * arrives mid-conversion rather than the five that have been converted.
  *
  * An entry is not an exclusion. It is checked in both directions on every run,
  * exactly like `knownFailures` inside the kit:
@@ -144,30 +148,10 @@ const SUITE_ENTRY_POINT = 'describeAuthProvider';
  * a suite today", and "we did not write one" is not an answer for new code.
  */
 const NO_CONFORMANCE_YET = new Map<string, string>([
-  [
-    'auth0',
-    'Not yet converted. Lane C (C1-C5) took six providers through conformance - better-auth, okta, ' +
-      'supabase, firebase, workos, studio - and no task in .plans/auth/tasks.json covers this one. ' +
-      'The suite is roughly 40 lines: stub the Auth0 JWKS verifier the way src/index.test.ts already ' +
-      'does, then call describeAuthProvider with a token that verifier accepts.',
-  ],
-  [
-    'clerk',
-    'Not yet converted, and no task in .plans/auth/tasks.json covers it. Same shape as auth0: ' +
-      'MastraAuthClerk verifies bearer tokens against Clerk, so conformance needs the verifier ' +
-      'injected in createProvider and nothing else.',
-  ],
-  [
-    'google',
-    'Not yet converted, and no task in .plans/auth/tasks.json covers it. MastraAuthGoogle validates ' +
-      'Google ID tokens; conformance needs the token verification seam stubbed in createProvider.',
-  ],
-  [
-    'neon',
-    'Not yet converted, and no task in .plans/auth/tasks.json covers it. MastraAuthNeon declares ' +
-      'more of the contract than the others (it carries an RBAC provider), so this one is the most ' +
-      'likely of the five to surface real findings and the most worth doing next.',
-  ],
+  // Empty, and worth leaving empty. Every shipped provider under `auth/` runs
+  // `describeAuthProvider`; the last four entries - auth0, clerk, google and
+  // neon - were deleted by P3, which is what the stale-entry assertion below
+  // demanded the moment their suites landed.
 ]);
 
 // ============================================================================
