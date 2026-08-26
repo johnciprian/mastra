@@ -14,7 +14,7 @@ external assets beyond web fonts).
 | [`swappability-audit.html`](./swappability-audit.html) | Audit of how pluggable, compartmentalized and testable auth is today. Includes a capability matrix for all 11 `auth/*` provider packages and letter grades for five seams. |
 | [`remediation-plan.html`](./remediation-plan.html) | Four-phase plan to take every seam to A−, built on a fork-owned Apache-2.0 auth kit. States the EE licence boundary precisely. |
 | [`task-graph.html`](./task-graph.html) | The plan decomposed into 65 dependency-linked tasks across six lanes, with seven hard gates, the critical path, and scheduling scenarios. Not updated with the `P` follow-ups; `tasks.json` is authoritative. |
-| [`tasks.json`](./tasks.json) | 93 tasks, machine-readable — `id`, `lane`, `size`, `deps`, `files`, `detail`, `doneWhen`. The original 65, plus `P1`–`P28`: `P1`–`P18` filed by the re-grade, `P19`–`P28` filed by the work since. Import into a tracker or feed to a script. |
+| [`tasks.json`](./tasks.json) | 94 tasks, machine-readable — `id`, `lane`, `size`, `deps`, `files`, `detail`, `doneWhen`. The original 65, plus `P1`–`P29`: `P1`–`P18` filed by the re-grade, `P19`–`P29` filed by the work since. Import into a tracker or feed to a script. |
 
 **Start at [Final grades](#final-grades-r2)** if you want the current state rather than the
 original diagnosis. The two HTML documents describe the problem and the plan as of the
@@ -68,8 +68,8 @@ so the boundary is a build error rather than a code-review habit.
 
 ## Status
 
-**62 of 65 original tasks done**, plus **28 post-plan follow-ups** (`P1`–`P28`) filed by
-the re-grade and by the work since, of which **20 are done and 8 pending**. Each task in
+**62 of 65 original tasks done**, plus **29 post-plan follow-ups** (`P1`–`P29`) filed by
+the re-grade and by the work since, of which **22 are done and 7 pending**. Each task in
 `tasks.json` carries a `status` field (`done` / `pending` / `held`) — that file is the
 source of truth for progress; update it when a task merges.
 
@@ -104,7 +104,7 @@ Apache-2.0/EE boundary, and a `describeAuthProvider` conformance suite. See
 
 ### Where the plan text was wrong, and the measurement that showed it
 
-The `P` follow-ups were written from reading the code rather than running it, and seven of
+The `P` follow-ups were written from reading the code rather than running it, and nine of
 them turned out to be wrong about the defect or the fix — enough that measuring first
 before touching anything is now the rule, not a precaution. Each correction is recorded in
 that task's own `detail` in `tasks.json`, next to the claim it replaces.
@@ -138,6 +138,13 @@ that task's own `detail` in `tasks.json`, next to the claim it replaces.
   `ISSOProvider` as an alternative to a standalone interface. `@mastra/auth-better-auth` is
   the provider the pattern exists for and it is not an `ISSOProvider`, so that route would
   have declared the member for every provider that cannot use it and none that needs it.
+- **`P25` named neither real cause.** It blamed a test depending on an earlier test's mock. In
+  `auth/clerk` that was close enough; in `auth/studio` the cause was a describe replacing
+  `globalThis.fetch` by assignment, which `vi.restoreAllMocks()` cannot undo, so the replacement
+  outlived the block and later spies inherited its call history.
+- **`P26`'s first defect did not need `packages/_internals/auth`**, and its `StoredResourceScopeConfig`
+  finding understated the problem: that type was never exported from any published subpath, so no
+  consumer could name it at all.
 - **`P18` undercounted, and one of its own reasons was wrong.** `auth/studio` carried four
   recorded failures, not three. And the reason recorded against `ensureOrganization` said
   fixing it would move which partition bearer-token users' rows land in; it does not, because
