@@ -2,7 +2,7 @@
 '@mastra/factory-auth': minor
 ---
 
-`@mastra/factory-auth/identity` now ships, so a provider that returns `{ uid }` or `{ sub }` no longer authenticates your users as nobody.
+`@mastra/factory-auth/identity` normalizes a provider's user into one shape, so a provider that returns `{ uid }` or `{ sub }` stops authenticating your users as nobody.
 
 Every provider returns a different user shape, and the Factory has to store data under one key either way. `toAuthIdentity` turns any of them into a single `AuthIdentity` with a required, non-empty `id`.
 
@@ -47,4 +47,4 @@ class MyProvider extends MastraAuthProvider implements IIdentityProvider {
 
 **Why `id` is required**
 
-A flat, resolvable id is one of four obligations that every Factory surface depends on and that no interface or documentation stated. Making it required moves the failure to the point that can explain it, and lets the coming conformance suite assert it.
+A flat, resolvable id is one of four obligations that every Factory surface depends on and that no interface or documentation stated. Making it required moves the failure to the point that can explain it, and lets `describeAuthProvider` assert it.
