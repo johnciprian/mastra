@@ -153,14 +153,6 @@ const NO_CONFORMANCE_YET = new Map<string, string>([
       'injected in createProvider and nothing else.',
   ],
   [
-    'cloud',
-    'Not yet converted, and blocked twice over. auth/cloud/vitest.config.ts declares no `name`, so ' +
-      "its project is called @mastra/auth-cloud and the unit job (--project 'unit:*') has never " +
-      'selected any of its tests - a conformance suite added today would not run. Fix the project ' +
-      'name first, then add the suite; the CI-reachability assertion in this file will hold the ' +
-      'second half once the first is done.',
-  ],
-  [
     'google',
     'Not yet converted, and no task in .plans/auth/tasks.json covers it. MastraAuthGoogle validates ' +
       'Google ID tokens; conformance needs the token verification seam stubbed in createProvider.',
