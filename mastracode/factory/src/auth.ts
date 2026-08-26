@@ -35,7 +35,72 @@ import { timedAboveThreshold } from './timing.js';
  * - `IOrganizationsProvider` — personal-org bootstrap + admin checks
  * - `ICredentialsProvider.isSignUpEnabled` — SPA sign-up affordance
  * - `getClearSessionHeaders` — session cookie clearing on logout
+ *
+ * One behavioural switch lives here: {@link isAuthIdentityV2Enabled}, the
+ * rollback for the identity/session/logout migration. See its doc comment.
  */
+
+/**
+ * Name of the compat flag for the v2 identity path. Off unless explicitly
+ * enabled — see {@link isAuthIdentityV2Enabled}.
+ */
+export const AUTH_IDENTITY_V2_ENV_VAR = 'MASTRACODE_AUTH_IDENTITY_V2';
+
+/**
+ * Parse the compat flag's value. Opt-in only: `1` and `true` (any case, any
+ * surrounding whitespace) turn it on, and every other value leaves it off —
+ * `0`, `false`, the empty string, and anything unrecognized alike.
+ *
+ * An unrecognized value resolves to off rather than on because this flag's
+ * default *is* the safe answer. An operator who mistypes the value gets the
+ * behaviour that already shipped, not an accidental opt-in to a path they had
+ * not chosen. Exported so the parsing rules are testable without reloading the
+ * module.
+ */
+export function readAuthIdentityV2Env(raw: string | undefined): boolean {
+  const normalized = raw?.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true';
+}
+
+/**
+ * The flag's value for this process, captured once at module load. See
+ * {@link isAuthIdentityV2Enabled} for why it is read here and not per request.
+ */
+const AUTH_IDENTITY_V2 = readAuthIdentityV2Env(process.env[AUTH_IDENTITY_V2_ENV_VAR]);
+
+/**
+ * Whether the v2 identity path is enabled for this process
+ * (`MASTRACODE_AUTH_IDENTITY_V2`), defaulting to **off**.
+ *
+ * The identity, session and logout changes land together, and together they are
+ * the only part of this module that can break a live sign-in: they change how a
+ * provider's `authenticateToken` result becomes a {@link FactoryAuthUser}, which
+ * is the value every ownership check in the app compares against. A wrong answer
+ * there does not throw — it reads as "this session belongs to somebody else" at
+ * each check, and looks like data loss rather than an auth bug. So the release
+ * carries a one-command rollback: unset the variable, restart, and the process
+ * is back on the path that shipped before it.
+ *
+ * This is the single read site for the flag. Later work branches on this
+ * function rather than reaching for `process.env` again, so that "what is this
+ * process running?" has exactly one answer.
+ *
+ * READ ONCE, AT MODULE LOAD, AND THAT IS DELIBERATE
+ *
+ * A flag re-read per request can change value inside a running process, and a
+ * session resolved on the v2 path but re-checked on the v1 path is precisely the
+ * half-migrated state the flag exists to prevent. The gate also runs this on
+ * every protected request, so one read is the cheaper shape besides.
+ *
+ * The cost is paid by tests: assigning to `process.env` after this module has
+ * been imported does nothing. Reach the other path by reloading the module —
+ * `vi.resetModules()` then `await import('./auth.js')` — as the compat-flag
+ * suite in `auth-seam.test.ts` does. {@link readAuthIdentityV2Env} is exported
+ * separately so the parsing rules need no reload at all.
+ */
+export function isAuthIdentityV2Enabled(): boolean {
+  return AUTH_IDENTITY_V2;
+}
 
 /** Minimal shape of the signed-in user surfaced to the SPA (no tokens). */
 export interface FactoryAuthUser {
