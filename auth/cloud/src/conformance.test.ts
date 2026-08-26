@@ -52,30 +52,26 @@
  *    depends on an unverified assumption is worse than a recorded red.
  *
  * 2. `obligation/stateCodec/callback#state-rejected`
- *    `handleCallback(code, state)` cannot read the PKCE verifier it wrote at
- *    login, so it throws `PKCEError.missingVerifier()` before it looks at the
- *    `state` at all and before it makes any network attempt — the suite
- *    replaced `globalThis.fetch` and counted zero calls.
- *    This is the systemic PKCE gap the audit records, seen from the provider
- *    side. The write half, `getLoginCookies`, is declared on `ISSOProvider`
- *    and is called by the Factory. The read half is
- *    `setCallbackCookieHeader`, which is *not* on `ISSOProvider` at all: it is
- *    an undeclared duck-typed hook, called only from
- *    `packages/server/src/server/handlers/auth.ts:492` and forwarded by
- *    `CompositeAuth`. It appears zero times in `mastracode/factory/src/`. So a
- *    host that has only the declared interface — which is what conformance
- *    holds a provider to — has no way to hand this method the cookie, and
- *    every sign-in through the Factory fails here.
- *    Not fixed, and deliberately not worked around: pre-feeding the cookie
- *    from `createProvider` would invent a host behaviour the Factory does not
- *    have, and would turn a real gap green. The fix is to declare the read
- *    side on `ISSOProvider` and call it from the Factory callback, which is a
- *    change to `@internal/auth` and `mastracode/factory`.
- *    Second defect behind the same code, and it survives the first: this
- *    provider's `decodeState` is `JSON.parse(base64url)`, so a host-minted
- *    `id|returnTo` state is rejected as malformed even once the cookie is
- *    readable. Both halves of obligation 3 fail for one root cause — the
- *    provider does not use the kit's state codec in either direction.
+ *    `handleCallback(code, state)` throws `AuthError` — "OAuth state parameter
+ *    is invalid or malformed" — before it makes any network attempt; the suite
+ *    replaced `globalThis.fetch` and counted zero calls. This provider's
+ *    `decodeState` is `JSON.parse(base64url)`, so a host-minted `id|returnTo`
+ *    state is not a state it can read. Both halves of obligation 3 fail for one
+ *    root cause: the provider does not use the kit's state codec in either
+ *    direction.
+ *    The PKCE verifier used to be what stopped this call, and no longer is.
+ *    `handleCallback` reads the verifier out of a cookie it wrote at login, and
+ *    the read half — `setCallbackCookieHeader` — was declared on no interface
+ *    at all, so it threw `PKCEError.missingVerifier()` before ever reaching the
+ *    `state`, and this check said it had "rejected a state" about a call that
+ *    never read one. P5 declared the read half on `ISSOProvider` and had the
+ *    Factory call it; P6 added `sso/pkce-round-trip` and made every callback
+ *    check hand the login cookies back the way a browser does. The verifier now
+ *    arrives, `sso/pkce-round-trip` passes on this provider, and what is left
+ *    here is a genuine finding about `state`.
+ *    Not fixed: reading the kit's codec would change the wire format `/auth/oss`
+ *    and `/auth/callback` see, and see diagnosis 1 for why that is not
+ *    verifiable from this repository.
  *
  * 3. `sessions/round-trip#validate-rejects-fresh-session`
  *    `createSession(userId)` with no metadata mints a random UUID and returns
@@ -272,12 +268,11 @@ const knownFailures = [
     check: 'obligation/stateCodec/callback',
     code: 'obligation/stateCodec/callback#state-rejected',
     reason:
-      'handleCallback throws PKCEError.missingVerifier() before reading the state and before any network ' +
-      'attempt. P5 has since declared the read half (setCallbackCookieHeader on ISSOProvider) and the ' +
-      'Factory now calls it, so a host CAN hand this provider the cookie -- but the conformance harness ' +
-      'does not, which is P6. Behind that, decodeState is JSON.parse(base64url) and rejects a host-minted ' +
-      'id|returnTo state anyway, so this check would still fail on the state alone. Diagnosis 2 in this ' +
-      'file’s header.',
+      'decodeState is JSON.parse(base64url), so a host-minted id|returnTo state is rejected as malformed ' +
+      'before any network attempt: "OAuth state parameter is invalid or malformed". The PKCE cookie is no ' +
+      'longer what stops it -- P5 declared setCallbackCookieHeader and P6 made the suite hand the login ' +
+      'cookies back through it, and this check now gets past the verifier and fails on the state alone, ' +
+      'which is what obligation 3 is about. Diagnosis 2 in this file’s header.',
   },
   {
     check: 'sessions/round-trip',

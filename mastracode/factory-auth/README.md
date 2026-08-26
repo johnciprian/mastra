@@ -169,10 +169,10 @@ The provider above answers with:
 
 ```
  Test Files  1 passed (1)
-      Tests  8 passed | 10 skipped (18)
+      Tests  8 passed | 11 skipped (19)
 ```
 
-Ten skipped is the normal shape of a first run, not a warning. Add `--reporter=verbose` to see one
+Eleven skipped is the normal shape of a first run, not a warning. Add `--reporter=verbose` to see one
 `describe` per section, one `it` per check, and the reason attached to every skip:
 
 ```
@@ -229,6 +229,41 @@ script, a different runner, or a CLI, `authConformanceChecks(options)` returns t
 and takes no dependency on vitest to iterate. `runAuthConformanceCheck(check, provider, name)` runs
 one and hands back what happened — it is the same function `describeAuthProvider` calls, so an
 adapter you write behaves identically to the vitest one, known failures included.
+
+### If your provider does PKCE
+
+`sso/pkce-round-trip` is the one check that drives a whole flow rather than a single method, and it
+is worth knowing what it asks before you see it.
+
+A PKCE provider stashes its code verifier in a cookie on the login redirect and needs it back to
+complete the token exchange. `ISSOProvider` has both halves of that: `getLoginCookies(redirectUri,
+state)` returns `Set-Cookie` values on the way out, and `setCallbackCookieHeader(cookieHeader)`
+receives the callback request's `Cookie` header on the way back, before `handleCallback` runs.
+`handleCallback` is handed only `code` and `state`, so the read half is the only channel there is.
+
+The check plays the browser and the identity provider. It calls `getLoginUrl`, collects what
+`getLoginCookies` hands back, turns those into the `Cookie` header a browser would send, feeds it
+through `setCallbackCookieHeader`, and then calls `handleCallback` with **the `state` your own
+authorization URL carries** — the way a real identity provider echoes back what it was sent. If the
+call reaches the token exchange, the verifier survived the trip and the check passes.
+
+Echoing your own `state` rather than the host's is deliberate: whether the host's `state` survives
+is `obligation/stateCodec/login-url`'s question, and a provider that re-encodes it would otherwise
+fail here too, under a message about cookies.
+
+Three outcomes, and the middle one is the one to read twice:
+
+- **Skipped** when you do not implement `getLoginCookies`. You set no cookie at login, so nothing
+  has to come back. A confidential client authenticating with `client_secret` is exactly that shape.
+- **Passed, having asked nothing further**, when you implement `getLoginCookies` and it returns
+  `undefined` or `[]` for this login. The check applied and ran; there was no cookie to hold you to.
+- **Failed** when you set a cookie and either declare no `setCallbackCookieHeader`, or declare one
+  and the value does not come back. Declaring both is not enough — a read half that stores nothing
+  satisfies every structural guard and delivers nothing, which is the shape this check exists to
+  catch.
+
+The same cookie hand-back happens before `obligation/stateCodec/callback` too, so a correct PKCE
+provider is not told it "rejected a state" about a call that threw for a missing verifier.
 
 ## When your provider doesn't conform and ships anyway
 
@@ -386,10 +421,13 @@ so they are named rather than left to be discovered:
 **Major** — a removed or renamed export, a narrowed input, a changed return type, and two things that
 break you without being type errors:
 
-- **A new conformance check that a currently conforming provider can fail.** A fifth obligation, or a
-  tightened existing check, turns CI red in a repository this package does not own, so it is filed as
-  a major even though no signature moved. Loosening a check, adding a skip gate, or rewriting a
-  message is a patch.
+- **A new conformance check that a currently conforming provider can fail.** A fifth obligation, a
+  new check over a declared capability, or a tightened existing check turns CI red in a repository
+  this package does not own, so it is filed as a major even though no signature moved. That holds
+  however narrow the gate is: `sso/pkce-round-trip` skips for every provider that sets no login
+  cookie, and it still shipped as a major, because "no provider in _this_ repository goes red" is a
+  fact about this repository. Loosening a check, adding a skip gate, or rewriting a message is a
+  patch.
 - **Removing or renaming a conformance failure code.** See below: a code is a value downstream
   suites hold, and a rename turns a valid `knownFailures` entry into a registration error.
 - **A change to the synthetic organization id format.** `user:${userId}` is a storage key. Changing
