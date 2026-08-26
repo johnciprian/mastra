@@ -12,6 +12,7 @@
  */
 import { describeAuthProvider } from '@mastra/factory-auth/conformance';
 import { betterAuth } from 'better-auth';
+import type { BetterAuthOptions } from 'better-auth';
 import { memoryAdapter } from 'better-auth/adapters/memory';
 import { makeSignature } from 'better-auth/crypto';
 import { organization } from 'better-auth/plugins';
@@ -70,18 +71,35 @@ function seedDatabase() {
 /**
  * Bring-your-own-instance mode, which is what the README documents and what a
  * host that owns its better-auth configuration uses.
+ *
+ * The `BetterAuthOptions` annotation is load-bearing for the typechecker and
+ * changes nothing at runtime. `betterAuth()` is generic over the *exact*
+ * options object it is handed, so an inline literal produces
+ * `Auth<{ baseURL: string; ... }>`, and `Auth<T>` is invariant in `T` —
+ * `DBAdapter<T>` sits in both a covariant and a contravariant position. That
+ * makes it unassignable to the bare `Auth` that `MastraAuthBetterAuthOptions`
+ * declares for its `auth` option. Widening the options first pins `T` to
+ * `BetterAuthOptions` and the instance fits.
+ *
+ * This is the same widening `src/index.ts` already performs on the instance it
+ * builds for itself (see the comment above `const options: BetterAuthOptions`
+ * in `init()`) — the provider knows about this, it just never applied it to the
+ * public `auth` option. So `betterAuth({ ... })` passed straight in, which is
+ * what this package's README, both docs pages and the class JSDoc all show,
+ * does not typecheck. That is a finding about the provider, recorded here
+ * rather than worked around with a cast; fixing it means widening the declared
+ * option type, which is a change to a published package's API.
  */
 function createProvider(): MastraAuthBetterAuth {
-  return new MastraAuthBetterAuth({
-    auth: betterAuth({
-      baseURL: 'http://localhost:3000',
-      basePath: '/auth/api',
-      secret: SECRET,
-      database: memoryAdapter(seedDatabase()),
-      emailAndPassword: { enabled: true },
-      plugins: [organization()],
-    }),
-  });
+  const options: BetterAuthOptions = {
+    baseURL: 'http://localhost:3000',
+    basePath: '/auth/api',
+    secret: SECRET,
+    database: memoryAdapter(seedDatabase()),
+    emailAndPassword: { enabled: true },
+    plugins: [organization()],
+  };
+  return new MastraAuthBetterAuth({ auth: betterAuth(options) });
 }
 
 /**
