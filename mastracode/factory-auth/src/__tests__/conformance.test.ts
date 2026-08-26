@@ -466,6 +466,34 @@ describe('missing fixtures are reported as missing fixtures', () => {
     expect(failures(outcomes).length).toBeGreaterThan(0);
   });
 
+  /**
+   * The same claim, for the provider that authenticates *nobody*.
+   *
+   * The case above leaves the cookie fixture working, so obligation 2 passes and
+   * never reports anything - which is why obligation 2 was the one check that
+   * still made an unverified claim. Found by the first real-provider run:
+   * `@mastra/auth-better-auth` built in deferred-instance mode has no
+   * better-auth instance until `init()` supplies a database, so every path
+   * resolves null, and obligation 2 told the reader "the credential is good and
+   * the Cookie header is not being read" about a provider that could not read
+   * anything. That sends somebody to write cookie parsing for a provider whose
+   * actual problem is that it never started.
+   */
+  it('reports a rejected token fixture as a token problem when the cookie is rejected too', async () => {
+    const outcomes = await runChecks(
+      optionsFor(() => fullyCapableFake(), {
+        token: 'a-token-nothing-accepts',
+        cookieHeader: `${FAKE_COOKIE_NAME}=also-nothing-accepted`,
+      }),
+    );
+    const failed = failures(outcomes).find(outcome => outcome.check.id === 'obligation/cookieAuth');
+    expect(failed?.message).toContain('rejected the token this suite was told the provider accepts');
+    // The claim obligation 2's message makes about the bearer path has to be one
+    // the check established, not one it assumed.
+    expect(failed?.message).not.toContain('So the credential is good');
+    expect(failed?.message).not.toContain("does not meet obligation 2 of 4, 'cookieAuth'");
+  });
+
   it('asks for userId when obligation 1 is broken and no id can be read back', async () => {
     const outcomes = await runChecks(optionsFor(() => fakeViolating('flatId'), { userId: undefined }));
     const failed = failures(outcomes).find(outcome => outcome.check.id === 'obligation/organizationId/deterministic');
