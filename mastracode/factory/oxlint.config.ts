@@ -26,39 +26,50 @@ const CORE_AUTH_MESSAGE =
 const INTERNAL_AUTH_MESSAGE =
   '@internal/auth re-exports ee/ from its barrel (11 ee/ modules at runtime) and is private to the monorepo, so a published package must not name it. This package does not depend on it and should not start: take the contract from @mastra/core/server, or @mastra/factory-auth/contract. See mastracode/factory-auth/README.md#the-ee-boundary.';
 
-const eeBoundaryRule = [
-  'error',
+const VENDOR_AUTH_MESSAGE =
+  'src/auth.ts is the provider-neutral auth module: it composes whatever provider the host was given, via the capability guards, and must not name a vendor. Importing a provider package here is how the neutral module stops being neutral - it was how the WORKOS_* env fallback existed, and removing that (B6/B7) is what made this rule true. Take the contract from @mastra/core/server and the Factory-side helpers from @mastra/factory-auth. Provider packages stay legal everywhere else in this package: factory.ts constructs MastraAuthStudio, and integrations/workos/ uses WorkOSAdminPortal.';
+
+const EE_BOUNDARY_GROUPS = [
   {
-    patterns: [
-      {
-        group: ['**/tests/**', '**/#tests/**', '**/__tests__/**/*', '**/*.test.*', '**/*.spec.*'],
-        message: 'Do not import test files in source files',
-      },
-      {
-        group: [
-          '**/ee',
-          '**/ee/**',
-          './ee',
-          './ee/**',
-          '../ee',
-          '../ee/**',
-          '*/ee',
-          '*/ee/**',
-          '@mastra/playground-ui/ee/**',
-        ],
-        message: EE_PATH_MESSAGE,
-      },
-      {
-        group: ['@mastra/core/auth', '@mastra/core/auth/*', '@mastra/core/auth/**'],
-        message: CORE_AUTH_MESSAGE,
-      },
-      {
-        group: ['@internal/auth', '@internal/auth/*', '@internal/auth/**'],
-        message: INTERNAL_AUTH_MESSAGE,
-      },
+    group: ['**/tests/**', '**/#tests/**', '**/__tests__/**/*', '**/*.test.*', '**/*.spec.*'],
+    message: 'Do not import test files in source files',
+  },
+  {
+    group: [
+      '**/ee',
+      '**/ee/**',
+      './ee',
+      './ee/**',
+      '../ee',
+      '../ee/**',
+      '*/ee',
+      '*/ee/**',
+      '@mastra/playground-ui/ee/**',
     ],
+    message: EE_PATH_MESSAGE,
+  },
+  {
+    group: ['@mastra/core/auth', '@mastra/core/auth/*', '@mastra/core/auth/**'],
+    message: CORE_AUTH_MESSAGE,
+  },
+  {
+    group: ['@internal/auth', '@internal/auth/*', '@internal/auth/**'],
+    message: INTERNAL_AUTH_MESSAGE,
   },
 ];
+
+/**
+ * Provider packages, banned in `src/auth.ts` only. See eslint.config.js for why
+ * a package-wide ban would fail on imports this package legitimately makes.
+ */
+const VENDOR_AUTH_GROUP = {
+  group: ['@mastra/auth-*', '@mastra/auth-*/**'],
+  message: VENDOR_AUTH_MESSAGE,
+};
+
+const eeBoundaryRule = ['error', { patterns: EE_BOUNDARY_GROUPS }];
+
+const neutralAuthModuleRule = ['error', { patterns: [...EE_BOUNDARY_GROUPS, VENDOR_AUTH_GROUP] }];
 
 export default defineConfig({
   extends: [rootConfig],
@@ -76,6 +87,13 @@ export default defineConfig({
       files: ['**/tests/**', '**/#tests/**', '**/__tests__/**/*', '**/*.test.*', '**/*.spec.*'],
       rules: {
         'no-restricted-imports': eeBoundaryRule,
+      },
+    },
+    {
+      // Last, so it wins for the provider-neutral module.
+      files: ['src/auth.ts'],
+      rules: {
+        'no-restricted-imports': neutralAuthModuleRule,
       },
     },
   ],

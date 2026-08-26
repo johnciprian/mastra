@@ -99,6 +99,64 @@ const CORE_AUTH_MESSAGE =
 const INTERNAL_AUTH_MESSAGE =
   '@internal/auth re-exports ee/ from its barrel (11 ee/ modules at runtime) and is private to the monorepo, so a published package must not name it. This package does not depend on it and should not start: take the contract from @mastra/core/server, or @mastra/factory-auth/contract. See mastracode/factory-auth/README.md#the-ee-boundary.';
 
+const VENDOR_AUTH_MESSAGE =
+  'src/auth.ts is the provider-neutral auth module: it composes whatever provider the host was given, via the capability guards, and must not name a vendor. Importing a provider package here is how the neutral module stops being neutral - it was how the WORKOS_* env fallback existed, and removing that (B6/B7) is what made this rule true. Take the contract from @mastra/core/server and the Factory-side helpers from @mastra/factory-auth. Provider packages stay legal everywhere else in this package: factory.ts constructs MastraAuthStudio, and integrations/workos/ uses WorkOSAdminPortal.';
+
+/**
+ * The EE-boundary groups, shared so the scoped block below cannot drift from
+ * the package-wide one.
+ *
+ * ESLint flat config REPLACES a rule's options for matching files rather than
+ * merging them, so a later block that declares `no-restricted-imports` with
+ * only the new group would silently delete all of these for the files it
+ * matches. That is the trap this array exists to make unhittable.
+ */
+const EE_BOUNDARY_GROUPS = [
+  {
+    group: ['**/tests/**', '**/#tests/**', '**/__tests__/**/*', '**/*.test.*', '**/*.spec.*'],
+    message: 'Do not import test files in source files',
+  },
+  {
+    group: [
+      '**/ee',
+      '**/ee/**',
+      './ee',
+      './ee/**',
+      '../ee',
+      '../ee/**',
+      '*/ee',
+      '*/ee/**',
+      '@mastra/playground-ui/ee/**',
+    ],
+    message: EE_PATH_MESSAGE,
+  },
+  {
+    group: ['@mastra/core/auth', '@mastra/core/auth/*', '@mastra/core/auth/**'],
+    message: CORE_AUTH_MESSAGE,
+  },
+  {
+    group: ['@internal/auth', '@internal/auth/*', '@internal/auth/**'],
+    message: INTERNAL_AUTH_MESSAGE,
+  },
+];
+
+/**
+ * Provider packages, banned in `src/auth.ts` and nowhere else.
+ *
+ * A package-wide ban would be theatre: `factory.ts` imports `MastraAuthStudio`
+ * and `integrations/workos/integration.ts` imports `WorkOSAdminPortal`, both
+ * legitimately, so the rule would fail on what this package actually does. What
+ * is true today, and was not before B6/B7, is the narrower claim: the
+ * provider-neutral module names no vendor. That is the regression worth
+ * catching, because it is the one that already happened once.
+ *
+ * `@mastra/factory-auth` is a different specifier and stays legal.
+ */
+const VENDOR_AUTH_GROUP = {
+  group: ['@mastra/auth-*', '@mastra/auth-*/**'],
+  message: VENDOR_AUTH_MESSAGE,
+};
+
 /** @type {import("eslint").Linter.Config[]} */
 export default [
   ...config,
@@ -109,39 +167,15 @@ export default [
   {
     files: ['**/*.ts?(x)', '**/*.js?(x)'],
     rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            {
-              group: ['**/tests/**', '**/#tests/**', '**/__tests__/**/*', '**/*.test.*', '**/*.spec.*'],
-              message: 'Do not import test files in source files',
-            },
-            {
-              group: [
-                '**/ee',
-                '**/ee/**',
-                './ee',
-                './ee/**',
-                '../ee',
-                '../ee/**',
-                '*/ee',
-                '*/ee/**',
-                '@mastra/playground-ui/ee/**',
-              ],
-              message: EE_PATH_MESSAGE,
-            },
-            {
-              group: ['@mastra/core/auth', '@mastra/core/auth/*', '@mastra/core/auth/**'],
-              message: CORE_AUTH_MESSAGE,
-            },
-            {
-              group: ['@internal/auth', '@internal/auth/*', '@internal/auth/**'],
-              message: INTERNAL_AUTH_MESSAGE,
-            },
-          ],
-        },
-      ],
+      'no-restricted-imports': ['error', { patterns: EE_BOUNDARY_GROUPS }],
+    },
+  },
+  {
+    // Ordered last so it wins for this one file. It restates the groups above
+    // because flat config replaces rather than merges — see EE_BOUNDARY_GROUPS.
+    files: ['src/auth.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [...EE_BOUNDARY_GROUPS, VENDOR_AUTH_GROUP] }],
     },
   },
 ];
