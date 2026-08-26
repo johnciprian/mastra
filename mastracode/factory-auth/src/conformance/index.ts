@@ -1532,7 +1532,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
             'is a refusal to start - which is right for a genuine misconfiguration and wrong for a field\n' +
             'the host did not happen to pass.',
           how:
-            'Treat every field of `AuthInitContext` as optional; all four are. If your provider needs a\n' +
+            'Treat every field of `AuthInitContext` as optional; all three are. If your provider needs a\n' +
             '`database` handle, take it in the constructor and use `init` only to consume what the host\n' +
             'can add.',
         });
