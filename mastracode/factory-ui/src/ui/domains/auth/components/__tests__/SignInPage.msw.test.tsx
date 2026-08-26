@@ -161,6 +161,145 @@ describe('SignInPage', () => {
     });
   });
 
+  /**
+   * The capability-driven page: `signIn.kind` decides which controls exist and
+   * `providerHint` decides how the hosted one looks, so a provider this SPA has
+   * never heard of still gets a correct screen. The exhaustive matrix lands with
+   * the descriptor-only tests; these pin the behaviour the branch is for.
+   */
+  describe('given a server that sends the capability descriptor', () => {
+    function stubDescriptor(signIn: Record<string, unknown>, rest: Record<string, unknown> = {}) {
+      stubAuthMe({
+        // A provider name the SPA has never seen. Every assertion below therefore
+        // also proves the descriptor is what drove the render: the legacy
+        // fallback would have produced the GitHub button for this name.
+        provider: 'some-provider-we-have-never-heard-of',
+        auth: {
+          signIn,
+          features: { logout: true, organizations: false, refresh: false, sessionRevocation: false },
+        },
+        ...rest,
+      });
+    }
+
+    describe('kind: hosted', () => {
+      it('renders a neutral hosted button for an unrecognised provider instead of a vendor one', async () => {
+        stubDescriptor({ kind: 'hosted', providerHint: 'generic' });
+        renderSignIn('/signin?returnTo=%2Ffactory%2Fboard');
+
+        const button = await screen.findByRole('button', { name: 'Continue to sign in' });
+        expect(screen.queryByRole('button', { name: 'Continue with GitHub' })).not.toBeInTheDocument();
+        expect(screen.queryByLabelText('Email')).not.toBeInTheDocument();
+
+        await userEvent.click(button);
+        expect(button).toHaveTextContent('Opening sign-in…');
+        expect(redirectToLogin).toHaveBeenCalledWith(TEST_BASE_URL, '/factory/board');
+      });
+
+      it.each([
+        ['sso', 'Continue with single sign-on'],
+        ['oauth', 'Continue with your identity provider'],
+        ['email', 'Continue with email'],
+      ])('renders the %s treatment from the rendering token alone', async (providerHint, label) => {
+        stubDescriptor({ kind: 'hosted', providerHint });
+        renderSignIn();
+
+        expect(await screen.findByRole('button', { name: label })).toBeInTheDocument();
+      });
+
+      it('prefers host-supplied copy over the token default', async () => {
+        stubDescriptor({ kind: 'hosted', providerHint: 'sso', label: 'Continue with your work account' });
+        renderSignIn();
+
+        expect(await screen.findByRole('button', { name: 'Continue with your work account' })).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Continue with single sign-on' })).not.toBeInTheDocument();
+      });
+    });
+
+    describe('kind: credentials', () => {
+      it('renders the form and no hosted button', async () => {
+        stubDescriptor({ kind: 'credentials', signUpEnabled: true });
+        renderSignIn();
+
+        expect(await screen.findByLabelText('Email')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'New here? Sign up' })).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: /^Continue/ })).not.toBeInTheDocument();
+      });
+
+      it('hides the sign-up affordance when the descriptor disables it', async () => {
+        stubDescriptor({ kind: 'credentials', signUpEnabled: false });
+        renderSignIn();
+
+        expect(await screen.findByLabelText('Email')).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'New here? Sign up' })).not.toBeInTheDocument();
+        expect(screen.getByText('Account creation is managed by your administrator.')).toBeInTheDocument();
+      });
+
+      it('lets the positive descriptor field win over a legacy field that contradicts it', async () => {
+        // Both polarities on one response, disagreeing. The descriptor is
+        // authoritative, so the sign-up affordance stays — a wrong `!` here would
+        // silently hide it and nothing would look broken.
+        stubDescriptor({ kind: 'credentials', signUpEnabled: true }, { signUpDisabled: true });
+        renderSignIn();
+
+        expect(await screen.findByRole('button', { name: 'New here? Sign up' })).toBeInTheDocument();
+      });
+    });
+
+    describe('kind: both', () => {
+      it('renders the credential form and the hosted button together', async () => {
+        stubDescriptor({ kind: 'both', providerHint: 'sso', signUpEnabled: true });
+        renderSignIn();
+
+        expect(await screen.findByLabelText('Email')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Continue with single sign-on' })).toBeInTheDocument();
+      });
+    });
+
+    describe('kind: none', () => {
+      it('explains that this provider cannot sign you in from a browser', async () => {
+        stubDescriptor({ kind: 'none' });
+        renderSignIn();
+
+        expect(
+          await screen.findByRole('heading', { name: /Sign-in isn.t available for this provider/ }),
+        ).toBeInTheDocument();
+        expect(screen.getByText(/validates API tokens but can.t sign you in from a browser/)).toBeInTheDocument();
+        expect(screen.getByText(/Ask your\s+administrator for a token/)).toBeInTheDocument();
+      });
+
+      it('offers no sign-in control at all, rather than an empty box', async () => {
+        stubDescriptor({ kind: 'none' });
+        renderSignIn();
+
+        await screen.findByRole('heading', { name: /Sign-in isn.t available for this provider/ });
+        expect(screen.queryByLabelText('Email')).not.toBeInTheDocument();
+        expect(screen.queryByLabelText('Password')).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: /^Continue/ })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: /^Sign in/ })).not.toBeInTheDocument();
+        expect(redirectToLogin).not.toHaveBeenCalled();
+      });
+    });
+
+    it('ignores the provider name entirely when a descriptor is present', async () => {
+      // The legacy rule maps this exact name to the credential form; the
+      // descriptor says hosted, and the descriptor wins.
+      stubAuthMe({
+        provider: 'better-auth',
+        auth: {
+          signIn: { kind: 'hosted', providerHint: 'generic' },
+          features: { logout: true, organizations: false, refresh: false, sessionRevocation: false },
+        },
+      });
+      renderSignIn();
+
+      expect(await screen.findByRole('button', { name: 'Continue to sign in' })).toBeInTheDocument();
+      expect(screen.queryByLabelText('Email')).not.toBeInTheDocument();
+    });
+  });
+
   describe('given an IdP access_denied redirect', () => {
     it('shows the denial with the IdP description and still allows a retry', async () => {
       stubAuthMe({ provider: 'mastra-studio' });
