@@ -309,7 +309,7 @@ describe('dispatchGithubWebhook', () => {
       requestContext: expect.any(RequestContext),
     });
     expect(createSession.mock.calls[0]![0]!.requestContext.get('user')).toEqual({
-      workosId: 'user-1',
+      id: 'user-1',
       organizationId: 'org-1',
     });
     expect(switchB).not.toHaveBeenCalled();

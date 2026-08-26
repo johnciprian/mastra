@@ -14,7 +14,7 @@ const PROJECT_ID = '11111111-2222-4333-8444-555555555555';
 function requestContext(overrides: Partial<{ threadId: string; scope: string; authenticated: boolean }> = {}) {
   const context = new RequestContext();
   if (overrides.authenticated !== false) {
-    context.set('user', { workosId: 'user-1', organizationId: 'org-1' });
+    context.set('user', { id: 'user-1', organizationId: 'org-1' });
   }
   context.set('controller', {
     resourceId: 'resource-1',

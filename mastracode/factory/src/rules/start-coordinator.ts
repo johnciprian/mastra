@@ -141,7 +141,7 @@ export class FactoryStartCoordinator {
       requestContext.set('user', { ...existingUser, orgFirstCredentials: true });
     } else {
       requestContext.set('user', {
-        workosId: request.userId,
+        id: request.userId,
         organizationId: request.orgId,
         orgFirstCredentials: true,
       });

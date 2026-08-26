@@ -13,7 +13,7 @@ function makeContext(): IntegrationContext {
   return { auth: fakeRouteAuth() } as IntegrationContext;
 }
 
-function makeApp(integration: WorkOSAuditIntegration, user?: { workosId: string; organizationId?: string }) {
+function makeApp(integration: WorkOSAuditIntegration, user?: { id: string; organizationId?: string }) {
   const app = new Hono();
   app.use('*', async (c, next) => {
     if (user) c.set('factoryAuthUser' as never, user as never);
@@ -101,7 +101,7 @@ describe('WorkOSAuditIntegration', () => {
       client: { auditLogs: { createEvent }, portal: { generateLink } } as any,
       returnUrl: 'https://app.test/factory/audit',
     });
-    const response = await makeApp(integration, { workosId: 'user-1', organizationId: 'org-1' }).request(
+    const response = await makeApp(integration, { id: 'user-1', organizationId: 'org-1' }).request(
       '/web/audit/portal-link',
     );
 
@@ -123,7 +123,7 @@ describe('WorkOSAuditIntegration', () => {
     });
 
     expect((await makeApp(integration).request('/web/audit/portal-link')).status).toBe(401);
-    expect((await makeApp(integration, { workosId: 'user-1' }).request('/web/audit/portal-link')).status).toBe(403);
+    expect((await makeApp(integration, { id: 'user-1' }).request('/web/audit/portal-link')).status).toBe(403);
     expect(generateLink).not.toHaveBeenCalled();
   });
 
@@ -133,7 +133,7 @@ describe('WorkOSAuditIntegration', () => {
       client: { auditLogs: { createEvent }, portal: { generateLink } } as any,
       returnUrl: '/factory/audit',
     });
-    const response = await makeApp(integration, { workosId: 'user-1', organizationId: 'org-1' }).request(
+    const response = await makeApp(integration, { id: 'user-1', organizationId: 'org-1' }).request(
       '/web/audit/portal-link',
     );
 

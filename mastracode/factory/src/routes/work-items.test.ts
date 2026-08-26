@@ -17,11 +17,11 @@ const audit: AuditEmitter = {
   async emit({ context, input }) {
     try {
       if (auditFailure) throw auditFailure;
-      const user = context.get('factoryAuthUser' as never) as { workosId: string; organizationId?: string } | undefined;
+      const user = context.get('factoryAuthUser' as never) as { id: string; organizationId?: string } | undefined;
       if (!user?.organizationId) return;
       auditRecorded.push({
         orgId: user.organizationId,
-        actorId: user.workosId,
+        actorId: user.id,
         actorType: 'human',
         action: input.action,
         factoryProjectId: input.factoryProjectId,
@@ -43,7 +43,7 @@ import { parseCreateWorkItem, parseUpdateWorkItem, WorkItemRoutes } from './work
 
 // ── Test harness ─────────────────────────────────────────────────────────
 function buildApp(
-  user: { workosId: string; organizationId?: string } | null,
+  user: { id: string; organizationId?: string } | null,
   startCoordinator?: { prepare: (input: any) => Promise<any> },
   requestContext?: RequestContext,
   running: ReadonlySet<string> = new Set(),
@@ -70,7 +70,7 @@ function buildApp(
   return app;
 }
 
-const orgUser = { workosId: 'u1', organizationId: 'org1' };
+const orgUser = { id: 'u1', organizationId: 'org1' };
 let PROJECT_ID = '';
 
 async function seedProject(orgId = 'org1') {
@@ -129,7 +129,7 @@ describe('auth and scoping', () => {
   });
 
   it('403s without an organization', async () => {
-    const res = await buildApp({ workosId: 'u1' }).request(`/web/factory/projects/${PROJECT_ID}/work-items`);
+    const res = await buildApp({ id: 'u1' }).request(`/web/factory/projects/${PROJECT_ID}/work-items`);
     expect(res.status).toBe(403);
   });
 
@@ -146,7 +146,7 @@ describe('auth and scoping', () => {
 
   it('is org-wide: another member of the same org sees the item', async () => {
     await json('POST', `/web/factory/projects/${PROJECT_ID}/work-items`, createBody());
-    const res = await buildApp({ workosId: 'u2', organizationId: 'org1' }).request(
+    const res = await buildApp({ id: 'u2', organizationId: 'org1' }).request(
       `/web/factory/projects/${PROJECT_ID}/work-items`,
     );
     const body = await res.json();
@@ -248,14 +248,11 @@ describe('PATCH /web/factory/work-items/:id', () => {
 
   it('rejects direct stage mutation and leaves the canonical item unchanged', async () => {
     const item = await createItem();
-    const res = await buildApp({ workosId: 'u2', organizationId: 'org1' }).request(
-      `/web/factory/work-items/${item.id}`,
-      {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ stages: ['execute'] }),
-      },
-    );
+    const res = await buildApp({ id: 'u2', organizationId: 'org1' }).request(`/web/factory/work-items/${item.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ stages: ['execute'] }),
+    });
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ error: 'governed_transition_required' });
     const [canonical] = await listItems();
@@ -311,14 +308,11 @@ describe('PATCH /web/factory/work-items/:id', () => {
 
   it('404s for items in another org', async () => {
     const item = await createItem();
-    const res = await buildApp({ workosId: 'u9', organizationId: 'org2' }).request(
-      `/web/factory/work-items/${item.id}`,
-      {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ title: 'Cross-tenant mutation' }),
-      },
-    );
+    const res = await buildApp({ id: 'u9', organizationId: 'org2' }).request(`/web/factory/work-items/${item.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'Cross-tenant mutation' }),
+    });
     expect(res.status).toBe(404);
   });
 

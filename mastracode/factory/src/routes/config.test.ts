@@ -262,7 +262,7 @@ describe('provider key routes with a tenant', () => {
     { provider: 'anthropic', hasApiKey: false, apiKeyEnvVar: 'ANTHROPIC_API_KEY' },
   ]);
 
-  function buildApp(user: { workosId: string; organizationId?: string } | null, authStorage?: AuthStorage) {
+  function buildApp(user: { id: string; organizationId?: string } | null, authStorage?: AuthStorage) {
     const app = new Hono();
     app.use('*', async (c, next) => {
       if (user) c.set('factoryAuthUser' as never, user as never);
@@ -280,8 +280,8 @@ describe('provider key routes with a tenant', () => {
     return app;
   }
 
-  const userA = { workosId: 'user-a', organizationId: 'org1' };
-  const userB = { workosId: 'user-b', organizationId: 'org1' };
+  const userA = { id: 'user-a', organizationId: 'org1' };
+  const userB = { id: 'user-b', organizationId: 'org1' };
 
   beforeEach(async () => {
     seed = await createFactoryStorageForTests();
@@ -432,7 +432,7 @@ describe('GET /web/config/models', () => {
     };
     const app = new Hono();
     app.use('*', async (c, next) => {
-      c.set('factoryAuthUser' as never, { workosId: 'user-a', organizationId: 'org1' } as never);
+      c.set('factoryAuthUser' as never, { id: 'user-a', organizationId: 'org1' } as never);
       await next();
     });
     mountApiRoutes(
@@ -463,7 +463,7 @@ describe('GET /web/config/models', () => {
     const controller = { listAvailableModels: async () => [] };
     const app = new Hono();
     app.use('*', async (c, next) => {
-      c.set('factoryAuthUser' as never, { workosId: 'user-a', organizationId: 'org1' } as never);
+      c.set('factoryAuthUser' as never, { id: 'user-a', organizationId: 'org1' } as never);
       await next();
     });
     mountApiRoutes(
@@ -511,7 +511,7 @@ describe('model pack routes with a tenant', () => {
     { provider: 'anthropic', hasApiKey: true, apiKeyEnvVar: 'ANTHROPIC_API_KEY' },
   ]);
 
-  function buildApp(user: { workosId: string; organizationId?: string } | null, routeController = controller) {
+  function buildApp(user: { id: string; organizationId?: string } | null, routeController = controller) {
     const app = new Hono();
     app.use('*', async (c, next) => {
       if (user) c.set('factoryAuthUser' as never, user as never);
@@ -531,9 +531,9 @@ describe('model pack routes with a tenant', () => {
     return app;
   }
 
-  const userA = { workosId: 'user-a', organizationId: 'org1' };
-  const userB = { workosId: 'user-b', organizationId: 'org1' };
-  const userOtherOrg = { workosId: 'user-c', organizationId: 'org2' };
+  const userA = { id: 'user-a', organizationId: 'org1' };
+  const userB = { id: 'user-b', organizationId: 'org1' };
+  const userOtherOrg = { id: 'user-c', organizationId: 'org2' };
   const packBody = {
     name: 'Team pack',
     models: { build: 'anthropic/claude-fable-5', plan: 'anthropic/claude-fable-5', fast: 'anthropic/claude-haiku-4-5' },
@@ -874,7 +874,7 @@ describe('OM routes with a tenant', () => {
     const app = new Hono();
     if (opts.authEnabled !== false) {
       app.use('*', async (c, next) => {
-        c.set('factoryAuthUser' as never, { workosId: 'user-a', organizationId: 'org1' } as never);
+        c.set('factoryAuthUser' as never, { id: 'user-a', organizationId: 'org1' } as never);
         await next();
       });
     }
@@ -1225,7 +1225,7 @@ describe('custom provider routes', () => {
   const onCustomProvidersChanged = vi.fn();
 
   function buildApp(
-    user: { workosId: string; organizationId?: string } | null,
+    user: { id: string; organizationId?: string } | null,
     opts: { withStorage?: boolean; authEnabled?: boolean } = {},
   ) {
     const app = new Hono();
@@ -1245,8 +1245,8 @@ describe('custom provider routes', () => {
     return app;
   }
 
-  const userA = { workosId: 'user-a', organizationId: 'org1' };
-  const userOtherOrg = { workosId: 'user-c', organizationId: 'org2' };
+  const userA = { id: 'user-a', organizationId: 'org1' };
+  const userOtherOrg = { id: 'user-c', organizationId: 'org2' };
   const providerBody = { name: 'My LLM', url: 'https://llm.example.com/v1', apiKey: 'sk-x', models: ['m1', 'm2'] };
 
   const postProvider = (app: Hono, body: unknown) =>
@@ -1344,7 +1344,7 @@ describe('thinking defaults routes', () => {
   };
 
   function buildApp(
-    user: { workosId: string; organizationId?: string } | null,
+    user: { id: string; organizationId?: string } | null,
     opts: { authEnabled?: boolean; isOrganizationAdmin?: (orgId: string, userId: string) => Promise<boolean> } = {},
   ) {
     const app = new Hono();
@@ -1366,7 +1366,7 @@ describe('thinking defaults routes', () => {
     return app;
   }
 
-  const userA = { workosId: 'user-a', organizationId: 'org1' };
+  const userA = { id: 'user-a', organizationId: 'org1' };
 
   const putThinking = (app: Hono, body: unknown) =>
     app.request('/web/config/thinking', {

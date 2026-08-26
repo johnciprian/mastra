@@ -94,7 +94,7 @@ function buildApp(
   return app;
 }
 
-const org1 = (): TestAuthUser => ({ workosId: 'u1', organizationId: 'org1' });
+const org1 = (): TestAuthUser => ({ id: 'u1', organizationId: 'org1' });
 
 const connect = (overrides: Record<string, any> = {}) =>
   linear.upsertConnection({
@@ -162,7 +162,7 @@ describe('status route', () => {
   });
 
   it('requires an organization', async () => {
-    const res = await buildApp({ workosId: 'u1' }).request('/web/linear/status');
+    const res = await buildApp({ id: 'u1' }).request('/web/linear/status');
     expect(await res.json()).toMatchObject({ enabled: true, connected: false, reason: 'organization_required' });
   });
 });

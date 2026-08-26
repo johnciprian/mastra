@@ -428,7 +428,7 @@ export class FactoryDecisionDispatcher {
         if (!startedBy) return;
         await this.#primeCredentials?.({ orgId: record.orgId, userId: startedBy });
         const requestContext = new RequestContext();
-        requestContext.set('user', { workosId: startedBy, organizationId: record.orgId });
+        requestContext.set('user', { id: startedBy, organizationId: record.orgId });
         const session = await this.#requireSession(binding);
         await awaitNotification(
           await session.sendNotificationSignal(
@@ -462,7 +462,7 @@ export class FactoryDecisionDispatcher {
         if (!startedBy) throw new Error(`Factory binding ${binding.id} has no authenticated session owner.`);
         await this.#primeCredentials?.({ orgId: record.orgId, userId: startedBy });
         const requestContext = new RequestContext();
-        requestContext.set('user', { workosId: startedBy, organizationId: record.orgId });
+        requestContext.set('user', { id: startedBy, organizationId: record.orgId });
         const resolved =
           decision.skillName === undefined
             ? await resolvePromptInvocation(this.#controller, {
@@ -611,7 +611,7 @@ export class FactoryDecisionDispatcher {
         if (!startedBy) throw new Error(`Factory binding ${binding.id} has no authenticated session owner.`);
         await this.#primeCredentials?.({ orgId: record.orgId, userId: startedBy });
         const requestContext = new RequestContext();
-        requestContext.set('user', { workosId: startedBy, organizationId: record.orgId });
+        requestContext.set('user', { id: startedBy, organizationId: record.orgId });
         const session = await this.#requireSession(binding);
         await awaitNotification(
           await session.sendNotificationSignal(
@@ -817,7 +817,7 @@ export class FactoryDecisionDispatcher {
           if (!startedBy) throw new Error(`Factory binding ${binding.id} has no authenticated session owner.`);
           await this.#primeCredentials?.({ orgId: record.orgId, userId: startedBy });
           const requestContext = new RequestContext();
-          requestContext.set('user', { workosId: startedBy, organizationId: record.orgId });
+          requestContext.set('user', { id: startedBy, organizationId: record.orgId });
           const session = await this.#requireSession(binding);
           await awaitNotification(
             await session.sendNotificationSignal(

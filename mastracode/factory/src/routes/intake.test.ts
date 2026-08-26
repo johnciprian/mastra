@@ -52,7 +52,7 @@ const integrations = [
   { id: 'linear', intake: linear },
 ];
 
-function buildApp(user: { workosId: string; organizationId?: string } | null, intakeIntegrations = integrations) {
+function buildApp(user: { id: string; organizationId?: string } | null, intakeIntegrations = integrations) {
   const app = new Hono();
   app.use('*', async (c, next) => {
     if (user) c.set('factoryAuthUser' as never, user as never);
@@ -71,7 +71,7 @@ function buildApp(user: { workosId: string; organizationId?: string } | null, in
   return app;
 }
 
-const orgUser = { workosId: 'u1', organizationId: 'org1' };
+const orgUser = { id: 'u1', organizationId: 'org1' };
 let seed: FactoryStorageTestSeed;
 
 beforeEach(async () => {
@@ -83,7 +83,7 @@ beforeEach(async () => {
 describe('intake configuration', () => {
   it('requires an authenticated organization', async () => {
     expect((await buildApp(null).request('/web/intake/config')).status).toBe(401);
-    expect((await buildApp({ workosId: 'u1' }).request('/web/intake/config')).status).toBe(403);
+    expect((await buildApp({ id: 'u1' }).request('/web/intake/config')).status).toBe(403);
   });
 
   it('defaults every configured capability to enabled with no selected sources', async () => {
@@ -131,7 +131,7 @@ describe('intake configuration', () => {
 
     it('requires an authenticated organization', async () => {
       expect((await buildApp(null).request('/web/intake/bindings')).status).toBe(401);
-      expect((await buildApp({ workosId: 'u1' }).request('/web/intake/bindings')).status).toBe(403);
+      expect((await buildApp({ id: 'u1' }).request('/web/intake/bindings')).status).toBe(403);
     });
 
     it('binds a source to a Factory project and reads it back', async () => {

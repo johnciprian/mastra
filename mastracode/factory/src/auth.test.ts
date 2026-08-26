@@ -13,13 +13,15 @@ import {
 // this module without constructing a real WorkOS client. `authenticateToken`'s
 // behavior is swapped per-test via `mockAuthenticate`.
 //
-// Every `mockAuthenticate` payload below sets `id` AND `workosId` to the same
-// value, because that is what the real provider returns: it spreads a mapped
-// user carrying `id` and then adds `workosId`, which defaults to that same id.
-// These fixtures previously set `workosId` alone — a shape the provider cannot
-// produce — which made them pass only because the pre-kit reader accepted
-// `workosId` as an identifier. `AuthIdentity` has no vendor field, so a
-// `workosId`-only payload resolves to nobody under MASTRACODE_AUTH_IDENTITY_V2.
+// Every `mockAuthenticate` payload below names the user with `id`. These
+// fixtures used to say `workosId` instead — a shape the real provider cannot
+// produce, since it spreads a mapped user carrying `id` and only then adds
+// `workosId`, defaulting it to that same id. They passed because the pre-kit
+// reader accepted the vendor key as an identifier.
+//
+// The vendor key is no longer part of any neutral shape here, so the payloads
+// that still exercise it deliberately live in `auth-seam.test.ts`, where the
+// differential table asserts what each flag path makes of them.
 const mockAuthenticate = vi.fn();
 const mockGetLoginUrl = vi.fn((_redirectUri: string, _state: string) => 'https://workos.example/login');
 const mockHandleCallback = vi.fn(async () => ({ user: { email: 'a@b.com' }, cookies: ['wos_session=sealed; Path=/'] }));
@@ -282,7 +284,7 @@ describe('mountFactoryAuth gate (enabled)', () => {
   });
 
   it('passes through when the provider authenticates', async () => {
-    mockAuthenticate.mockResolvedValue({ id: 'user_ok', workosId: 'user_ok', email: 'user@example.com', name: 'User' });
+    mockAuthenticate.mockResolvedValue({ id: 'user_ok', email: 'user@example.com', name: 'User' });
     const { app } = buildApp();
 
     const res = await app.request('/web/projects', { headers: { Accept: 'application/json' } });
@@ -311,7 +313,6 @@ describe('mountFactoryAuth gate (enabled)', () => {
   it('stashes flat-provider avatar URLs on the context for downstream routes', async () => {
     mockAuthenticate.mockResolvedValue({
       id: 'user_123',
-      workosId: 'user_123',
       email: 'user@example.com',
       name: 'User',
       avatarUrl: 'https://avatars.example/user.png',
@@ -504,7 +505,7 @@ describe('mountFactoryAuth /auth routes (enabled)', () => {
   });
 
   it('/auth/me reports the user when authenticated', async () => {
-    mockAuthenticate.mockResolvedValue({ id: 'user_me', workosId: 'user_me', email: 'user@example.com', name: 'User' });
+    mockAuthenticate.mockResolvedValue({ id: 'user_me', email: 'user@example.com', name: 'User' });
     const { app } = buildApp();
     const res = await app.request('/auth/me');
     expect(res.status).toBe(200);
@@ -521,7 +522,6 @@ describe('mountFactoryAuth /auth routes (enabled)', () => {
   it('/auth/me surfaces the organization id and stable user id to the SPA', async () => {
     mockAuthenticate.mockResolvedValue({
       id: 'user_1',
-      workosId: 'user_1',
       email: 'user@example.com',
       name: 'User',
       organizationId: 'org_a',
@@ -556,13 +556,13 @@ describe('org-tenant identity', () => {
   beforeEach(enableEnv);
 
   it('getFactoryAuthOrgId reads the organization id from the user shape', () => {
-    expect(getFactoryAuthOrgId({ workosId: 'user_1', organizationId: 'org_a' })).toBe('org_a');
-    expect(getFactoryAuthOrgId({ workosId: 'user_1' })).toBeUndefined();
+    expect(getFactoryAuthOrgId({ id: 'user_1', organizationId: 'org_a' })).toBe('org_a');
+    expect(getFactoryAuthOrgId({ id: 'user_1' })).toBeUndefined();
     expect(getFactoryAuthOrgId(undefined)).toBeUndefined();
   });
 
   it('gate stashes organizationId and factoryAuthTenant returns { orgId, userId }', async () => {
-    mockAuthenticate.mockResolvedValue({ id: 'user_1', workosId: 'user_1', organizationId: 'org_a', email: 'u@e.com' });
+    mockAuthenticate.mockResolvedValue({ id: 'user_1', organizationId: 'org_a', email: 'u@e.com' });
     const app = new Hono();
     mountFactoryAuth(app, { redirectUri: 'http://localhost:4111/auth/callback' });
     app.get('/web/whoami', c => c.json(factoryAuthTenant(c) ?? { tenant: null }));
@@ -575,7 +575,7 @@ describe('org-tenant identity', () => {
   });
 
   it('gate bootstraps a no-org user so factoryAuthTenant yields the new org', async () => {
-    mockAuthenticate.mockResolvedValue({ id: 'user_boot', workosId: 'user_boot', email: 'boot@example.com' });
+    mockAuthenticate.mockResolvedValue({ id: 'user_boot', email: 'boot@example.com' });
     const app = new Hono();
     mountFactoryAuth(app, { redirectUri: 'http://localhost:4111/auth/callback' });
     app.get('/web/whoami', c => c.json(factoryAuthTenant(c) ?? { tenant: null }));
@@ -590,7 +590,7 @@ describe('org-tenant identity', () => {
     // Bootstrap is best-effort: when org creation fails, the user genuinely
     // stays no-org, so the tenant must still expose a userId without an orgId.
     mockEnsureOrganization.mockResolvedValue(undefined as unknown as string);
-    mockAuthenticate.mockResolvedValue({ id: 'user_solo', workosId: 'user_solo', email: 'solo@e.com' });
+    mockAuthenticate.mockResolvedValue({ id: 'user_solo', email: 'solo@e.com' });
     const app = new Hono();
     mountFactoryAuth(app, { redirectUri: 'http://localhost:4111/auth/callback' });
     app.get('/web/whoami', c => {
@@ -605,7 +605,7 @@ describe('org-tenant identity', () => {
 
   it('a thrown bootstrap error leaves the user no-org instead of failing the request', async () => {
     mockEnsureOrganization.mockRejectedValue(new Error('workos unavailable'));
-    mockAuthenticate.mockResolvedValue({ id: 'user_err', workosId: 'user_err', email: 'err@e.com' });
+    mockAuthenticate.mockResolvedValue({ id: 'user_err', email: 'err@e.com' });
     const app = new Hono();
     mountFactoryAuth(app, { redirectUri: 'http://localhost:4111/auth/callback' });
     app.get('/web/whoami', c => {
