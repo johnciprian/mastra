@@ -69,7 +69,7 @@ so the boundary is a build error rather than a code-review habit.
 ## Status
 
 **62 of 65 original tasks done**, plus **29 post-plan follow-ups** (`P1`–`P29`) filed by
-the re-grade and by the work since, of which **22 are done and 7 pending**. Each task in
+the re-grade and by the work since, of which **23 are done and 6 pending**. Each task in
 `tasks.json` carries a `status` field (`done` / `pending` / `held`) — that file is the
 source of truth for progress; update it when a task merges.
 
