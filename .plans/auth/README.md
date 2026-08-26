@@ -14,7 +14,7 @@ external assets beyond web fonts).
 | [`swappability-audit.html`](./swappability-audit.html) | Audit of how pluggable, compartmentalized and testable auth is today. Includes a capability matrix for all 11 `auth/*` provider packages and letter grades for five seams. |
 | [`remediation-plan.html`](./remediation-plan.html) | Four-phase plan to take every seam to A−, built on a fork-owned Apache-2.0 auth kit. States the EE licence boundary precisely. |
 | [`task-graph.html`](./task-graph.html) | The plan decomposed into 65 dependency-linked tasks across six lanes, with seven hard gates, the critical path, and scheduling scenarios. Not updated with the `P` follow-ups; `tasks.json` is authoritative. |
-| [`tasks.json`](./tasks.json) | 83 tasks, machine-readable — `id`, `lane`, `size`, `deps`, `files`, `detail`, `doneWhen`. The original 65, plus `P1`–`P18` filed by the re-grade. Import into a tracker or feed to a script. |
+| [`tasks.json`](./tasks.json) | 89 tasks, machine-readable — `id`, `lane`, `size`, `deps`, `files`, `detail`, `doneWhen`. The original 65, plus `P1`–`P24`: `P1`–`P18` filed by the re-grade, `P19`–`P24` filed by the work since. Import into a tracker or feed to a script. |
 
 **Start at [Final grades](#final-grades-r2)** if you want the current state rather than the
 original diagnosis. The two HTML documents describe the problem and the plan as of the
@@ -65,10 +65,10 @@ so the boundary is a build error rather than a code-review habit.
 
 ## Status
 
-**62 of 65 original tasks done**, plus **18 post-plan follow-ups** filed by the re-grade
-(`P1`–`P18`), of which `P12` is done and 17 are pending. Each task in `tasks.json` carries a `status` field (`done` /
-`pending` / `held`) — that file is the source of truth for progress; update it when a
-task merges.
+**62 of 65 original tasks done**, plus **24 post-plan follow-ups** (`P1`–`P24`) filed by
+the re-grade and by the work since, of which **14 are done and 10 pending**. Each task in
+`tasks.json` carries a `status` field (`done` / `pending` / `held`) — that file is the
+source of truth for progress; update it when a task merges.
 
 | Lane | | Done |
 | --- | --- | --- |
@@ -95,10 +95,31 @@ under v2 lives in the host's signed cookie, and the legacy path never reads it. 
 tokens-only providers with a session secret configured, and only them. Worth knowing
 before anyone reaches for `=false` under pressure.
 
-The kit ships as `@mastra/factory-auth@0.1.0`: nine entry points, 833 tests at 98%
-statements / 100% lines, an enforced Apache-2.0/EE boundary, and a `describeAuthProvider`
-conformance suite. See `mastracode/factory-auth/README.md` for the package itself and its
-semver policy.
+The kit ships as `@mastra/factory-auth@0.1.0`: nine entry points, 910 tests, an enforced
+Apache-2.0/EE boundary, and a `describeAuthProvider` conformance suite. See
+`mastracode/factory-auth/README.md` for the package itself and its semver policy.
+
+### Where the plan text was wrong, and the measurement that showed it
+
+The `P` follow-ups were written from reading the code, and three of them were wrong about
+the fix. Each was caught by measuring before changing anything, and each correction is
+recorded in that task's `detail` in `tasks.json`.
+
+- **`P9` does not fix WorkOS.** The task said narrowing the guards would stop `auth/workos`
+  advertising `sessionRevocation` it cannot deliver, and `P18` cross-referenced it for
+  that. It does not: WorkOS carries all seven `ISessionProvider` members as no-ops, so it
+  passed the loose guard and passes the tight one. A structural guard cannot detect a
+  no-op. Only `P18` can fix that defect.
+- **`P9` breaks nothing in this repository.** The task was filed as BREAKING, and it is —
+  for external providers. An AST scan over every provider class under `auth/*` showed zero
+  verdicts change here, because every provider declares its interfaces with `implements`
+  and the compiler had already forced the members to exist. What was breaking in theory
+  was inert in practice, and knowing which mattered for the changeset.
+- **`P20`'s suggested fix was a no-op.** The task proposed widening to
+  `Auth<BetterAuthOptions>`. better-auth declares
+  `type Auth<Options extends BetterAuthOptions = BetterAuthOptions>`, so the bare `Auth`
+  already *is* `Auth<BetterAuthOptions>`; a probe with the explicit form fails identically.
+  The fix is a type parameter inferred at the call site.
 
 ## Final grades (R2)
 
