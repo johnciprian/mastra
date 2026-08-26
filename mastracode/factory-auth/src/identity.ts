@@ -87,7 +87,7 @@ export interface AuthIdentity {
 /**
  * The escape hatch: a provider maps its own payload.
  *
- * An optional capability, in the style of the seven in `./contract` - a
+ * An optional capability, in the style of the eight in `./contract` - a
  * provider implements `toIdentity` or it does not, and {@link isIdentityProvider}
  * is how anything finds out. It exists for the provider whose token shape you
  * cannot change and whose shape this module does not recognize: a claim under a
@@ -109,7 +109,7 @@ export interface IIdentityProvider {
 /**
  * Does this provider map its own identities?
  *
- * Structural, never `instanceof`, matching the seven guards in `./contract`:
+ * Structural, never `instanceof`, matching the eight guards in `./contract`:
  * duplicate copies of `@mastra/core` in a dependency tree are common, and an
  * `instanceof` check against the wrong copy is false for an object that
  * implements the interface perfectly.

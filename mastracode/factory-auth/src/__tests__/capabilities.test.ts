@@ -1,7 +1,7 @@
 /**
  * The capability descriptor and its derivation.
  *
- * Every fake below is a plain object. That is not a shortcut: the seven guards
+ * Every fake below is a plain object. That is not a shortcut: the eight guards
  * in the contract are structural rather than `instanceof`, so a plain object
  * with the right methods is exactly as much of a provider as a real class is,
  * and testing through plain objects tests the thing the guards actually see.

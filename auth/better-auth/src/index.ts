@@ -4,6 +4,7 @@ import type {
   IAuthInit,
   ICredentialsProvider,
   IOrganizationsProvider,
+  ISessionClearer,
   IUserProvider,
   CredentialsResult,
   MastraAuthRequest,
@@ -177,7 +178,19 @@ interface TaggedAuthDatabase {
  */
 export class MastraAuthBetterAuth<TAuthOptions extends BetterAuthOptions = BetterAuthOptions>
   extends MastraAuthProvider<BetterAuthUser>
-  implements IUserProvider<EEUser>, ICredentialsProvider<EEUser>, IOrganizationsProvider, IAuthInit, IAuthHttpHandler
+  implements
+    IUserProvider<EEUser>,
+    ICredentialsProvider<EEUser>,
+    IOrganizationsProvider,
+    IAuthInit,
+    IAuthHttpHandler,
+    // Declared, where it used to be a convention. This provider owns its
+    // session cookie and clears it on logout, and implements exactly this one
+    // member of the session contract - it creates no session a host can address
+    // by id, so the other six mean nothing to it. Hosts used to reach for the
+    // method through a structural `Partial<ISessionProvider>` cast that no
+    // interface described.
+    ISessionClearer
 {
   #auth: Auth | undefined;
   #secret: string | undefined;

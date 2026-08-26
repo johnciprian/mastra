@@ -371,7 +371,7 @@ export interface FakeProviderOptions {
  *
  * `toAuthDescriptor` calls this `kind: 'none'`, which is a working, enforcing
  * provider that simply cannot sign anyone in from a browser - today's Supabase
- * and Firebase providers are exactly this shape. It satisfies none of the seven
+ * and Firebase providers are exactly this shape. It satisfies none of the eight
  * capability guards, which is what makes it a useful starting point: every
  * capability a test sees is one the test put there.
  */

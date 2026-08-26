@@ -6,6 +6,7 @@ import type {
   ICredentialsProvider,
   IOrganizationsProvider,
   ISSOProvider,
+  ISessionClearer,
   ISessionProvider,
   IUserProvider,
   Session,
@@ -196,6 +197,23 @@ export function isAuthHttpHandler(p: unknown): p is IAuthHttpHandler {
 
 export function hasAuthInit(p: unknown): p is IAuthInit {
   return hasMethods(p, ['init']);
+}
+
+/**
+ * Whether the provider can clear the session cookie it owns.
+ *
+ * The eighth guard, and the only one that narrows to a single member. It is
+ * separate from `isSessionProvider` because a provider can have this and
+ * nothing else: a provider that mints its own cookie on callback owns clearing
+ * it on logout, while creating no session a host can address by id. Asking
+ * `isSessionProvider` for that provider answers false and takes its sign-out
+ * with it.
+ *
+ * Every `ISessionProvider` satisfies this too, since `ISessionProvider`
+ * extends `ISessionClearer`.
+ */
+export function canClearSession(p: unknown): p is ISessionClearer {
+  return hasMethods(p, ['getClearSessionHeaders']);
 }
 
 function isObjectLike(value: unknown): value is object {

@@ -35,7 +35,7 @@
 /**
  * The provider base class and the structural capability guards.
  *
- * There are seven guards, and they answer "which optional capabilities does
+ * There are eight guards, and they answer "which optional capabilities does
  * this provider implement". Note `hasAuthInit` rather than `isAuthInit`, and
  * note there is no guard for `IMastraAuthProvider` itself: implementing the
  * base contract is a precondition, not a capability to test for.
@@ -51,6 +51,7 @@ export {
   isUserProvider,
   isCredentialsProvider,
   isOrganizationsProvider,
+  canClearSession,
   isAuthHttpHandler,
   hasAuthInit,
 } from '@mastra/core/server';
@@ -61,7 +62,7 @@ export {
 export type { IMastraAuthProvider, MastraAuthProviderOptions } from '@mastra/core/server';
 
 /**
- * The capability interfaces the seven guards narrow to, plus the context handed
+ * The capability interfaces the eight guards narrow to, plus the context handed
  * to a provider's optional `init` hook.
  */
 export type {
@@ -70,6 +71,7 @@ export type {
   IAuthInit,
   ICredentialsProvider,
   IOrganizationsProvider,
+  ISessionClearer,
   ISessionProvider,
   ISSOProvider,
   IUserProvider,

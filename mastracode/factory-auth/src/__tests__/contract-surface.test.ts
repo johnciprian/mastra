@@ -40,6 +40,7 @@ const FORBIDDEN_REEXPORTS = ['MastraAuthConfig', 'ApiRoute', 'ApiRouteHandler', 
 /** Every runtime value `./contract` is expected to expose, and nothing else. */
 const EXPECTED_VALUE_EXPORTS = [
   'MastraAuthProvider',
+  'canClearSession',
   'getRequestHeader',
   'getWebRequest',
   'hasAuthInit',
@@ -52,8 +53,9 @@ const EXPECTED_VALUE_EXPORTS = [
 ];
 
 /**
- * The seven structural capability guards, with the methods each one actually
- * looks for. Note `hasAuthInit`, not `isAuthInit`.
+ * The eight structural capability guards, with the methods each one actually
+ * looks for. Note `hasAuthInit` and `canClearSession`, neither of which uses
+ * the `is` prefix the other six share.
  *
  * Each list is every member the guard's interface REQUIRES, which is what the
  * guard tests - optional members are excluded from both. Pinning the lists here
@@ -81,6 +83,7 @@ const GUARDS = {
   isOrganizationsProvider: ['ensureOrganization', 'isOrganizationAdmin'],
   isAuthHttpHandler: ['handleAuthRequest'],
   hasAuthInit: ['init'],
+  canClearSession: ['getClearSessionHeaders'],
 } as const satisfies Record<string, readonly string[]>;
 
 type GuardName = keyof typeof GUARDS;
@@ -139,9 +142,9 @@ const FORBIDDEN_MESSAGE =
   `Read mastracode/factory-auth/README.md#the-ee-boundary before you change this test.`;
 
 describe('the contract surface', () => {
-  it('re-exports the provider base class and the seven capability guards', () => {
+  it('re-exports the provider base class and the eight capability guards', () => {
     expect(typeof contract.MastraAuthProvider).toBe('function');
-    expect(GUARD_NAMES).toHaveLength(7);
+    expect(GUARD_NAMES).toHaveLength(8);
     for (const guard of GUARD_NAMES) {
       expect(typeof contract[guard], `${guard} should be a function`).toBe('function');
     }
@@ -284,6 +287,7 @@ const EXPECTED_ROOT_EXPORTS = [
   'DEFAULT_CREDENTIALS_BASE_PATH',
   'DEFAULT_PROVIDER_HINT',
   'MastraAuthProvider',
+  'canClearSession',
   'getRequestHeader',
   'getWebRequest',
   'hasAuthInit',

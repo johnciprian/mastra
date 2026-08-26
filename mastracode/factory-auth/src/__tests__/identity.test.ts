@@ -366,7 +366,7 @@ describe('isIdentityProvider', () => {
     ['a toIdentity that is only a truthy value', { toIdentity: true }],
     ['a string', 'toIdentity'],
     ['a number', 1],
-    // Matches the seven guards in ./contract, which all require typeof
+    // Matches the eight guards in ./contract, which all require typeof
     // 'object'. A provider is an object, not a function.
     ['a function carrying toIdentity', Object.assign(() => null, { toIdentity: () => null })],
   ])('is false for %s', (_label, candidate) => {
