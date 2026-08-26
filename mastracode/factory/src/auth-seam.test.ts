@@ -230,3 +230,84 @@ describe('buildAuthRoutes', () => {
     expect(routes.map(r => r.path)).toEqual(['/auth/me']);
   });
 });
+
+/**
+ * The compat flag for the identity/session/logout migration. It is read once at
+ * module load, so both paths are reached by reloading the module rather than by
+ * assigning to `process.env` — the last test here is what pins that property,
+ * and the rest would pass just as well against a per-request read.
+ *
+ * Placed last in the file, and it leaves the module registry reset behind it:
+ * the statically imported bindings above are already resolved and keep working,
+ * but a fresh registry is the tidier state to hand to whatever runs next.
+ */
+describe('MASTRACODE_AUTH_IDENTITY_V2 (compat flag)', () => {
+  /**
+   * Import a fresh copy of the auth module with the flag set to `value`
+   * (`undefined` unsets it). Deleting the variable explicitly rather than
+   * trusting the ambient environment keeps the default-off assertion honest on
+   * a machine that happens to export it.
+   */
+  async function importAuthWith(value: string | undefined): Promise<typeof import('./auth.js')> {
+    if (value === undefined) delete process.env.MASTRACODE_AUTH_IDENTITY_V2;
+    else process.env.MASTRACODE_AUTH_IDENTITY_V2 = value;
+    vi.resetModules();
+    return import('./auth.js');
+  }
+
+  afterEach(() => {
+    delete process.env.MASTRACODE_AUTH_IDENTITY_V2;
+    vi.resetModules();
+  });
+
+  it('names the env var it reads', async () => {
+    const auth = await importAuthWith(undefined);
+    expect(auth.AUTH_IDENTITY_V2_ENV_VAR).toBe('MASTRACODE_AUTH_IDENTITY_V2');
+  });
+
+  it('defaults to off when the env var is unset', async () => {
+    const auth = await importAuthWith(undefined);
+    expect(auth.isAuthIdentityV2Enabled()).toBe(false);
+  });
+
+  it.each(['1', 'true', 'TRUE', '  true  '])('is on when the env var is %j at module load', async value => {
+    const auth = await importAuthWith(value);
+    expect(auth.isAuthIdentityV2Enabled()).toBe(true);
+  });
+
+  it.each(['', '0', 'false', 'FALSE', 'yes', 'on', 'v2', 'undefined'])(
+    'stays off for %j, because an unrecognized value must not opt in',
+    async value => {
+      const auth = await importAuthWith(value);
+      expect(auth.isAuthIdentityV2Enabled()).toBe(false);
+    },
+  );
+
+  it('parses opt-in values without a module reload', async () => {
+    const { readAuthIdentityV2Env } = await importAuthWith(undefined);
+    expect(readAuthIdentityV2Env('1')).toBe(true);
+    expect(readAuthIdentityV2Env('true')).toBe(true);
+    expect(readAuthIdentityV2Env('True')).toBe(true);
+    expect(readAuthIdentityV2Env('\tTRUE\n')).toBe(true);
+    expect(readAuthIdentityV2Env('0')).toBe(false);
+    expect(readAuthIdentityV2Env('false')).toBe(false);
+    expect(readAuthIdentityV2Env('')).toBe(false);
+    expect(readAuthIdentityV2Env(undefined)).toBe(false);
+  });
+
+  it('reads the env var once at module load, not per call', async () => {
+    const auth = await importAuthWith(undefined);
+    expect(auth.isAuthIdentityV2Enabled()).toBe(false);
+
+    // Flipping the variable on a module that has already loaded must not move
+    // the answer: a flag that changed underneath a running process could resolve
+    // a session on one path and re-check it on the other.
+    process.env.MASTRACODE_AUTH_IDENTITY_V2 = 'true';
+    expect(auth.isAuthIdentityV2Enabled()).toBe(false);
+
+    // Only a reload picks the new value up, which is the documented way to
+    // reach the other path.
+    const reloaded = await importAuthWith('true');
+    expect(reloaded.isAuthIdentityV2Enabled()).toBe(true);
+  });
+});
