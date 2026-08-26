@@ -398,6 +398,191 @@ function stateStoreKey(state: string): string {
 
 That's the fix `@mastra/auth-okta` adopted after its conformance run went red. It stores and reads under `stateStoreKey`, so the raw value and the id half normalize to the same key. Taking the codec on is what moved the kit into that package's runtime `dependencies`.
 
+## Carry a PKCE verifier across the round trip
+
+The provider above is a confidential client: it holds a `client_secret` and sends it at the token endpoint. A public client can't keep a secret, so it proves it started the login another way. Proof Key for Code Exchange (PKCE) is that proof. The login request carries the hash of a random code verifier, and the token request carries the verifier itself.
+
+The verifier has to survive from the login redirect to the callback. Those are two separate requests, and a load balancer can route them to two separate processes, so in-process memory won't hold it. `ISSOProvider` gives you a cookie for it, in two halves:
+
+- `getLoginCookies(redirectUri, state)` runs right after `getLoginUrl` on the login redirect. Whatever it returns, the host sets on the response as `Set-Cookie`.
+- `setCallbackCookieHeader(cookieHeader)` runs on the callback, before `handleCallback`. It hands over the request's raw `Cookie` header.
+
+The second exists because `handleCallback` receives only `code` and `state`. It never sees the request, so a verifier it stored in a cookie has no other way back.
+
+Implement both or neither. A provider that writes a verifier and can't read one back fails every callback, and the host's recovery path sends the browser to the login route, which re-enters the identity provider. What a person sees is a redirect loop; what the logs say is that a verifier was missing, which points at the callback, where nothing is wrong.
+
+```typescript title="src/pkce-provider.ts"
+import { MastraAuthProvider } from '@mastra/factory-auth'
+import type {
+  ISSOProvider,
+  MastraAuthProviderOptions,
+  MastraAuthRequest,
+} from '@mastra/factory-auth'
+import { getRequestHeader } from '@mastra/factory-auth/contract'
+
+export interface AcmeUser {
+  id: string
+  email?: string
+  name?: string
+}
+
+export interface AcmePkceOptions extends MastraAuthProviderOptions<AcmeUser> {
+  issuer: string
+  clientId: string
+  /** The callback URL registered with the identity provider. */
+  redirectUri: string
+  verify: (token: string) => Promise<AcmeUser | null>
+}
+
+const SESSION_COOKIE = 'acme_session'
+const VERIFIER_COOKIE = 'acme_pkce_verifier'
+
+function base64url(bytes: Uint8Array): string {
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+function readCookie(header: string, name: string): string {
+  for (const pair of header.split(';')) {
+    const separator = pair.indexOf('=')
+    if (separator === -1) continue
+    if (pair.slice(0, separator).trim() !== name) continue
+    return decodeURIComponent(pair.slice(separator + 1).trim())
+  }
+  return ''
+}
+
+export class AcmePkceAuth extends MastraAuthProvider<AcmeUser> implements ISSOProvider<AcmeUser> {
+  protected issuer: string
+  protected clientId: string
+  protected redirectUri: string
+  private verify: (token: string) => Promise<AcmeUser | null>
+
+  /** Verifiers minted in `getLoginUrl`, collected once by `getLoginCookies`. */
+  private pending = new Map<string, string>()
+
+  /** Filled by `setCallbackCookieHeader`, read by `handleCallback`. */
+  private callbackCookieHeader: string | null = null
+
+  constructor(options: AcmePkceOptions) {
+    super({ name: options.name ?? 'acme' })
+    this.issuer = options.issuer
+    this.clientId = options.clientId
+    this.redirectUri = options.redirectUri
+    this.verify = options.verify
+    this.registerOptions(options)
+  }
+
+  async authenticateToken(token: string, request: MastraAuthRequest): Promise<AcmeUser | null> {
+    const header = getRequestHeader(request, 'cookie') ?? ''
+    const bearer = token || readCookie(header, SESSION_COOKIE)
+    if (!bearer) return null
+    try {
+      return await this.verify(bearer)
+    } catch {
+      return null
+    }
+  }
+
+  authorizeUser(): boolean {
+    return true
+  }
+
+  async getLoginUrl(redirectUri: string, state: string): Promise<string> {
+    const verifier = base64url(crypto.getRandomValues(new Uint8Array(32)))
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))
+    this.pending.set(state, verifier)
+
+    const url = new URL(`${this.issuer}/authorize`)
+    url.searchParams.set('client_id', this.clientId)
+    url.searchParams.set('response_type', 'code')
+    url.searchParams.set('redirect_uri', redirectUri)
+    url.searchParams.set('state', state)
+    url.searchParams.set('code_challenge', base64url(new Uint8Array(digest)))
+    url.searchParams.set('code_challenge_method', 'S256')
+    return url.toString()
+  }
+
+  getLoginCookies(_redirectUri: string, state: string): string[] | undefined {
+    const verifier = this.pending.get(state)
+    if (verifier === undefined) return undefined
+    this.pending.delete(state)
+    return [`${VERIFIER_COOKIE}=${verifier}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`]
+  }
+
+  setCallbackCookieHeader(cookieHeader: string | null): void {
+    this.callbackCookieHeader = cookieHeader
+  }
+
+  async handleCallback(code: string, _state: string) {
+    const verifier = readCookie(this.callbackCookieHeader ?? '', VERIFIER_COOKIE)
+    if (!verifier)
+      throw new Error('The PKCE verifier cookie was missing from the callback request.')
+
+    const response = await fetch(`${this.issuer}/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: this.clientId,
+        redirect_uri: this.redirectUri,
+        code_verifier: verifier,
+        code,
+      }),
+    })
+    const tokens = (await response.json()) as { access_token: string; expires_in?: number }
+    const user = await this.verify(tokens.access_token)
+    if (user === null) throw new Error('The token exchange returned a token this provider rejects.')
+
+    return {
+      user,
+      tokens: {
+        accessToken: tokens.access_token,
+        expiresAt:
+          tokens.expires_in === undefined
+            ? undefined
+            : new Date(Date.now() + tokens.expires_in * 1000),
+      },
+      cookies: [
+        `${SESSION_COOKIE}=${encodeURIComponent(tokens.access_token)}; Path=/; HttpOnly; SameSite=Lax`,
+        `${VERIFIER_COOKIE}=; Path=/; HttpOnly; Max-Age=0`,
+      ],
+    }
+  }
+
+  getLoginButtonConfig() {
+    return { provider: 'acme', text: 'Sign in with Acme' }
+  }
+}
+```
+
+Each of the details below has its own way of failing quietly.
+
+`getLoginUrl` mints the verifier and `getLoginCookies` only collects it. Nothing that can fail belongs in `getLoginCookies`: a throw there is a 500 on the route the sign-in button points at, so no login starts at all. The `pending` map bridges the two calls within the one login request and is cleared on collection, which is why it doesn't need to survive a restart. The cookie is what crosses the request boundary.
+
+Return complete `Set-Cookie` header values, `name=value` first and attributes after. A value made only of attributes sets no cookie, and the browser discards it before the callback happens. `HttpOnly` keeps the verifier away from scripts, and a short `Max-Age` bounds how long an abandoned login stays replayable.
+
+`setCallbackCookieHeader` stores and does nothing else. Parsing belongs in `handleCallback`, where a failure can be reported against the exchange it belongs to.
+
+Read the verifier under the name you wrote it. Reading a different name, or looking for it on a `Request` object that `handleCallback` never receives, produces the same silent miss.
+
+The conformance suite proves the loop for you. `sso/pkce-round-trip` plays the identity provider and runs the whole thing offline:
+
+1. Mint a login URL through `getLoginUrl`.
+1. Collect whatever `getLoginCookies` hands back.
+1. Turn those `Set-Cookie` values into the `Cookie` header a browser would return.
+1. Pass that header to `setCallbackCookieHeader`.
+1. Call `handleCallback`, and require it to reach the token exchange.
+
+```
+✓ hosted login (ISSOProvider) > a cookie set at login comes back readable at the callback
+```
+
+The check is gated on `getLoginCookies` alone. A provider without it skips, with a reason attached, because a confidential client carries nothing across and has nothing to read back. A provider that has it and returns nothing passes, so green here isn't by itself evidence that PKCE works, only that no cookie went missing. Declaring `getLoginCookies` and omitting `setCallbackCookieHeader` is the case the check exists to catch, and it fails with `sso/pkce-round-trip#no-read-side`.
+
+The suite watches global `fetch` to decide whether the exchange was reached. If your token request goes through `node:https`, or through an SDK that carries its own HTTP agent, pass `sso.reachedTokenExchange` and answer `true` for the error your transport throws when it can't reach the issuer.
+
 ## Providers that can't sign a browser in
 
 Some identity systems can't offer a server-side hosted login at all. Firebase drives sign-in from a client SDK, so its Admin SDK has no authorization URL to return. Supabase's `signInWithOAuth` can't carry the host's `state`, and its code verifier lives in client storage rather than in a store shared between the login and callback requests.
@@ -452,14 +637,14 @@ A user interface reading `signIn.kind: 'none'` has to explain that this deployme
 
 ## What a finished run looks like
 
-The provider built above, wrapped for organizations, answers with all four obligations green:
+`AcmeAuth`, wrapped for organizations, answers with all four obligations green:
 
 ```
  Test Files  1 passed (1)
-      Tests  12 passed | 6 skipped (18)
+      Tests  12 passed | 7 skipped (19)
 ```
 
-Every skip in that run is a capability this provider never declared, such as credentials, server-side sessions, its own auth routes, and the init hook. A bearer-only provider from the previous section answers `8 passed | 10 skipped (18)` instead, with obligations 2 and 3 among the skips.
+Every skip in that run is a capability that provider never declared, such as credentials, server-side sessions, its own auth routes, the init hook, and the login cookie the PKCE check needs. The bearer-only provider from [Providers that can't sign a browser in](#providers-that-cant-sign-a-browser-in) answers `8 passed | 11 skipped (19)` instead, with obligations 2 and 3 among the skips. `AcmePkceAuth` declares one capability more and answers `13 passed | 6 skipped (19)`.
 
 Add `--reporter=verbose` to see one line per check with every skip reason attached:
 

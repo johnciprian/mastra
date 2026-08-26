@@ -47,6 +47,8 @@ Every guard checks `typeof provider.someMethod === 'function'` against a non-nul
 
 `authenticateToken` resolves to `null` for a credential it doesn't recognize. Rejection is the ordinary state of a public endpoint, so a throw reads to a host as a bug rather than as a denial.
 
+Implement `mapUserToResourceId` as an ordinary prototype method on your subclass. `MastraAuthProvider` assigns the constructor option of the same name only when one is supplied, so a subclass method stays reachable when it isn't. `@mastra/auth-firebase` implements it that way. A supplied option still replaces the method, which is the documented override.
+
 For a walkthrough of building on this contract, see [Custom auth provider](/docs/auth/custom-auth-provider).
 
 ## What each interface requires
@@ -64,6 +66,7 @@ Run a hosted login by sending the browser to a page the identity provider owns, 
 | `getLoginButtonConfig` | `() => SSOLoginConfig` | Yes |
 | `getLogoutUrl` | `(redirectUri: string, request?: Request) => string \| null \| Promise<string \| null>` | No |
 | `getLoginCookies` | `(redirectUri: string, state: string) => string[] \| undefined` | No |
+| `setCallbackCookieHeader` | `(cookieHeader: string \| null) => void` | No |
 
 `SSOLoginConfig` carries `provider: string` and `text: string`, plus optional `icon: string` and `description: string`. `SSOCallbackResult` carries the authenticated `user`, an optional `cookies: string[]` of `Set-Cookie` values, and a `tokens` object:
 
@@ -79,6 +82,18 @@ Run a hosted login by sending the browser to a page the identity provider owns, 
 Neither `SSOLoginConfig` nor `SSOCallbackResult` is exported from `@mastra/core/server` or from the kit, so you can't import either to annotate a return. Declare `implements ISSOProvider<TUser>` on your class and let the interface constrain the returns instead.
 
 Treat `state` as opaque. The host mints it, and the value has to survive the round trip unchanged. See [Obligations the interfaces don't state](#obligations-the-interfaces-dont-state).
+
+#### The login cookie round trip
+
+`getLoginCookies` and `setCallbackCookieHeader` are the two halves of one loop. Proof Key for Code Exchange (PKCE) is what the loop exists for: `getLoginUrl` mints a code verifier and sends its hash to the identity provider, `getLoginCookies` hands the verifier to the browser as one or more `Set-Cookie` values, and `handleCallback` needs the verifier back to complete the token exchange.
+
+`handleCallback` receives only `code` and `state`, so it can't read the callback request itself. The raw `Cookie` header arrives through `setCallbackCookieHeader` instead, which a host calls before `handleCallback` on every hosted-login callback.
+
+Implement both or neither. A provider that writes a login cookie and declares no way to read one back fails every sign-in at the callback, and the host's error recovery sends the browser to the login route, which re-enters the identity provider as a redirect loop.
+
+A confidential client authenticating with a `client_secret` has no verifier to carry, so it needs neither member. That shape is fully supported.
+
+For a working provider built end to end, see [Carry a PKCE verifier across the round trip](/docs/auth/write-a-provider#carry-a-pkce-verifier-across-the-round-trip).
 
 ### `ISessionProvider`
 
@@ -162,7 +177,7 @@ The guards are cheap structural checks, and four of them test fewer members than
 
 | Interface | Members declared | Required members | Members the guard tests |
 | - | - | - | - |
-| `ISSOProvider` | 5 | 3 | 2 |
+| `ISSOProvider` | 6 | 3 | 2 |
 | `ISessionProvider` | 7 | 7 | 2 |
 | `IUserProvider` | 4 | 2 | 1 |
 | `ICredentialsProvider` | 5 | 2 | 1 |
@@ -249,9 +264,25 @@ Which guards each published provider satisfies. `Yes` means the guard returns `t
 Notes on the rows that need one:
 
 - **`Optional` in Auth0, Clerk, and Google.** Each attaches its hosted-login and session methods to the instance in its constructor, and only when OAuth credentials are configured. Auth0 and Clerk gate on a client id and a client secret together. Google gates on a client secret. Without those, the guards return `false` and the provider validates bearer tokens only.
-- **Better Auth has no session capability.** It defines `getClearSessionHeaders` but neither `createSession` nor `validateSession`, so `isSessionProvider` returns `false`. It's the only published provider that serves its own auth routes, and the only one that runs the conformance suite in its own package.
+- **Better Auth has no session capability.** It defines `getClearSessionHeaders` but neither `createSession` nor `validateSession`, so `isSessionProvider` returns `false`. It's the only published provider that serves its own auth routes.
 - **Firebase and Supabase validate bearer tokens and resolve an organization.** Neither satisfies any sign-in guard, so `toAuthDescriptor` reports `signIn.kind: 'none'` and `features.logout: false` for each. Both packages declare that shape in the open, as a `FACTORY_BROWSER_SIGN_IN` export carrying the reason and the alternative. See [Providers that can't sign a browser in](/docs/auth/write-a-provider#providers-that-cant-sign-a-browser-in).
 - **Okta reaches organizations through the wrapper rather than on its own.** Okta has groups instead of organizations, so the package documents `withSyntheticOrganizations` as the way to mount it, and its conformance suite runs against that composition. Any provider in the No column can do the same.
+
+### Which providers carry a login cookie
+
+`getLoginCookies` and `setCallbackCookieHeader` sit below the guards, so `isSSOProvider` says nothing about either. Only one published provider moves a value across the round trip.
+
+| Package | Writes a login cookie | Reads the callback header |
+| - | - | - |
+| `@mastra/auth-cloud` | Yes, a Proof Key for Code Exchange verifier | Yes |
+| `@mastra/auth-auth0` | Declared, returns none | No |
+| `@mastra/auth-clerk` | Declared, returns none | No |
+| `@mastra/auth-google` | Declared, returns none | No |
+| `@mastra/auth-okta` | Declared, returns none | No |
+| `@mastra/auth-studio` | Declared, returns none | Declared, ignores it |
+| Every other package | No | No |
+
+Auth0, Clerk, and Google attach `getLoginCookies` on the same condition as their hosted login, so it's absent entirely when OAuth credentials aren't configured. Those three and Okta are confidential clients authenticating with a `client_secret`, so none of them has a verifier to carry. Studio delegates the whole OAuth flow to the shared Mastra API, which holds the verifier on its side.
 
 ## Checking your own provider
 
@@ -272,9 +303,38 @@ describeAuthProvider({
 })
 ```
 
-The suite holds 18 checks, split evenly across the base contract, the obligations, and the declared capabilities. A check is skipped, with its reason attached, only when a guard says the provider doesn't declare the capability the check is about. It's never skipped because a provider declared a capability and then didn't deliver it.
+The suite holds 19 checks, grouped like this:
+
+| Group | Checks |
+| - | - |
+| Base contract | 6 |
+| Obligations | 6 |
+| Declared capabilities | 7 |
+
+A check is skipped, with its reason attached, only when a guard says the provider doesn't declare the capability the check is about. It's never skipped because a provider declared a capability and then didn't deliver it.
+
+All eleven published providers run the suite in their own package, each as a `src/conformance.test.ts`.
 
 `authConformanceChecks(options)` returns the same list as data, so a script or a different runner can walk the checks without depending on vitest.
+
+### Reading the PKCE check
+
+`sso/pkce-round-trip` plays the identity provider and runs the loop offline:
+
+1. Mint a login URL through `getLoginUrl`.
+1. Collect whatever `getLoginCookies` hands back.
+1. Turn those `Set-Cookie` values into the `Cookie` header a browser would return.
+1. Pass that header to `setCallbackCookieHeader`.
+1. Call `handleCallback`, and require it to reach the token exchange.
+
+Reaching the exchange is what proves the verifier survived. The outcomes below invite the wrong conclusion:
+
+- **Green doesn't mean PKCE works.** A provider that declares `getLoginCookies` and returns nothing passes, because the check applied, ran, and found no cookie to hold anybody to. Auth0, Clerk, Google, Okta, and Studio are all green on exactly those terms. Only `@mastra/auth-cloud` passes by carrying a real verifier across.
+- **A skip isn't a failure.** The check is gated on the write half alone. A provider with no `getLoginCookies` skips, which is the correct result for a confidential client holding a `client_secret`. Gating on the read half instead would skip the one provider the check exists to catch: the one that writes a verifier and declares no way to read it back.
+
+### When a check can't pass yet
+
+Pass `knownFailures` to record a failure you can't fix now, naming the check, its failure code, and why. The suite then stays green while reporting the entry on every run. The record is checked in both directions. A failure that stops happening turns the suite red, and so does one that begins failing for a different reason, which keeps an entry from quietly becoming a permanent exemption. Twenty such records exist today across seven packages: Auth0, Clerk, Cloud, Google, Neon, Studio, and WorkOS.
 
 For setup, fixtures, and the failure messages the suite emits, see the [`@mastra/factory-auth` README](https://github.com/mastra-ai/mastra/blob/main/mastracode/factory-auth/README.md).
 
