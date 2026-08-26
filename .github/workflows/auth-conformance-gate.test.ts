@@ -123,6 +123,9 @@ const PROVIDERS_DIR = 'auth';
 /** The workflow whose unit job is the PR gate for `unit:*` projects. */
 const UNIT_TEST_WORKFLOW = '.github/workflows/test-suite.yml';
 
+/** Each provider package's vitest config, read for the isolation assertion. */
+const CONFIG_FILE = 'vitest.config.ts';
+
 /**
  * The kit subpath a conformance suite imports. Importing it is what makes a
  * test file a conformance suite rather than a test that happens to say the word.
@@ -528,6 +531,101 @@ describe('auth provider conformance gate', () => {
       );
     }
     expect(unreachable).toEqual([]);
+  });
+
+  /**
+   * Every provider's unit project runs isolated.
+   *
+   * Almost every vitest project in this repository sets `isolate: false`, for
+   * speed, and these eleven deliberately do not. The reason is specific to
+   * them: each runs a suite that mocks the vendor SDK (`vi.mock('@clerk/backend')`
+   * and friends) in the same project as a conformance suite whose entire value
+   * is that the SDK is NOT mocked - "the `@clerk/backend` SDK client is real and
+   * unmocked", as auth/clerk's own header puts it.
+   *
+   * With `isolate: false` those files share one module registry, and whichever
+   * one loads the module first wins. Reduced to a minimum, two sibling files and
+   * one two-line module: the file that mocks gets the real module when its
+   * sibling loaded it first, and the file that wants the real one gets the mock
+   * when the mocking sibling ran first. Both directions were reproduced.
+   *
+   * The cost was roughly 1 run in 10 of the full `unit:auth/*` sweep failing, in
+   * a different package each time - and once, in auth/clerk, that meant
+   * `contract/rejects-unknown-token` reporting that a provider authenticated an
+   * arbitrary string. That check exists to be the one whose failure is a
+   * security finding. A gate that cries wolf on that particular check at 10% is
+   * worse than no gate, because the response to a red becomes "run it again".
+   *
+   * And it costs nothing. The usual reason for `isolate: false` is speed;
+   * timed back to back on an idle machine, the full `unit:auth/*` sweep runs
+   * in 9.76s isolated and 9.70s shared - a 0.7% difference, inside the noise.
+   * These suites are small and none of them pays for a shared registry.
+   *
+   * So reverting this is not a tidy-up and buys nothing. If a future suite here
+   * genuinely does need the shared registry back, the way to it is to stop
+   * mocking the vendor SDK in the sibling file, not to share a registry with a
+   * suite that depends on that module being real.
+   */
+  it('requires every provider unit project to run isolated', () => {
+    const notIsolated: string[] = [];
+    const unreadable: string[] = [];
+
+    for (const entry of providers) {
+      const configPath = path.join(REPO_ROOT, entry.dir === '' ? '' : `${PROVIDERS_DIR}/${entry.dir}`, CONFIG_FILE);
+      if (!existsSync(configPath)) {
+        unreadable.push(`  ${entry.root}/${CONFIG_FILE} does not exist (${entry.name})`);
+        continue;
+      }
+      const source = stripComments(readFileSync(configPath, 'utf8'));
+      if (/\bisolate\s*:\s*false\b/.test(source)) {
+        notIsolated.push(`  ${entry.root}/${CONFIG_FILE} sets isolate: false (${entry.name})`);
+        continue;
+      }
+      // Absent is not good enough. vitest's default is isolated, but these
+      // projects have all carried the flag explicitly, and an unexplained
+      // deletion reads as "someone removed a line" rather than as a decision.
+      if (!/\bisolate\s*:\s*true\b/.test(source)) {
+        notIsolated.push(`  ${entry.root}/${CONFIG_FILE} declares no isolate setting (${entry.name})`);
+      }
+    }
+
+    // False-green guard 5: no config files read means this proved nothing.
+    if (unreadable.length === providers.length && providers.length > 0) {
+      expect.fail(
+        `The conformance gate read no ${CONFIG_FILE} for any of the ${providers.length} discovered ` +
+          'providers, so it proved nothing about isolation.\n\n' +
+          `${unreadable.join('\n')}\n\n` +
+          GATE_POINTER,
+      );
+    }
+
+    console.info(
+      `[conformance-gate] providers=${providers.length} isolated=${providers.length - notIsolated.length - unreadable.length}`,
+    );
+
+    if (notIsolated.length > 0) {
+      expect.fail(
+        `${notIsolated.length} provider unit project${notIsolated.length === 1 ? '' : 's'} ` +
+          `do${notIsolated.length === 1 ? 'es' : ''} not run isolated.\n\n` +
+          `${notIsolated.join('\n')}\n\n` +
+          'These packages run a suite that mocks the vendor SDK alongside a conformance suite that ' +
+          'requires the real one. Sharing a module registry between them lets whichever file loads the ' +
+          'module first decide what the other sees, which made the full unit:auth/* sweep fail about one ' +
+          'run in ten, in a different package each time. Once that surfaced as ' +
+          '`contract/rejects-unknown-token` - the security check - reporting a clean provider red.\n\n' +
+          'It is not a speed trade-off: isolated and shared time the same on this sweep, to within 1%.\n\n' +
+          'Set it back:\n\n' +
+          '  test: {\n' +
+          "    name: 'unit:auth/<package>',\n" +
+          '    isolate: true,\n' +
+          "    include: ['src/**/*.test.ts'],\n" +
+          '  }\n\n' +
+          'If the speed matters more, remove the vendor-SDK mock from the sibling suite first, then this ' +
+          'gate has nothing to protect and can be deleted with it.\n' +
+          GATE_POINTER,
+      );
+    }
+    expect(notIsolated).toEqual([]);
   });
 });
 
