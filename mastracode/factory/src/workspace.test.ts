@@ -63,6 +63,7 @@ vi.mock('./integrations/github/sandbox', async importOriginal => ({
   runWorktreeTeardown: (...args: unknown[]) => (mocks.runWorktreeTeardown as any)(...args),
 }));
 
+import { factoryRunTenant } from './auth.js';
 import { MaterializeError } from './integrations/github/sandbox.js';
 import { injectGithubToken } from './integrations/github/token-refresh.js';
 import { SandboxFleet } from './sandbox/fleet.js';
@@ -149,6 +150,10 @@ function createUnscopedGithubRequestContext(projectId: string, projectPath: stri
   requestContext.set('user', { organizationId: 'org-1', id: 'user-1' });
   return requestContext;
 }
+
+// The identity port, backed by the real resolver: these tests assert who may
+// open which session, so a hand-rolled tenant could disagree with the host.
+const auth = { runTenant: factoryRunTenant };
 
 function addProject(overrides: Record<string, unknown> = {}) {
   const project = {
@@ -589,6 +594,7 @@ describe('GitHub session workspace preparation', () => {
     const fleet = new SandboxFleet({ machine, workdirBase: root });
     (fleet as any).ensureSandbox = mocks.ensureSandbox;
     const resolver = createWorkspaceFactory({
+      auth,
       sandbox: { machine, workdir: root },
       github: fakeGithubIntegration() as any,
       fleet,
@@ -1190,6 +1196,7 @@ describe('GitHub session workspace preparation', () => {
     (fleet as any).ensureSandbox = mocks.ensureSandbox;
     return eager(
       createWorkspaceFactory({
+        auth,
         sandbox: { machine, workdir: '/workspace' },
         github: fakeGithubIntegration() as any,
         fleet,
