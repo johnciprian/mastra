@@ -169,15 +169,16 @@ The provider above answers with:
 
 ```
  Test Files  1 passed (1)
-      Tests  8 passed | 11 skipped (19)
+      Tests  10 passed | 13 skipped (23)
 ```
 
-Eleven skipped is the normal shape of a first run, not a warning. Add `--reporter=verbose` to see one
+Thirteen skipped is the normal shape of a first run, not a warning. Add `--reporter=verbose` to see one
 `describe` per section, one `it` per check, and the reason attached to every skip:
 
 ```
  ✓ src/conformance.test.ts > auth provider conformance: @mastra/auth-my-provider > the base contract
      > implements IMastraAuthProvider
+ ✓ ... > the base contract > implements every capability interface it touches whole, or not at all
  ✓ ... > obligation 1 of 4 - flatId > authenticateToken resolves to an identity with a non-empty id
  ↓ ... > obligation 2 of 4 - cookieAuth > authenticateToken reads the Cookie header when the bearer
      token is empty [This provider cannot put a session in a browser: no hosted login, no credentials
@@ -265,6 +266,46 @@ Three outcomes, and the middle one is the one to read twice:
 The same cookie hand-back happens before `obligation/stateCodec/callback` too, so a correct PKCE
 provider is not told it "rejected a state" about a call that threw for a missing verifier.
 
+### If you implement part of a capability interface
+
+`contract/whole-capabilities` asks one question of every capability interface in the contract: do you
+carry all of the members it requires, or none of them? Some but not all is a failure, and the reason
+is easy to miss.
+
+Every guard tests every member its interface requires — it has to, because it hands the caller a type
+that promises all of them. So a provider with two of `ISSOProvider`'s three members does not
+_mostly_ satisfy `isSSOProvider`. It fails it, and a host branching on the guard treats the provider
+as having no hosted login at all. The two methods that were written are never called, and nothing
+anywhere says so. Every check in this suite's hosted-login section is skipped for the same reason —
+which is what made a half-finished interface the one defect the suite could not see. Now it is one
+check, and the check is not gated on anything: gating it on the guard would skip it for exactly the
+provider it exists to find, the same self-fulfilling gate obligation 4 avoids.
+
+Four codes, one per interface it reports:
+
+| Code                                                | Interface                |
+| --------------------------------------------------- | ------------------------ |
+| `contract/whole-capabilities#partial-sso`           | `ISSOProvider`           |
+| `contract/whole-capabilities#partial-sessions`      | `ISessionProvider`       |
+| `contract/whole-capabilities#partial-credentials`   | `ICredentialsProvider`   |
+| `contract/whole-capabilities#partial-organizations` | `IOrganizationsProvider` |
+
+`IAuthHttpHandler`, `IAuthInit` and `ISessionClearer` require one member each, so there is no part of
+them to carry.
+
+**One partial shape is legitimate, and it is legitimate because it is declared.** `ISessionProvider`
+extends `ISessionClearer`, a one-member interface with a guard of its own, `canClearSession`. A
+provider implementing `getClearSessionHeaders` and none of the other six is the whole of
+`ISessionClearer` rather than a seventh of `ISessionProvider` — which is what a provider that mints
+its own cookie on callback and creates no session a host can address by id wants, and what
+`@mastra/auth-better-auth` ships. The check passes it, and it passes it **by rule**: any member set
+that is exactly a declared sub-interface's required set is a whole capability. Add one more session
+member to it and it is half an interface again. Nothing here is exempted by name, and a partial shape
+with no interface behind it is a failure however reasonable it looks — declare the interface first.
+
+`IUserProvider` is reported by the two checks below rather than here, and the check knows that: it
+names them instead of reporting the same defect twice.
+
 ### If your provider implements IUserProvider
 
 Two checks, and between them they cover a gap in the guard you are probably relying on.
@@ -279,6 +320,12 @@ That is why this section gates on carrying **either** member rather than on the 
 `users/get-user` and `users/current-user` each report their own member missing as a **failure**
 rather than skipping. Gating on the guard would skip exactly the provider these checks are looking
 for. A provider with neither member skips, because that is a decision rather than an unfinished job.
+
+This is the general rule above with a better message, not an exception to it. Each of these two
+checks owns one member and can say what its absence costs — an account menu with nobody in it, a run
+nobody can put a name against — and reporting them separately leaves the half that works able to pass
+its own check, which one general failure cannot do. Both read the same roster of required members
+that `contract/whole-capabilities` reads.
 
 `users/current-user` asks whether your two identity paths agree. It sends one request carrying every
 credential the suite holds — the bearer token, and your `cookieHeader` if you supplied one — and
@@ -482,7 +529,11 @@ break you without being type errors:
   cookie, and it still shipped as a major, because "no provider in _this_ repository goes red" is a
   fact about this repository. `users/current-user`, `users/get-user` and `organizations/is-admin`
   shipped as a major on the same reasoning, and none of the eleven providers here goes red on them
-  either. Loosening a check, adding a skip gate, or rewriting a message is a patch.
+  either. `contract/whole-capabilities` is the clearest case of the rule: measured against all
+  eleven providers in this repository it turns none of them red — the only partial shape any of them
+  has is `@mastra/auth-better-auth`'s `ISessionClearer`, which it exempts by rule — and it shipped as
+  a major anyway, because a provider outside this repository that carries part of an interface goes
+  red the day it upgrades. Loosening a check, adding a skip gate, or rewriting a message is a patch.
 - **Removing or renaming a conformance failure code.** See below: a code is a value downstream
   suites hold, and a rename turns a valid `knownFailures` entry into a registration error.
 - **A change to the synthetic organization id format.** `user:${userId}` is a storage key. Changing

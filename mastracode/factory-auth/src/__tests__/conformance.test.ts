@@ -60,7 +60,16 @@ import type {
   AuthConformanceOutcome,
   AuthProviderConformanceOptions,
 } from '../conformance/index.js';
-import { isUserProvider } from '../contract.js';
+import {
+  canClearSession,
+  hasAuthInit,
+  isAuthHttpHandler,
+  isCredentialsProvider,
+  isOrganizationsProvider,
+  isSessionProvider,
+  isSSOProvider,
+  isUserProvider,
+} from '../contract.js';
 import type { IMastraAuthProvider } from '../contract.js';
 import { parseStateId } from '../oauth-state.js';
 import { withSyntheticOrganizations } from '../organizations.js';
@@ -842,6 +851,410 @@ describe('a provider that implements half of IUserProvider', () => {
     expect(outcome.status === 'failed' && outcome.code).toBe('users/current-user#authenticated-anonymous-request');
     expect(outcome.status === 'failed' && outcome.message).toContain('no headers at all');
     expect(outcome.status === 'failed' && outcome.message).toContain('cached on the instance');
+  });
+});
+
+// ============================================================================
+// Half an interface, for every interface
+// ============================================================================
+
+/** The check that reports a capability interface carried in part. */
+const WHOLE_CAPABILITIES = 'contract/whole-capabilities';
+
+/**
+ * The eight capability interfaces, their guards, and every member each
+ * requires - written out here rather than imported from the roster the check
+ * reads.
+ *
+ * That duplication is the point. Importing `src/conformance/index.ts`'s roster
+ * would make this file agree with whatever that file says, which is not a
+ * property worth asserting. Written out, the two are independent, and the
+ * assertions below hold *three* lists in step: this table, that roster, and the
+ * structural guards `@mastra/core/server` actually ships. A member that core
+ * adds to a guard and nobody adds here shows up as a guard that does not flip.
+ */
+interface CapabilityCase {
+  /** The interface, as `@mastra/core/server` spells it. */
+  readonly name: string;
+
+  /** Its guard, as `./contract` re-exports it. */
+  readonly guard: (provider: unknown) => boolean;
+
+  /** Every member it requires. Optional members are not listed and not tested. */
+  readonly members: readonly string[];
+
+  /**
+   * The code `contract/whole-capabilities` fails under for this interface, or
+   * `null` when it never reports this one.
+   *
+   * `null` for the three one-member interfaces, which cannot be carried in
+   * part, and for `IUserProvider`, whose halves are reported member by member
+   * by {@link reportedFor}.
+   */
+  readonly code: string | null;
+
+  /**
+   * Which check reports the absence of each member, when it is not the general
+   * one. Only `IUserProvider` has these.
+   */
+  readonly reportedFor?: Readonly<Record<string, string>>;
+
+  /**
+   * Member sets that are a whole declared interface of their own, and therefore
+   * a supported shape rather than half of this one.
+   */
+  readonly wholeSubsets?: readonly (readonly string[])[];
+
+  /** Checks that go red alongside, when one member of this interface is taken away. */
+  readonly alsoFails?: readonly string[];
+}
+
+const CAPABILITY_CASES: readonly CapabilityCase[] = [
+  {
+    name: 'ISSOProvider',
+    guard: isSSOProvider,
+    members: ['getLoginUrl', 'handleCallback', 'getLoginButtonConfig'],
+    code: `${WHOLE_CAPABILITIES}#partial-sso`,
+  },
+  {
+    name: 'ISessionProvider',
+    guard: isSessionProvider,
+    members: [
+      'createSession',
+      'validateSession',
+      'destroySession',
+      'refreshSession',
+      'getSessionIdFromRequest',
+      'getSessionHeaders',
+      'getClearSessionHeaders',
+    ],
+    code: `${WHOLE_CAPABILITIES}#partial-sessions`,
+    // The one legitimate proper subset in the contract, and the reason this
+    // whole check could not be written before P11. `ISessionProvider extends
+    // ISessionClearer`, so a provider carrying `getClearSessionHeaders` alone
+    // is the whole of a declared interface rather than a seventh of a bigger
+    // one - which is exactly what `@mastra/auth-better-auth` ships.
+    wholeSubsets: [['getClearSessionHeaders']],
+  },
+  {
+    name: 'ISessionClearer',
+    guard: canClearSession,
+    members: ['getClearSessionHeaders'],
+    code: null,
+    // Its only member is also a member of `ISessionProvider`, so taking it away
+    // from the fully-capable fake leaves six sevenths of that one behind. The
+    // general check reports it under `#partial-sessions`; that is the same
+    // finding seen from the other end, not a second defect.
+    alsoFails: [WHOLE_CAPABILITIES],
+  },
+  {
+    name: 'IUserProvider',
+    guard: isUserProvider,
+    members: ['getCurrentUser', 'getUser'],
+    code: null,
+    reportedFor: { getCurrentUser: 'users/current-user', getUser: 'users/get-user' },
+  },
+  {
+    name: 'ICredentialsProvider',
+    guard: isCredentialsProvider,
+    members: ['signIn', 'signUp'],
+    code: `${WHOLE_CAPABILITIES}#partial-credentials`,
+  },
+  {
+    name: 'IOrganizationsProvider',
+    guard: isOrganizationsProvider,
+    members: ['ensureOrganization', 'isOrganizationAdmin'],
+    code: `${WHOLE_CAPABILITIES}#partial-organizations`,
+    // Obligation 4 is deliberately not gated on the guard, so a provider that
+    // loses either organization member fails it as well. Two findings about one
+    // provider, and both are true: it half-implements the interface, and it
+    // resolves no organization.
+    alsoFails: ['obligation/organizationId/declared'],
+  },
+  {
+    name: 'IAuthHttpHandler',
+    guard: isAuthHttpHandler,
+    members: ['handleAuthRequest'],
+    code: null,
+  },
+  {
+    name: 'IAuthInit',
+    guard: hasAuthInit,
+    members: ['init'],
+    code: null,
+  },
+];
+
+/** `contract/whole-capabilities`, run on its own against one provider. */
+async function wholeCapabilitiesOutcome(provider: IMastraAuthProvider): Promise<AuthConformanceOutcome> {
+  const check = authConformanceChecks(optionsFor(() => provider)).find(
+    candidate => candidate.id === WHOLE_CAPABILITIES,
+  );
+  expect(check, `${WHOLE_CAPABILITIES} is not in the check list`).toBeDefined();
+  return runAuthConformanceCheck(check!, provider, '@mastra/auth-fake');
+}
+
+/** The fully-capable fake with these members taken off. Everything else is intact. */
+function lacking(members: readonly string[]): IMastraAuthProvider {
+  return brokenFake(Object.fromEntries(members.map(member => [member, undefined])));
+}
+
+/** The fully-capable fake carrying exactly `keep` of `capability`'s members. */
+function carrying(capability: CapabilityCase, keep: readonly string[]): IMastraAuthProvider {
+  return lacking(capability.members.filter(member => !keep.includes(member)));
+}
+
+/** Every non-empty proper subset of `members`. 126 of them for `ISessionProvider`. */
+function properSubsets(members: readonly string[]): string[][] {
+  const subsets: string[][] = [];
+  for (let mask = 1; mask < (1 << members.length) - 1; mask += 1) {
+    subsets.push(members.filter((_member, index) => (mask & (1 << index)) !== 0));
+  }
+  return subsets;
+}
+
+function isWholeSubset(capability: CapabilityCase, subset: readonly string[]): boolean {
+  return (capability.wholeSubsets ?? []).some(
+    whole => whole.length === subset.length && whole.every(member => subset.includes(member)),
+  );
+}
+
+describe('the capability roster the general check reads', () => {
+  /**
+   * Every guard, so the roster is the contract's roster rather than a list of
+   * the interesting cases.
+   *
+   * `./contract` re-exports exactly eight, and `public-surface.test.ts` fails if
+   * that set changes without its inventory changing - so a ninth guard arriving
+   * from core is caught there, and this is where it has to be given a member
+   * list before the general check can see it.
+   */
+  it('covers every capability guard the contract re-exports', () => {
+    expect(new Set(CAPABILITY_CASES.map(capability => capability.guard))).toEqual(
+      new Set([
+        isSSOProvider,
+        isSessionProvider,
+        canClearSession,
+        isUserProvider,
+        isCredentialsProvider,
+        isOrganizationsProvider,
+        isAuthHttpHandler,
+        hasAuthInit,
+      ]),
+    );
+  });
+
+  /**
+   * The seam between this table and the roster inside the check.
+   *
+   * A code is a value downstream suites hold in a `knownFailures` entry, so the
+   * set of them is a published surface. An interface added to the roster with a
+   * slug and no case here, or a case here naming a code the check cannot
+   * produce, both land on this assertion.
+   */
+  it('declares one failure code for each interface it reports, and no others', () => {
+    const check = authConformanceChecks(optionsFor(() => fullyCapableFake())).find(
+      candidate => candidate.id === WHOLE_CAPABILITIES,
+    );
+    expect([...check!.failureCodes].sort()).toEqual(
+      CAPABILITY_CASES.flatMap(capability => (capability.code === null ? [] : [capability.code])).sort(),
+    );
+  });
+});
+
+describe.each(CAPABILITY_CASES.map(capability => [capability.name, capability] as const))(
+  '%s, carried whole and carried in part',
+  (_name: string, capability: CapabilityCase) => {
+    /** The green half. A check that cannot pass is as useless as one that cannot fail. */
+    it('passes for a provider that carries all of it', async () => {
+      expect(capability.guard(fullyCapableFake())).toBe(true);
+      const outcome = await wholeCapabilitiesOutcome(fullyCapableFake());
+      expect(outcome.status, JSON.stringify(outcome)).toBe('passed');
+    });
+
+    /**
+     * The member list above, held against the guard core actually ships.
+     *
+     * Both directions, because one alone proves half of it. Removing any member
+     * has to flip the guard, which shows the guard tests at least these; an
+     * object carrying exactly these has to satisfy it, which shows it tests no
+     * more. Together they pin the list, and a member core adds or drops shows up
+     * here rather than as a partial shape the check silently cannot see.
+     */
+    it('has a guard that tests exactly the members this table lists', () => {
+      const exactly = Object.fromEntries(capability.members.map(member => [member, () => {}]));
+      expect(capability.guard(exactly), `${capability.name} rejects an object carrying exactly its members`).toBe(true);
+      for (const member of capability.members) {
+        expect(capability.guard(lacking([member])), `removing ${member} did not flip the guard`).toBe(false);
+      }
+    });
+
+    const subsets = properSubsets(capability.members);
+    if (subsets.length > 0) {
+      it(`answers for every one of the ${subsets.length} ways to carry part of it`, async () => {
+        for (const subset of subsets) {
+          const outcome = await wholeCapabilitiesOutcome(carrying(capability, subset));
+          const passes = capability.code === null || isWholeSubset(capability, subset);
+          expect(outcome.status, `carrying [${subset.join(', ')}]: ${JSON.stringify(outcome)}`).toBe(
+            passes ? 'passed' : 'failed',
+          );
+          if (!passes) {
+            expect(outcome.status === 'failed' && outcome.code, `carrying [${subset.join(', ')}]`).toBe(
+              capability.code,
+            );
+          }
+        }
+      });
+    }
+
+    /**
+     * One defect, one failure - and where a second failure is legitimate, it is
+     * named rather than tolerated.
+     */
+    it.each(capability.members.map(member => [member] as const))(
+      'goes red exactly where the defect is when %s is missing',
+      async (member: string) => {
+        const outcomes = await runChecks(optionsFor(() => lacking([member])));
+        const expected = [
+          ...(capability.code === null ? [] : [WHOLE_CAPABILITIES]),
+          ...(capability.reportedFor?.[member] === undefined ? [] : [capability.reportedFor[member]]),
+          ...(capability.alsoFails ?? []),
+        ];
+        expect(
+          failures(outcomes)
+            .map(outcome => outcome.check.id)
+            .sort(),
+          report(outcomes),
+        ).toEqual([...expected].sort());
+      },
+    );
+  },
+);
+
+/**
+ * The shape that made this check unwritable until P11, passing.
+ *
+ * `@mastra/auth-better-auth` implements `getClearSessionHeaders` and none of the
+ * other six `ISessionProvider` members: it owns the cookie it set during
+ * sign-in and has to clear it on sign-out, and it creates no session a host can
+ * address by id. Before `ISessionClearer` was declared, that was a convention
+ * hosts read structurally and no interface described - indistinguishable, from
+ * the outside, from a session provider somebody stopped writing. It is now a
+ * declared one-member interface with its own guard, which is what lets the
+ * general check exempt it by rule rather than by name.
+ */
+describe('a provider that owns a session cookie and nothing else', () => {
+  const sessions = CAPABILITY_CASES.find(capability => capability.name === 'ISessionProvider')!;
+  const cookieOwner = () => carrying(sessions, ['getClearSessionHeaders']);
+
+  it('is a whole ISessionClearer and not a partial ISessionProvider', () => {
+    expect(canClearSession(cookieOwner())).toBe(true);
+    expect(isSessionProvider(cookieOwner())).toBe(false);
+  });
+
+  it('passes the general check, because a declared smaller interface is not half a bigger one', async () => {
+    const outcome = await wholeCapabilitiesOutcome(cookieOwner());
+    expect(outcome.status, JSON.stringify(outcome)).toBe('passed');
+  });
+
+  it('fails nothing else either', async () => {
+    const outcomes = await runChecks(optionsFor(cookieOwner));
+    expect(report(outcomes)).toBe('');
+  });
+
+  /** And the moment it grows a second session member, it is half an interface again. */
+  it('goes red as soon as it carries one more session member', async () => {
+    const outcome = await wholeCapabilitiesOutcome(carrying(sessions, ['getClearSessionHeaders', 'createSession']));
+    expect(outcome.status).toBe('failed');
+    expect(outcome.status === 'failed' && outcome.code).toBe(`${WHOLE_CAPABILITIES}#partial-sessions`);
+  });
+});
+
+describe('what a half-implemented interface actually reports', () => {
+  it('names the interface, the guard, the missing member and the section that went silent', async () => {
+    const outcome = await wholeCapabilitiesOutcome(lacking(['getLoginButtonConfig']));
+    expect(outcome.status).toBe('failed');
+    const message = outcome.status === 'failed' ? outcome.message : '';
+    expect(message).toContain('This provider implements part of ISSOProvider');
+    expect(message).toContain('ISSOProvider requires 3 members, and this provider carries 2 of them');
+    expect(message).toContain('provider.getLoginButtonConfig is undefined   <- missing');
+    expect(message).toContain('isSSOProvider(provider) is false');
+    expect(message).toContain('Every check in this section of the run was skipped');
+    expect(message).toContain('hosted login (ISSOProvider)');
+    expect(message).toContain('no authorization URL is ever built');
+    expect(message).toContain('ISSOProvider still needs:');
+    // The four sections and the URL, like every other message this suite emits.
+    expect(message).toContain('OBSERVED');
+    expect(message).toContain('WHY THIS EXISTS');
+    expect(message).toContain('HOW TO FIX IT');
+    expect(message).toContain(CONFORMANCE_DOCS_URL);
+    // And the offer, so a provider that cannot finish the interface today can
+    // record it rather than excluding itself from the run.
+    expect(message).toContain('knownFailures');
+    expect(message).toContain(`${WHOLE_CAPABILITIES}#partial-sso`);
+  });
+
+  /**
+   * The sessions message carries the one piece of advice no other interface
+   * needs: there is a declared smaller interface, and implementing that is a
+   * real answer rather than a workaround.
+   */
+  it('points a would-be session provider at ISessionClearer', async () => {
+    const outcome = await wholeCapabilitiesOutcome(lacking(['refreshSession']));
+    const message = outcome.status === 'failed' ? outcome.message : '';
+    expect(message).toContain('`ISessionClearer` requires `getClearSessionHeaders` and');
+    expect(message).toContain('canClearSession');
+  });
+
+  /**
+   * Two half-implemented interfaces, one check, and a reader who is told about
+   * both. A check stops at its first failure, so the second would otherwise be
+   * invisible until the first was fixed.
+   */
+  it('names the other interfaces it found, having stopped at the first', async () => {
+    const outcome = await wholeCapabilitiesOutcome(lacking(['getLoginButtonConfig', 'signUp']));
+    const message = outcome.status === 'failed' ? outcome.message : '';
+    expect(outcome.status === 'failed' && outcome.code).toBe(`${WHOLE_CAPABILITIES}#partial-sso`);
+    expect(message).toContain('One other interface is half-implemented too');
+    expect(message).toContain('fixing this one surfaces: ICredentialsProvider');
+  });
+
+  /**
+   * And the interface that is reported somewhere better: the reader is told
+   * where, rather than told nothing.
+   */
+  it('points at the user checks for a half-implemented IUserProvider', async () => {
+    const outcome = await wholeCapabilitiesOutcome(lacking(['getLoginButtonConfig', 'getUser']));
+    const message = outcome.status === 'failed' ? outcome.message : '';
+    expect(message).toContain('IUserProvider is also half-implemented');
+    expect(message).toContain('users/current-user and users/get-user');
+  });
+
+  /**
+   * A property read with side effects is `contract/descriptor`'s finding, and
+   * this check has to stay quiet about it. Reporting it here as well would turn
+   * one defect into two, and the second would name capabilities rather than the
+   * getter that broke.
+   */
+  it('says nothing for a provider whose property read throws', async () => {
+    const provider = brokenFake({});
+    Object.defineProperty(provider, 'signUp', {
+      get() {
+        throw new Error('this getter has side effects');
+      },
+      configurable: true,
+    });
+    const outcome = await wholeCapabilitiesOutcome(provider);
+    expect(outcome.status, JSON.stringify(outcome)).toBe('passed');
+  });
+
+  /**
+   * A provider with no optional capability at all declares nothing, so there is
+   * nothing to be half of. The empty set is not a finding.
+   */
+  it('passes a bearer-token validator that declares no capability at all', async () => {
+    const outcome = await wholeCapabilitiesOutcome(withSyntheticOrganizations(fakeProvider()));
+    expect(outcome.status, JSON.stringify(outcome)).toBe('passed');
   });
 });
 
