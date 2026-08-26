@@ -273,10 +273,11 @@ const knownFailures = [
     code: 'obligation/stateCodec/callback#state-rejected',
     reason:
       'handleCallback throws PKCEError.missingVerifier() before reading the state and before any network ' +
-      'attempt: the read half of PKCE is setCallbackCookieHeader, which is not declared on ISSOProvider, so ' +
-      'a host with only the declared interface can never hand it the cookie. Behind that, decodeState is ' +
-      'JSON.parse(base64url) and rejects a host-minted id|returnTo state anyway. Fix belongs in ' +
-      '@internal/auth and mastracode/factory. Diagnosis 2 in this file’s header.',
+      'attempt. P5 has since declared the read half (setCallbackCookieHeader on ISSOProvider) and the ' +
+      'Factory now calls it, so a host CAN hand this provider the cookie -- but the conformance harness ' +
+      'does not, which is P6. Behind that, decodeState is JSON.parse(base64url) and rejects a host-minted ' +
+      'id|returnTo state anyway, so this check would still fail on the state alone. Diagnosis 2 in this ' +
+      'file’s header.',
   },
   {
     check: 'sessions/round-trip',
