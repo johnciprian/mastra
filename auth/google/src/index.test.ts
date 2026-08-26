@@ -558,7 +558,10 @@ describe('MastraRBACGoogle', () => {
     });
     const escapedKey = (privateKey as string).replace(/\n/g, '\\n');
 
-    mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
+    // `Parameters<typeof fetch>[0]`, not `RequestInfo | URL`: `RequestInfo` is a
+    // DOM-lib type and this package compiles with `lib: ["ES2023"]` plus
+    // `@types/node`, where the global `fetch` takes `string | URL | Request`.
+    mockFetch.mockImplementation(async (input: Parameters<typeof fetch>[0]) => {
       const url = input.toString();
       if (url.startsWith('https://oauth2.googleapis.com/token')) {
         return new Response(JSON.stringify({ access_token: 'service-account-token', expires_in: 3600 }), {

@@ -2,9 +2,11 @@
  * @license Mastra Enterprise License - see ee/LICENSE
  */
 import { FGADeniedError } from '@internal/auth/ee';
+import type { OrganizationMembership } from '@workos-inc/node';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import { MastraFGAWorkos, WorkOSFGAMembershipResolutionError } from './fga-provider';
+import type { WorkOSUser } from './types';
 
 // Use globalThis to share mock between factory (hoisted) and test code
 vi.mock('@workos-inc/node', () => {
@@ -48,8 +50,37 @@ vi.mock('@internal/auth/ee', () => ({
 // Access the shared mock (set during vi.mock factory execution)
 const mockAuthorization = (globalThis as any).__mockAuthorization;
 
-const testUser = {
+/**
+ * A complete `OrganizationMembership`.
+ *
+ * The WorkOS SDK type has eleven required fields and these tests care about two
+ * of them, so the fixtures used to be partial literals that only typechecked
+ * because nothing typechecked them. Overriding what a test is actually about
+ * keeps them just as short and makes the rest real.
+ */
+const membership = (overrides: Partial<OrganizationMembership> = {}): OrganizationMembership => ({
+  object: 'organization_membership',
+  id: 'om-123',
+  organizationId: 'org-1',
+  organizationName: 'Test Org',
+  role: { slug: 'member' },
+  status: 'active',
+  userId: 'user-1',
+  directoryManaged: false,
+  createdAt: '2024-01-01T00:00:00.000Z',
+  updatedAt: '2024-01-01T00:00:00.000Z',
+  customAttributes: {},
+  ...overrides,
+});
+
+// `teamId` is not a `WorkOSUser` field and is not meant to be: the resource
+// mappings below derive an FGA resource ID from it, and `deriveId` receives
+// `{ user: any }` precisely so an application can hang its own fields off the
+// user. The intersection says that out loud instead of leaving the fixture
+// untypeable.
+const testUser: WorkOSUser & { teamId: string } = {
   id: 'user-1',
+  workosId: 'user-1',
   organizationMembershipId: 'om-123',
   teamId: 'team-1',
 };
@@ -233,7 +264,7 @@ describe('MastraFGAWorkos', () => {
     });
 
     it('should return false when no organization membership ID found', async () => {
-      const userWithoutMembership = { id: 'user-1' };
+      const userWithoutMembership: WorkOSUser = { id: 'user-1', workosId: 'user-1' };
       const result = await fga.check(userWithoutMembership, {
         resource: { type: 'agent', id: 'agent-1' },
         permission: 'agents:execute',
@@ -269,7 +300,8 @@ describe('MastraFGAWorkos', () => {
         scopedFga.require(
           {
             id: 'user-1',
-            memberships: [{ id: 'om-other', organizationId: 'org-other' }],
+            workosId: 'user-1',
+            memberships: [membership({ id: 'om-other', organizationId: 'org-other' })],
           },
           {
             resource: { type: 'agent', id: 'agent-1' },
@@ -297,7 +329,11 @@ describe('MastraFGAWorkos', () => {
 
     it('should resolve membership from memberships array', async () => {
       mockAuthorization.check.mockResolvedValue({ authorized: true });
-      const userWithMemberships = { id: 'user-1', memberships: [{ id: 'om-from-array' }] };
+      const userWithMemberships: WorkOSUser = {
+        id: 'user-1',
+        workosId: 'user-1',
+        memberships: [membership({ id: 'om-from-array' })],
+      };
 
       await fga.check(userWithMemberships, {
         resource: { type: 'agent', id: 'agent-1' },
@@ -321,7 +357,8 @@ describe('MastraFGAWorkos', () => {
       const result = await scopedFga.check(
         {
           id: 'user-1',
-          memberships: [{ id: 'om-other', organizationId: 'org-other' }],
+          workosId: 'user-1',
+          memberships: [membership({ id: 'om-other', organizationId: 'org-other' })],
         },
         {
           resource: { type: 'agent', id: 'agent-1' },
@@ -568,7 +605,7 @@ describe('MastraFGAWorkos', () => {
 
     it('should return empty array when no membership', async () => {
       const result = await fga.filterAccessible(
-        { id: 'user-1' }, // No membership
+        { id: 'user-1', workosId: 'user-1' }, // No membership
         [{ id: 'a-1' }],
         'agent',
         'agents:read',
@@ -748,7 +785,9 @@ describe('MastraFGAWorkos', () => {
 
       const result = await fga.listRoleAssignments({ organizationMembershipId: 'om-123' });
       expect(result).toHaveLength(1);
-      expect(result[0].role.slug).toBe('editor');
+      // `result[0]` is `T | undefined` under `noUncheckedIndexedAccess`; the
+      // length assertion on the line above is what fails first if it is empty.
+      expect(result[0]?.role.slug).toBe('editor');
     });
   });
 });

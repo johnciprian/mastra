@@ -1,15 +1,52 @@
 import { jwtVerify, createRemoteJWKSet } from 'jose';
 import { beforeEach, afterEach, describe, expect, test, vi } from 'vitest';
 import { MastraAuthNeon, MastraRBACNeon } from './index';
-import type { NeonAuthUser } from './index';
+import type { MastraRBACNeonOptions, NeonAuthUser } from './index';
 
 vi.mock('jose', () => ({
   createRemoteJWKSet: vi.fn(),
   jwtVerify: vi.fn(),
 }));
 
-const mockFetch = vi.fn();
+// Typed on the argument side, so the recorded calls are a real `[url, init]`
+// tuple that the accessors below can read without a cast. The resolved value
+// stays `unknown`: these tests hand back partial `Response` stand-ins such as
+// `{ ok, json }` rather than real ones, and pinning it to `Response` would only
+// force every fixture to grow twenty fields nothing reads.
+const mockFetch = vi.fn<(input: string, init?: RequestInit) => Promise<unknown>>();
 vi.stubGlobal('fetch', mockFetch);
+
+/**
+ * The `[url, init]` pair the provider passed to its first `fetch`.
+ *
+ * `mock.calls[0]` is `T | undefined` under `noUncheckedIndexedAccess`, and
+ * indexing straight into it - which these tests used to do - is both a type
+ * error and a `Cannot read properties of undefined` whenever the provider
+ * returns before it reaches the network. This fails with the reason instead.
+ */
+const firstFetchCall = (): Parameters<typeof mockFetch> => {
+  const [call] = mockFetch.mock.calls;
+  if (!call) throw new Error('expected fetch to have been called, and it was not');
+  return call;
+};
+
+/** The `Headers` the provider sent with its first `fetch`. */
+const firstFetchHeaders = (): Headers => {
+  const headers = firstFetchCall()[1]?.headers;
+  if (!(headers instanceof Headers)) {
+    throw new Error(`expected fetch to have been called with a Headers instance, got ${String(headers)}`);
+  }
+  return headers;
+};
+
+/** The JSON body the provider sent with its first `fetch`. */
+const firstFetchJsonBody = (): Record<string, unknown> => {
+  const body = firstFetchCall()[1]?.body;
+  if (typeof body !== 'string') {
+    throw new Error(`expected fetch to have been called with a JSON string body, got ${String(body)}`);
+  }
+  return JSON.parse(body) as Record<string, unknown>;
+};
 
 const mockRawRequest = (headers: Record<string, string> = {}) => new Request('http://localhost/test', { headers });
 
@@ -200,9 +237,7 @@ describe('MastraAuthNeon', () => {
       const req = mockRawRequest({ Cookie: 'neonauth.session_token=existing-cookie' });
       await auth.authenticateToken('some-token', req);
 
-      const fetchCall = mockFetch.mock.calls[0];
-      const headers = fetchCall[1].headers;
-      expect(headers.get('Cookie')).toContain('neonauth.session_token=existing-cookie');
+      expect(firstFetchHeaders().get('Cookie')).toContain('neonauth.session_token=existing-cookie');
     });
 
     test('injects bearer token as session cookie when not present', async () => {
@@ -222,9 +257,7 @@ describe('MastraAuthNeon', () => {
       const req = mockRawRequest();
       await auth.authenticateToken('my-session-token', req);
 
-      const fetchCall = mockFetch.mock.calls[0];
-      const headers = fetchCall[1].headers;
-      expect(headers.get('Cookie')).toBe('neonauth.session_token=my-session-token');
+      expect(firstFetchHeaders().get('Cookie')).toBe('neonauth.session_token=my-session-token');
     });
   });
 
@@ -382,8 +415,7 @@ describe('MastraAuthNeon', () => {
       const auth = new MastraAuthNeon();
       await auth.signUp('john@example.com', 'password', undefined, mockRawRequest());
 
-      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-      expect(body.name).toBe('john');
+      expect(firstFetchJsonBody().name).toBe('john');
     });
 
     test('throws on sign-up failure', async () => {
@@ -575,12 +607,17 @@ describe('MastraRBACNeon', () => {
     ...overrides,
   });
 
+  // `satisfies`, not element-wise `as const`: `[] as const` gives `_default` the
+  // type `readonly []`, which is not assignable to `RoleMapping`'s mutable
+  // arrays, and the per-element `as const` was only ever there to stop the
+  // strings widening to `string`. One `satisfies` does both jobs and, unlike
+  // `as const`, checks that every permission named here actually exists.
   const roleMapping = {
-    owner: ['*' as const],
-    admin: ['*' as const],
-    member: ['agents:read' as const, 'workflows:*' as const],
-    _default: [] as const,
-  };
+    owner: ['*'],
+    admin: ['*'],
+    member: ['agents:read', 'workflows:*'],
+    _default: [],
+  } satisfies MastraRBACNeonOptions['roleMapping'];
 
   describe('constructor', () => {
     test('uses NEON_AUTH_BASE_URL env var', () => {

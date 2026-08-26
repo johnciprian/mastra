@@ -1,6 +1,7 @@
 import { betterAuth } from 'better-auth';
 import { memoryAdapter } from 'better-auth/adapters/memory';
 import { makeSignature } from 'better-auth/crypto';
+import type { Mock } from 'vitest';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MastraAuthBetterAuth } from './index';
 import type { BetterAuthUser } from './index';
@@ -24,10 +25,34 @@ describe('MastraAuthBetterAuth', () => {
     updatedAt: new Date(),
   };
 
-  const mockAuth = {
+  // Typed with the shape the provider actually calls - `api.getSession({ headers })`
+  // - rather than a bare `vi.fn()`. That makes `mock.calls[0]` a real tuple, so
+  // `firstGetSessionHeaders` below can read the Cookie header off it without a
+  // cast, and a provider that started passing something else here would be a
+  // compile error rather than an assertion on `undefined`.
+  type GetSessionMock = Mock<(options: { headers: Headers }) => Promise<unknown>>;
+
+  const mockAuth: { api: { getSession: GetSessionMock } } = {
     api: {
       getSession: vi.fn(),
     },
+  };
+
+  /**
+   * The `Headers` the provider handed to the first `getSession` call.
+   *
+   * `mock.calls[0]` is `T | undefined` under `noUncheckedIndexedAccess`, and
+   * indexing straight into it - which every one of these tests used to do - is
+   * both a type error and a `Cannot read properties of undefined` at runtime
+   * whenever the provider returns early without calling `getSession`. This
+   * fails with the reason instead.
+   */
+  const firstGetSessionHeaders = (getSession: GetSessionMock): Headers => {
+    const [firstCall] = getSession.mock.calls;
+    if (!firstCall) {
+      throw new Error('expected auth.api.getSession to have been called, and it was not');
+    }
+    return firstCall[0].headers;
   };
 
   const mockRawRequest = (headers: Record<string, string> = {}) => new Request('http://localhost/test', { headers });
@@ -426,8 +451,8 @@ describe('MastraAuthBetterAuth', () => {
       });
       await auth.authenticateToken('test-token', rawReq);
 
-      const call = mockAuth.api.getSession.mock.calls[0][0];
-      expect(call.headers.get('Cookie')).toBe('better-auth.session_token=abc123');
+      const cookieHeaders = firstGetSessionHeaders(mockAuth.api.getSession);
+      expect(cookieHeaders.get('Cookie')).toBe('better-auth.session_token=abc123');
     });
 
     it('should convert Bearer token to cookie header when no session cookie exists', async () => {
@@ -441,8 +466,8 @@ describe('MastraAuthBetterAuth', () => {
       });
       await auth.authenticateToken('my-bearer-token', mockRawRequest());
 
-      const call = mockAuth.api.getSession.mock.calls[0][0];
-      expect(call.headers.get('Cookie')).toBe('better-auth.session_token=my-bearer-token');
+      const cookieHeaders = firstGetSessionHeaders(mockAuth.api.getSession);
+      expect(cookieHeaders.get('Cookie')).toBe('better-auth.session_token=my-bearer-token');
     });
 
     it('should not overwrite existing session cookie when Bearer token is also present', async () => {
@@ -457,9 +482,9 @@ describe('MastraAuthBetterAuth', () => {
       });
       await auth.authenticateToken('some-token', rawReq);
 
-      const call = mockAuth.api.getSession.mock.calls[0][0];
+      const cookieHeaders = firstGetSessionHeaders(mockAuth.api.getSession);
       // Should use the existing cookie, not create a new one from the Bearer token
-      expect(call.headers.get('Cookie')).toBe('better-auth.session_token=cookie-token');
+      expect(cookieHeaders.get('Cookie')).toBe('better-auth.session_token=cookie-token');
     });
 
     it('should use custom cookiePrefix when converting Bearer token to cookie', async () => {
@@ -474,8 +499,8 @@ describe('MastraAuthBetterAuth', () => {
       });
       await auth.authenticateToken('my-bearer-token', mockRawRequest());
 
-      const call = customAuth.api.getSession.mock.calls[0][0];
-      expect(call.headers.get('Cookie')).toBe('myapp.session_token=my-bearer-token');
+      const cookieHeaders = firstGetSessionHeaders(customAuth.api.getSession);
+      expect(cookieHeaders.get('Cookie')).toBe('myapp.session_token=my-bearer-token');
     });
 
     it('should add session cookie alongside other cookies when Bearer token provided', async () => {
@@ -490,8 +515,8 @@ describe('MastraAuthBetterAuth', () => {
       });
       await auth.authenticateToken('my-bearer-token', rawReq);
 
-      const call = mockAuth.api.getSession.mock.calls[0][0];
-      expect(call.headers.get('Cookie')).toBe('other_cookie=value; better-auth.session_token=my-bearer-token');
+      const cookieHeaders = firstGetSessionHeaders(mockAuth.api.getSession);
+      expect(cookieHeaders.get('Cookie')).toBe('other_cookie=value; better-auth.session_token=my-bearer-token');
     });
 
     it('should work with raw Request (no .header() method)', async () => {
@@ -507,8 +532,8 @@ describe('MastraAuthBetterAuth', () => {
       const result = await auth.authenticateToken('raw-token', rawReq);
 
       expect(result).toEqual({ session: mockSession, user: mockUser });
-      const call = mockAuth.api.getSession.mock.calls[0][0];
-      expect(call.headers.get('Cookie')).toBe('better-auth.session_token=raw-token');
+      const cookieHeaders = firstGetSessionHeaders(mockAuth.api.getSession);
+      expect(cookieHeaders.get('Cookie')).toBe('better-auth.session_token=raw-token');
     });
 
     it('should read Cookie from raw Request', async () => {
@@ -523,8 +548,8 @@ describe('MastraAuthBetterAuth', () => {
       });
       await auth.authenticateToken('test-token', rawReq);
 
-      const call = mockAuth.api.getSession.mock.calls[0][0];
-      expect(call.headers.get('Cookie')).toBe('better-auth.session_token=raw123');
+      const cookieHeaders = firstGetSessionHeaders(mockAuth.api.getSession);
+      expect(cookieHeaders.get('Cookie')).toBe('better-auth.session_token=raw123');
     });
 
     it('should handle HonoRequest with .raw property', async () => {
@@ -544,8 +569,8 @@ describe('MastraAuthBetterAuth', () => {
       const result = await auth.authenticateToken('hono-token', honoReq);
 
       expect(result).toEqual({ session: mockSession, user: mockUser });
-      const call = mockAuth.api.getSession.mock.calls[0][0];
-      expect(call.headers.get('Cookie')).toBe('better-auth.session_token=hono-token');
+      const cookieHeaders = firstGetSessionHeaders(mockAuth.api.getSession);
+      expect(cookieHeaders.get('Cookie')).toBe('better-auth.session_token=hono-token');
     });
 
     it('should sign unsigned Bearer tokens with the instance secret before setting the session cookie', async () => {
@@ -569,8 +594,8 @@ describe('MastraAuthBetterAuth', () => {
       await auth.authenticateToken('my-unsigned-token', mockRawRequest());
 
       const expectedSignature = await makeSignature('my-unsigned-token', secret);
-      const call = authWithContext.api.getSession.mock.calls[0][0];
-      expect(call.headers.get('Cookie')).toBe(
+      const cookieHeaders = firstGetSessionHeaders(authWithContext.api.getSession);
+      expect(cookieHeaders.get('Cookie')).toBe(
         `better-auth.session_token=${encodeURIComponent(`my-unsigned-token.${expectedSignature}`)}`,
       );
     });
@@ -596,8 +621,8 @@ describe('MastraAuthBetterAuth', () => {
       const signedToken = `some-token.${await makeSignature('some-token', secret)}`;
       await auth.authenticateToken(signedToken, mockRawRequest());
 
-      const call = authWithContext.api.getSession.mock.calls[0][0];
-      expect(call.headers.get('Cookie')).toBe(`better-auth.session_token=${encodeURIComponent(signedToken)}`);
+      const cookieHeaders = firstGetSessionHeaders(authWithContext.api.getSession);
+      expect(cookieHeaders.get('Cookie')).toBe(`better-auth.session_token=${encodeURIComponent(signedToken)}`);
     });
 
     it('should use the session cookie name from the Better Auth context (e.g. __Secure- prefix)', async () => {
@@ -620,8 +645,8 @@ describe('MastraAuthBetterAuth', () => {
       });
       await auth.authenticateToken('my-unsigned-token', mockRawRequest());
 
-      const call = authWithContext.api.getSession.mock.calls[0][0];
-      expect(call.headers.get('Cookie')).toMatch(/^__Secure-better-auth\.session_token=/);
+      const cookieHeaders = firstGetSessionHeaders(authWithContext.api.getSession);
+      expect(cookieHeaders.get('Cookie')).toMatch(/^__Secure-better-auth\.session_token=/);
     });
 
     it('should inject session cookie when session name appears only inside a cookie value', async () => {
@@ -637,8 +662,8 @@ describe('MastraAuthBetterAuth', () => {
       });
       await auth.authenticateToken('my-bearer-token', rawReq);
 
-      const call = mockAuth.api.getSession.mock.calls[0][0];
-      expect(call.headers.get('Cookie')).toBe(
+      const cookieHeaders = firstGetSessionHeaders(mockAuth.api.getSession);
+      expect(cookieHeaders.get('Cookie')).toBe(
         'other_cookie=contains_better-auth.session_token=xyz; better-auth.session_token=my-bearer-token',
       );
     });
