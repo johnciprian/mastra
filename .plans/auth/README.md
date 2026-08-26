@@ -65,8 +65,8 @@ so the boundary is a build error rather than a code-review habit.
 
 ## Status
 
-**59 of 65 original tasks done**, plus **18 post-plan follow-ups** filed by the re-grade
-(`P1`–`P18`), all pending. Each task in `tasks.json` carries a `status` field (`done` /
+**61 of 65 original tasks done**, plus **18 post-plan follow-ups** filed by the re-grade
+(`P1`–`P18`), of which `P12` is done and 17 are pending. Each task in `tasks.json` carries a `status` field (`done` /
 `pending` / `held`) — that file is the source of truth for progress; update it when a
 task merges.
 
@@ -77,10 +77,14 @@ task merges.
 | U | UI seam (`factory-ui`) | 8 / 9 |
 | C | Conformance and providers | 7 / 7 ✅ |
 | D | Documentation | 6 / 6 ✅ |
-| R | Release | 0 / 3 |
+| R | Release | 2 / 3 |
 
-`B18`, `B19`, `U9` and `R3` are deferred by one release. The plan's own notes say they are
-"not on the path to A−" — the re-grade disagrees about `B18`, and says why below.
+`B18`, `B19`, `U9` and `R3` remain. The plan defers all four by one release; the re-grade
+disputed that for `B18` and was right to. `B18` is now deferred by an explicit decision
+instead: the task is "flip the flag on by default **and soak**", and the soak is the
+substance — landing the one-line default here would look complete while the thing it
+exists to prove has not happened. `B19`, `U9` and `R3` are downstream of that soak by
+construction. `P12` no longer blocks it.
 
 The kit ships as `@mastra/factory-auth@0.1.0`: nine entry points, 833 tests at 98%
 statements / 100% lines, an enforced Apache-2.0/EE boundary, and a `describeAuthProvider`
