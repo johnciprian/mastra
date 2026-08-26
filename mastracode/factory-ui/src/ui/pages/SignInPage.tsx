@@ -12,6 +12,7 @@ import '@fontsource-variable/mona-sans/standard.css';
 import { useApiConfig } from '../../api/config';
 import { useFactoryAuth } from '../../hooks/useFactoryAuth';
 import {
+  credentialsBasePath,
   isSignUpEnabled,
   navigateAfterSignIn,
   redirectToLogin,
@@ -50,7 +51,15 @@ export function safeReturnTo(raw?: string): string {
  * one release; `isSignUpEnabled` reconciles the two so that the `!` lives in one
  * place instead of at every call site.
  */
-function CredentialSignInForm({ returnTo, signUpEnabled }: { returnTo: string; signUpEnabled: boolean }) {
+function CredentialSignInForm({
+  returnTo,
+  signUpEnabled,
+  basePath,
+}: {
+  returnTo: string;
+  signUpEnabled: boolean;
+  basePath: string;
+}) {
   const { baseUrl } = useApiConfig();
   const [mode, setMode] = useState<'sign-in' | 'sign-up'>('sign-in');
   const [name, setName] = useState('');
@@ -65,9 +74,9 @@ function CredentialSignInForm({ returnTo, signUpEnabled }: { returnTo: string; s
     setPending(true);
     try {
       if (mode === 'sign-up') {
-        await signUpWithPassword(baseUrl, { name, email, password });
+        await signUpWithPassword({ baseUrl, basePath }, { name, email, password });
       } else {
-        await signInWithPassword(baseUrl, { email, password });
+        await signInWithPassword({ baseUrl, basePath }, { email, password });
       }
       navigateAfterSignIn(returnTo);
     } catch (err) {
@@ -354,7 +363,11 @@ export function SignInPage() {
                     Sign in to continue building with your team.
                   </Txt>
                 </div>
-                <CredentialSignInForm returnTo={returnTo} signUpEnabled={isSignUpEnabled(auth.data)} />
+                <CredentialSignInForm
+                  returnTo={returnTo}
+                  signUpEnabled={isSignUpEnabled(auth.data)}
+                  basePath={credentialsBasePath(auth.data)}
+                />
               </>
             ) : null}
             {showCredentials && showHostedLogin ? (

@@ -183,12 +183,69 @@ export function redirectToLogout(baseUrl: string): void {
 }
 
 /**
- * POST credentials to a better-auth endpoint (`basePath: /auth/api`). The
- * session cookie is set by the response; the caller navigates afterwards.
- * Throws with the server's message so the sign-in form can display it.
+ * Where a credentials form posts, taken from the descriptor.
+ *
+ * The host mounts a credentials provider's own HTTP surface at
+ * `<basePath>/api/*` and reports `<basePath>` as `credentialsBasePath`, so
+ * reading it here is what lets any provider that serves its own auth routes
+ * work without the SPA knowing which one it is. The kit's default is `/auth`,
+ * which is also the fallback for a server that sends no descriptor.
+ *
+ * THE VALUE IS CHECKED BEFORE IT IS USED, AND NOT AS A FORMALITY
+ *
+ * This path receives the user's password. The SPA is normally served
+ * same-origin, where `baseUrl` is the empty string — so a descriptor carrying
+ * `//evil.example` would produce the *protocol-relative* URL
+ * `//evil.example/api/sign-in/email` and POST the password to another origin.
+ * The sign-in page already guards its `returnTo` for this reason; getting it
+ * wrong here leaks a credential rather than a destination.
  */
-async function postBetterAuthCredentials(baseUrl: string, path: string, body: Record<string, string>): Promise<void> {
-  const res = await fetch(`${baseUrl}/auth/api/${path}`, {
+export function credentialsBasePath(state: FactoryAuthState | undefined): string {
+  const declared = state?.auth?.signIn.credentialsBasePath;
+  if (!declared || !SAFE_CREDENTIALS_BASE_PATH.test(declared)) return DEFAULT_CREDENTIALS_BASE_PATH;
+  // Trailing slashes would double up against the `/api/` segment below.
+  return declared.replace(/\/+$/, '');
+}
+
+/**
+ * What a credentials mount path may look like: one or more `/segment` pieces of
+ * ordinary path characters.
+ *
+ * This is an allowlist rather than a screen for known-bad prefixes, because the
+ * bad list is open-ended and each entry is individually easy to miss. `//` is
+ * protocol-relative; a backslash normalizes to a forward slash in http(s) URLs,
+ * so `/\evil.example` *becomes* `//evil.example`; and the URL parser strips tab,
+ * newline and carriage return outright, so `/<tab>/evil.example` becomes it too.
+ * A mount path, meanwhile, is a small boring thing — `/auth`, `/identity`,
+ * `/api/auth` — so describing what it may contain is both shorter and safe by
+ * construction.
+ */
+const SAFE_CREDENTIALS_BASE_PATH = /^(?:\/[A-Za-z0-9._~-]+)+\/*$/;
+
+/** Where a credentials form posts: the injected API origin plus the descriptor's auth mount. */
+export interface CredentialsEndpoint {
+  /** API base URL from `ApiConfigProvider` — empty string when served same-origin. */
+  baseUrl: string;
+  /** The descriptor's auth mount. See {@link credentialsBasePath}. */
+  basePath: string;
+}
+
+/**
+ * POST credentials to the provider's own HTTP surface, below the auth mount the
+ * descriptor reported. The session cookie is set by the response; the caller
+ * navigates afterwards. Throws with the server's message so the sign-in form can
+ * display it.
+ *
+ * The `sign-in/email` and `sign-up/email` sub-paths remain fixed: they are the
+ * endpoint shape the host's credentials providers serve, and the descriptor
+ * describes where that surface is mounted, not what it is called.
+ */
+async function postCredentials(
+  { baseUrl, basePath }: CredentialsEndpoint,
+  path: string,
+  body: Record<string, string>,
+): Promise<void> {
+  const res = await fetch(`${baseUrl}${basePath}/api/${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     credentials: 'include',
@@ -215,17 +272,20 @@ export function navigateAfterSignIn(returnTo: string): void {
   window.location.assign(returnTo);
 }
 
-/** Email/password sign-in against the self-hosted better-auth provider. */
-export function signInWithPassword(baseUrl: string, input: { email: string; password: string }): Promise<void> {
-  return postBetterAuthCredentials(baseUrl, 'sign-in/email', input);
+/** Email/password sign-in against whichever provider serves this deployment's credentials. */
+export function signInWithPassword(
+  endpoint: CredentialsEndpoint,
+  input: { email: string; password: string },
+): Promise<void> {
+  return postCredentials(endpoint, 'sign-in/email', input);
 }
 
-/** Email/password sign-up against the self-hosted better-auth provider. */
+/** Email/password sign-up against whichever provider serves this deployment's credentials. */
 export function signUpWithPassword(
-  baseUrl: string,
+  endpoint: CredentialsEndpoint,
   input: { name: string; email: string; password: string },
 ): Promise<void> {
-  return postBetterAuthCredentials(baseUrl, 'sign-up/email', input);
+  return postCredentials(endpoint, 'sign-up/email', input);
 }
 
 /**

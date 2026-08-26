@@ -12,7 +12,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { isSignUpEnabled } from '../auth';
+import { credentialsBasePath, isSignUpEnabled } from '../auth';
 import type { AuthDescriptor, AuthSignInKind, FactoryAuthState } from '../auth';
 
 function descriptor(signIn: Partial<AuthDescriptor['signIn']> & { kind: AuthSignInKind }): AuthDescriptor {
@@ -74,5 +74,54 @@ describe('isSignUpEnabled', () => {
 
   it('defaults to enabled before the auth state has loaded', () => {
     expect(isSignUpEnabled(undefined)).toBe(true);
+  });
+});
+
+describe('credentialsBasePath', () => {
+  it.each([
+    ['a single segment', '/identity', '/identity'],
+    ['nested segments', '/api/auth', '/api/auth'],
+    ['the kit default', '/auth', '/auth'],
+    // Trailing slashes would double up against the `/api/` segment.
+    ['a trailing slash', '/identity/', '/identity'],
+    ['several trailing slashes', '/identity///', '/identity'],
+  ])('takes %s from the descriptor', (_label, declared, expected) => {
+    expect(
+      credentialsBasePath(state({ auth: descriptor({ kind: 'credentials', credentialsBasePath: declared }) })),
+    ).toBe(expected);
+  });
+
+  describe('given nothing to go on', () => {
+    it.each([
+      ['no descriptor at all', state({ provider: 'anything' })],
+      ['a descriptor with no credentials sign-in', state({ auth: descriptor({ kind: 'hosted' }) })],
+      ['no auth state yet', undefined],
+    ])('falls back to the kit default for %s', (_label, input) => {
+      expect(credentialsBasePath(input)).toBe('/auth');
+    });
+  });
+
+  describe('given a path that could send the password off-origin', () => {
+    // This URL receives the user's password, and the SPA is normally served
+    // same-origin where `baseUrl` is the empty string — so any of these would
+    // resolve to another origin rather than to a path under this one.
+    it.each([
+      ['protocol-relative', '//evil.example'],
+      // A backslash normalizes to a forward slash in http(s) URLs, so this
+      // *becomes* `//evil.example`. A prefix check alone would let it through.
+      ['backslash, which normalizes to protocol-relative', '/\\evil.example'],
+      // The URL parser strips tab, newline and carriage return outright.
+      ['tab-smuggled protocol-relative', '/\t/evil.example'],
+      ['newline-smuggled protocol-relative', '/\n/evil.example'],
+      ['an absolute URL', 'https://evil.example'],
+      ['a scheme with no slashes', 'javascript:alert(1)'],
+      ['a bare host', 'evil.example'],
+      ['empty', ''],
+      ['a lone slash', '/'],
+    ])('rejects %s and falls back to the default', (_label, declared) => {
+      expect(
+        credentialsBasePath(state({ auth: descriptor({ kind: 'credentials', credentialsBasePath: declared }) })),
+      ).toBe('/auth');
+    });
   });
 });
