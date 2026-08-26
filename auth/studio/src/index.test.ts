@@ -52,7 +52,16 @@ describe('MastraAuthStudio', () => {
   let auth: MastraAuthStudio;
 
   beforeEach(() => {
-    fetchSpy = vi.spyOn(globalThis, 'fetch');
+    vi.restoreAllMocks();
+    // Default implementation, deliberately. `vi.spyOn` without one calls
+    // through to the real `fetch`, so a test whose queued responses run out
+    // makes a real network call from a unit suite - measured here: two requests
+    // to /v1/auth/orgs were leaving the process on every run. Failing loudly
+    // keeps that visible instead of turning it into a slow, order-dependent
+    // test.
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
+      throw new Error(`unmocked fetch reached the network: ${String(input)}`);
+    }) as ReturnType<typeof vi.spyOn>;
     auth = new MastraAuthStudio({ sharedApiUrl: SHARED_API });
   });
 
@@ -1002,7 +1011,16 @@ describe('MastraAuthStudio IOrganizationsProvider', () => {
   let auth: MastraAuthStudio;
 
   beforeEach(() => {
-    fetchSpy = vi.spyOn(globalThis, 'fetch');
+    vi.restoreAllMocks();
+    // Default implementation, deliberately. `vi.spyOn` without one calls
+    // through to the real `fetch`, so a test whose queued responses run out
+    // makes a real network call from a unit suite - measured here: two requests
+    // to /v1/auth/orgs were leaving the process on every run. Failing loudly
+    // keeps that visible instead of turning it into a slow, order-dependent
+    // test.
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
+      throw new Error(`unmocked fetch reached the network: ${String(input)}`);
+    }) as ReturnType<typeof vi.spyOn>;
     auth = new MastraAuthStudio({ sharedApiUrl: SHARED_API });
   });
 
@@ -1305,13 +1323,27 @@ describe('MastraAuthStudio IOrganizationsProvider', () => {
 
 describe('MastraAuthStudio org-scoping', () => {
   let fetchSpy: ReturnType<typeof vi.fn>;
+  /**
+   * The original, put back by hand.
+   *
+   * This block replaces `globalThis.fetch` by assignment rather than through
+   * `vi.spyOn`, and `vi.restoreAllMocks()` cannot undo an assignment - it only
+   * knows about mocks it created. So the replacement outlived the block, and
+   * every `vi.spyOn(globalThis, 'fetch')` in the describes above then spied on
+   * this leftover `vi.fn()` and inherited its call history: a test asserting
+   * "fetch was never called" saw seven calls it never made. Declaration order
+   * hid it, because this block runs last.
+   */
+  let realFetch: typeof globalThis.fetch;
 
   beforeEach(() => {
+    realFetch = globalThis.fetch;
     fetchSpy = vi.fn();
     global.fetch = fetchSpy as any;
   });
 
   afterEach(() => {
+    globalThis.fetch = realFetch;
     vi.restoreAllMocks();
     delete process.env.MASTRA_SHARED_API_URL;
     delete process.env.MASTRA_ORGANIZATION_ID;
