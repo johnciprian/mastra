@@ -131,11 +131,15 @@ describe('@mastra/auth-firebase: uid is the user id everywhere', () => {
     expect(provider.mapUserToResourceId?.(payload!)).toBe(USER_ID);
   });
 
-  it('keeps mapUserToResourceId a function despite the base constructor', () => {
-    // `MastraAuthProvider`'s constructor assigns `options?.mapUserToResourceId`
-    // unconditionally, so an own `undefined` shadows a prototype method. This
-    // pins the workaround: a regression there makes the method vanish rather
-    // than misbehave, and the conformance check for it would silently skip.
+  it('keeps mapUserToResourceId reachable through the base constructor', () => {
+    // This provider implements the method on its prototype and forwards only
+    // `name` to `super`. `MastraAuthProvider`'s constructor used to assign
+    // `options?.mapUserToResourceId` unconditionally, so an own `undefined`
+    // shadowed exactly that prototype method — the method vanished rather than
+    // misbehaved, and the conformance check above would silently skip while
+    // reporting that this provider does not implement it. The base now assigns
+    // only when the option is supplied; this is the assertion that says so from a
+    // provider's point of view, so a regression in the base fails here.
     expect(typeof createProvider().mapUserToResourceId).toBe('function');
   });
 
