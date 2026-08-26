@@ -148,8 +148,13 @@ export interface PermissionCacheOptions {
 
 /**
  * Options for MastraRBACGoogle.
+ *
+ * `TUser` is the user shape the surrounding host authenticates. It defaults to
+ * {@link GoogleUser}, so `new MastraRBACGoogle({ ... })` needs no type argument.
+ * Name it when Google Workspace supplies the groups and a different provider
+ * supplies the user.
  */
-export interface MastraRBACGoogleOptions {
+export interface MastraRBACGoogleOptions<TUser extends EEUser = GoogleUser> {
   /** Pre-obtained Workspace Directory API access token. */
   accessToken?: string;
   /** Callback that returns a Workspace Directory API access token. */
@@ -158,8 +163,19 @@ export interface MastraRBACGoogleOptions {
   serviceAccount?: GoogleWorkspaceServiceAccount;
   /** Map Google Workspace group roles to Mastra permissions. */
   roleMapping: RoleMapping;
-  /** Extract the Google Directory API userKey from any authenticated user object. Defaults to `user.email`. */
-  getUserKey?: (user: unknown) => string | undefined;
+  /**
+   * Extract the Google Directory API userKey from the authenticated user.
+   * Defaults to `user.email`.
+   *
+   * The parameter is `TUser`, not `unknown`. Typing it `unknown` forced every
+   * caller — this package's own test included — to cast before reading a field.
+   *
+   * @example
+   * ```typescript
+   * getUserKey: user => user.googleId
+   * ```
+   */
+  getUserKey?: (user: TUser) => string | undefined;
   /** Map a Google Workspace group to one or more RBAC role IDs. Defaults to `[group.email]`. */
   mapGroupToRoles?: (group: GoogleWorkspaceGroup) => string[];
   /** Permission cache configuration. */

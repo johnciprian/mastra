@@ -10,14 +10,21 @@
  *
  * @example Using Auth0 for auth + Okta for RBAC
  * ```typescript
+ * import type { EEUser } from '@mastra/core/auth';
  * import { MastraAuthAuth0 } from '@mastra/auth-auth0';
  * import { MastraRBACOkta } from '@mastra/auth-okta';
+ *
+ * // Name the shape the auth provider produces, so `getUserId` reads it
+ * // without a cast.
+ * interface Auth0User extends EEUser {
+ *   metadata?: { oktaUserId?: string };
+ * }
  *
  * const mastra = new Mastra({
  *   server: {
  *     auth: new MastraAuthAuth0(),
- *     rbac: new MastraRBACOkta({
- *       getUserId: (user) => user.metadata?.oktaUserId || user.email,
+ *     rbac: new MastraRBACOkta<Auth0User>({
+ *       getUserId: user => user.metadata?.oktaUserId ?? user.email,
  *       roleMapping: {
  *         'Engineering': ['agents:*', 'workflows:*'],
  *         'Admin': ['*'],
