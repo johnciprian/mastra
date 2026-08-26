@@ -23,6 +23,7 @@
  */
 import { describeAuthProvider } from '@mastra/factory-auth/conformance';
 import { encodeState, parseStateId } from '@mastra/factory-auth/oauth-state';
+import { withSyntheticOrganizations } from '@mastra/factory-auth/organizations';
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
 import type { JSONWebKeySet } from 'jose';
 
@@ -72,7 +73,19 @@ const TOKEN = await new SignJWT({
   .setExpirationTime('1h')
   .sign(privateKey);
 
-function createProvider(): MastraAuthOkta {
+/**
+ * The provider as a host deploys it.
+ *
+ * Okta has groups, not organizations, so `MastraAuthOkta` implements no
+ * `IOrganizationsProvider` and never will. Obligation 4 does not ask it to: the
+ * check is titled "on its own or through the wrapper", and
+ * `withSyntheticOrganizations` is the sanctioned answer for a provider with no
+ * organization concept. It derives `user:${userId}`, a pure function of the user
+ * id that two processes agree on without talking to each other. The README
+ * documents this as the recommended way to mount this provider under the
+ * Factory, so what runs here is what a deployment runs.
+ */
+function createProvider() {
   const provider = new MastraAuthOkta({
     domain: DOMAIN,
     clientId: CLIENT_ID,
@@ -83,9 +96,10 @@ function createProvider(): MastraAuthOkta {
   });
   // The field is `private`, so this is a cast rather than a subclass override.
   // It is the whole offline seam: everything downstream of it is the provider's
-  // own code running unmodified.
+  // own code running unmodified. Done before wrapping, so it lands on the real
+  // instance rather than on the proxy.
   (provider as unknown as { jwks: typeof localJwks }).jwks = localJwks;
-  return provider;
+  return withSyntheticOrganizations(provider);
 }
 
 /**
