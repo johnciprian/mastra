@@ -43,30 +43,45 @@ import { timedAboveThreshold } from './timing.js';
  *   through the kit's capability descriptor (see {@link authMeta})
  * - `getClearSessionHeaders` — session cookie clearing on logout
  *
- * One behavioural switch lives here: {@link isAuthIdentityV2Enabled}, the
- * rollback for the identity/session/logout migration. See its doc comment.
+ * One behavioural switch lives here: {@link isAuthIdentityV2Enabled}, now on by
+ * default and kept for one release as the rollback for the identity, session
+ * and logout migration. See its doc comment.
  */
 
 /**
- * Name of the compat flag for the v2 identity path. Off unless explicitly
- * enabled — see {@link isAuthIdentityV2Enabled}.
+ * Name of the compat flag for the v2 identity path. On unless explicitly
+ * disabled — see {@link isAuthIdentityV2Enabled}.
  */
 export const AUTH_IDENTITY_V2_ENV_VAR = 'MASTRACODE_AUTH_IDENTITY_V2';
 
 /**
- * Parse the compat flag's value. Opt-in only: `1` and `true` (any case, any
- * surrounding whitespace) turn it on, and every other value leaves it off —
- * `0`, `false`, the empty string, and anything unrecognized alike.
+ * Parse the compat flag's value. Opt-**out** only: `0` and `false` (any case,
+ * any surrounding whitespace) turn it off, and every other value leaves it on —
+ * `1`, `true`, an unset variable, the empty string, and anything unrecognized
+ * alike.
  *
- * An unrecognized value resolves to off rather than on because this flag's
- * default *is* the safe answer. An operator who mistypes the value gets the
- * behaviour that already shipped, not an accidental opt-in to a path they had
- * not chosen. Exported so the parsing rules are testable without reloading the
- * module.
+ * WHY THE SAFE DIRECTION FLIPPED
+ *
+ * This started opt-in, and rejected unrecognized values for a reason worth
+ * restating rather than deleting: the default was the shipped path, so a
+ * mistyped value had to land there instead of opting a deployment into a
+ * migration nobody had chosen.
+ *
+ * Both halves of that have now moved. The v2 path is the shipped path — it is
+ * what the suite runs, what the conformance suite checks providers against, and
+ * the only path where a `{ uid }` or `{ sub }` provider authenticates at all.
+ * The legacy reader is the exception, kept reachable for one release so an
+ * operator who hits a surprise has a way back. So the value that must never be
+ * reached by accident is now the *old* one: a typo like `MASTRACODE_AUTH_IDENTITY_V2=flase`
+ * must leave the process on v2, not silently drop it onto a path with known
+ * defects. The rule is unchanged in spirit — an unrecognized value never
+ * selects the non-default path — and the non-default path is the other one now.
+ *
+ * Exported so the parsing rules are testable without reloading the module.
  */
 export function readAuthIdentityV2Env(raw: string | undefined): boolean {
   const normalized = raw?.trim().toLowerCase();
-  return normalized === '1' || normalized === 'true';
+  return !(normalized === '0' || normalized === 'false');
 }
 
 /**
@@ -77,18 +92,22 @@ const AUTH_IDENTITY_V2 = readAuthIdentityV2Env(process.env[AUTH_IDENTITY_V2_ENV_
 
 /**
  * Whether the v2 identity path is enabled for this process
- * (`MASTRACODE_AUTH_IDENTITY_V2`), defaulting to **off**.
+ * (`MASTRACODE_AUTH_IDENTITY_V2`), defaulting to **on**.
  *
  * The identity, session and logout changes land together, and together they are
  * the only part of this module that can break a live sign-in: they change how a
  * provider's `authenticateToken` result becomes a {@link FactoryAuthUser}, which
  * is the value every ownership check in the app compares against. A wrong answer
  * there does not throw — it reads as "this session belongs to somebody else" at
- * each check, and looks like data loss rather than an auth bug. So the release
- * carries a one-command rollback: unset the variable, restart, and the process
- * is back on the path that shipped before it.
+ * each check, and looks like data loss rather than an auth bug.
  *
- * This is the single read site for the flag. Later work branches on this
+ * That is why this is still a switch after the default flipped. The release is
+ * a soak, not a finished migration: set the variable to `false`, restart, and
+ * the process is back on the reader that shipped before. {@link legacyFactoryAuthUser}
+ * stays for exactly that, and the dual-path tests stay with it — deleting either
+ * is a separate decision, taken after the soak rather than as part of it.
+ *
+ * This is the single read site for the flag. Everything else branches on this
  * function rather than reaching for `process.env` again, so that "what is this
  * process running?" has exactly one answer.
  *

@@ -583,7 +583,7 @@ describe('MASTRACODE_AUTH_IDENTITY_V2 (compat flag)', () => {
   /**
    * Import a fresh copy of the auth module with the flag set to `value`
    * (`undefined` unsets it). Deleting the variable explicitly rather than
-   * trusting the ambient environment keeps the default-off assertion honest on
+   * trusting the ambient environment keeps the default-on assertion honest on
    * a machine that happens to export it.
    */
   async function importAuthWith(value: string | undefined): Promise<typeof import('./auth.js')> {
@@ -603,50 +603,60 @@ describe('MASTRACODE_AUTH_IDENTITY_V2 (compat flag)', () => {
     expect(auth.AUTH_IDENTITY_V2_ENV_VAR).toBe('MASTRACODE_AUTH_IDENTITY_V2');
   });
 
-  it('defaults to off when the env var is unset', async () => {
+  it('defaults to ON when the env var is unset', async () => {
     const auth = await importAuthWith(undefined);
+    expect(auth.isAuthIdentityV2Enabled()).toBe(true);
+  });
+
+  it.each(['0', 'false', 'FALSE', '  false  '])('is off when the env var is %j at module load', async value => {
+    const auth = await importAuthWith(value);
     expect(auth.isAuthIdentityV2Enabled()).toBe(false);
   });
 
-  it.each(['1', 'true', 'TRUE', '  true  '])('is on when the env var is %j at module load', async value => {
+  it.each(['1', 'true', 'TRUE', '  true  '])('stays on for the explicit opt-in %j', async value => {
     const auth = await importAuthWith(value);
     expect(auth.isAuthIdentityV2Enabled()).toBe(true);
   });
 
-  it.each(['', '0', 'false', 'FALSE', 'yes', 'on', 'v2', 'undefined'])(
-    'stays off for %j, because an unrecognized value must not opt in',
+  it.each(['', 'no', 'off', 'flase', 'FALSE!', 'v1', 'undefined', 'null', '00', 'false ish'])(
+    'stays ON for %j, because an unrecognized value must not select the legacy path',
     async value => {
+      // The same rule as before the default flipped, pointed the other way: a
+      // typo must never land a deployment on the non-default path. That used to
+      // mean "must not opt in"; now the non-default path is the legacy reader,
+      // with the defects v2 exists to fix, so a typo must not opt *out*.
       const auth = await importAuthWith(value);
-      expect(auth.isAuthIdentityV2Enabled()).toBe(false);
+      expect(auth.isAuthIdentityV2Enabled()).toBe(true);
     },
   );
 
-  it('parses opt-in values without a module reload', async () => {
+  it('parses opt-out values without a module reload', async () => {
     const { readAuthIdentityV2Env } = await importAuthWith(undefined);
-    expect(readAuthIdentityV2Env('1')).toBe(true);
-    expect(readAuthIdentityV2Env('true')).toBe(true);
-    expect(readAuthIdentityV2Env('True')).toBe(true);
-    expect(readAuthIdentityV2Env('\tTRUE\n')).toBe(true);
     expect(readAuthIdentityV2Env('0')).toBe(false);
     expect(readAuthIdentityV2Env('false')).toBe(false);
-    expect(readAuthIdentityV2Env('')).toBe(false);
-    expect(readAuthIdentityV2Env(undefined)).toBe(false);
+    expect(readAuthIdentityV2Env('False')).toBe(false);
+    expect(readAuthIdentityV2Env('\tFALSE\n')).toBe(false);
+    expect(readAuthIdentityV2Env('1')).toBe(true);
+    expect(readAuthIdentityV2Env('true')).toBe(true);
+    expect(readAuthIdentityV2Env('')).toBe(true);
+    expect(readAuthIdentityV2Env(undefined)).toBe(true);
+    expect(readAuthIdentityV2Env('flase')).toBe(true);
   });
 
   it('reads the env var once at module load, not per call', async () => {
     const auth = await importAuthWith(undefined);
-    expect(auth.isAuthIdentityV2Enabled()).toBe(false);
+    expect(auth.isAuthIdentityV2Enabled()).toBe(true);
 
     // Flipping the variable on a module that has already loaded must not move
     // the answer: a flag that changed underneath a running process could resolve
     // a session on one path and re-check it on the other.
-    process.env.MASTRACODE_AUTH_IDENTITY_V2 = 'true';
-    expect(auth.isAuthIdentityV2Enabled()).toBe(false);
+    process.env.MASTRACODE_AUTH_IDENTITY_V2 = 'false';
+    expect(auth.isAuthIdentityV2Enabled()).toBe(true);
 
     // Only a reload picks the new value up, which is the documented way to
     // reach the other path.
-    const reloaded = await importAuthWith('true');
-    expect(reloaded.isAuthIdentityV2Enabled()).toBe(true);
+    const reloaded = await importAuthWith('false');
+    expect(reloaded.isAuthIdentityV2Enabled()).toBe(false);
   });
 });
 
@@ -663,8 +673,17 @@ describe('MASTRACODE_AUTH_IDENTITY_V2 (compat flag)', () => {
  * before the change, not by reading them side by side: the kit's own note says
  * its precedence matches what this module already did, and on the flat id key
  * set that turned out to be an overstatement worth pinning down in tests.
+ *
+ * Both legs select their path EXPLICITLY. The legacy leg used to get there by
+ * unsetting the variable, which stopped meaning "legacy" the moment the default
+ * flipped — and would have quietly turned this table into v2 compared against
+ * itself, still green and testing nothing. Naming both values is what keeps the
+ * diff a diff.
  */
 describe('identity resolution under the compat flag', () => {
+  /** The explicit opt-out that selects the pre-kit reader. */
+  const LEGACY = 'false';
+
   async function importAuthWith(value: string | undefined): Promise<typeof import('./auth.js')> {
     if (value === undefined) delete process.env.MASTRACODE_AUTH_IDENTITY_V2;
     else process.env.MASTRACODE_AUTH_IDENTITY_V2 = value;
@@ -766,7 +785,7 @@ describe('identity resolution under the compat flag', () => {
       v2: null,
     },
   ])('$what', async ({ payload, legacy, v2 }) => {
-    const off = await tenantFor(await importAuthWith(undefined), payload);
+    const off = await tenantFor(await importAuthWith(LEGACY), payload);
     expect(off?.userId ?? null).toBe(legacy);
 
     const on = await tenantFor(await importAuthWith('true'), payload);
@@ -784,7 +803,7 @@ describe('identity resolution under the compat flag', () => {
     // This provider does no organization bootstrap, so neither reader has an
     // organization to use. Since B12 the tenant still resolves one for that
     // user — their own private one — rather than none.
-    const off = await tenantFor(await importAuthWith(undefined), payload);
+    const off = await tenantFor(await importAuthWith(LEGACY), payload);
     expect(off).toEqual({ userId: 'u1', orgId: 'user:u1' });
 
     const on = await tenantFor(await importAuthWith('true'), payload);
@@ -799,7 +818,7 @@ describe('identity resolution under the compat flag', () => {
       id: (raw as Record<string, string>)['https://claims.example/uid']!,
     }));
 
-    const off = await tenantFor(await importAuthWith(undefined), payload, { toIdentity });
+    const off = await tenantFor(await importAuthWith(LEGACY), payload, { toIdentity });
     expect(off).toBeNull();
 
     const on = await tenantFor(await importAuthWith('true'), payload, { toIdentity });
@@ -839,6 +858,16 @@ describe('identity resolution under the compat flag', () => {
  */
 describe('session cookie', () => {
   const SECRET = 'a'.repeat(32);
+  /**
+   * The explicit opt-out that selects the legacy path.
+   *
+   * These cases used to reach it by unsetting the variable. That stopped
+   * meaning "legacy" when the default flipped, and each one would have kept
+   * passing for a different reason — flag on with no secret also leaves the
+   * host without a cookie — so the case name would have outlived the thing it
+   * tested.
+   */
+  const LEGACY = 'false';
 
   async function importAuthWith(
     flag: string | undefined,
@@ -887,8 +916,8 @@ describe('session cookie', () => {
   }
 
   describe('source 1: the provider built its own cookie', () => {
-    it('forwards provider cookies verbatim, flag off', async () => {
-      const auth = await importAuthWith(undefined, undefined);
+    it('forwards provider cookies verbatim on the legacy path', async () => {
+      const auth = await importAuthWith(LEGACY, undefined);
       const cookies = await callbackSetCookies(
         auth,
         callbackProvider({ user: { id: 'u1' }, cookies: ['wos_session=sealed; Path=/'] }),
@@ -911,8 +940,8 @@ describe('session cookie', () => {
   describe('source 2: the provider returned tokens and left the cookie to the host', () => {
     const tokensResult = { user: { id: 'u1' }, tokens: { accessToken: 'access-1' } };
 
-    it('uses the provider session headers when the host cookie is off', async () => {
-      const auth = await importAuthWith(undefined, undefined);
+    it('uses the provider session headers on the legacy path', async () => {
+      const auth = await importAuthWith(LEGACY, undefined);
       const cookies = await callbackSetCookies(auth, callbackProvider(tokensResult, sessionCapabilityFor()));
       expect(cookies).toContain('provider_session=built-by-provider; Path=/');
     });
@@ -998,7 +1027,7 @@ describe('session cookie', () => {
     });
 
     it('clears only the provider cookies when the host owns none', async () => {
-      const auth = await importAuthWith(undefined, undefined);
+      const auth = await importAuthWith(LEGACY, undefined);
       const app = new Hono();
       auth.mountFactoryAuth(app, { provider: fakeProvider(ssoCapability()) });
 
@@ -1016,7 +1045,7 @@ describe('session cookie', () => {
    */
   describe('splitting a provider header that folded several cookies together', () => {
     async function clearCookiesFor(setCookie: string): Promise<string[]> {
-      const auth = await importAuthWith(undefined, undefined);
+      const auth = await importAuthWith(LEGACY, undefined);
       const app = new Hono();
       auth.mountFactoryAuth(app, {
         provider: fakeProvider(ssoCapability({ getClearSessionHeaders: vi.fn(() => ({ 'Set-Cookie': setCookie })) })),
@@ -1850,5 +1879,91 @@ describe('BACKEND EXIT GATE (flag ON)', () => {
       const res = await app.request('/web/board', { headers: { ...json, Authorization: 'Bearer t' } });
       expect(res.status).toBe(401);
     });
+  });
+});
+
+/**
+ * B18: what flipping the default actually costs a signed-in person.
+ *
+ * The upgrade note for this release rests on these two answers, so they are
+ * measured rather than asserted. The direction is the opposite of what the
+ * changeset originally claimed, which is why it is pinned here.
+ */
+describe('sessions across the flag flip', () => {
+  const SECRET = 'f'.repeat(32);
+
+  async function importAuthWith(flag: string, secret: string | undefined): Promise<typeof import('./auth.js')> {
+    process.env.MASTRACODE_AUTH_IDENTITY_V2 = flag;
+    if (secret === undefined) delete process.env.MASTRACODE_AUTH_SESSION_SECRET;
+    else process.env.MASTRACODE_AUTH_SESSION_SECRET = secret;
+    vi.resetModules();
+    return import('./auth.js');
+  }
+
+  afterEach(() => {
+    delete process.env.MASTRACODE_AUTH_IDENTITY_V2;
+    delete process.env.MASTRACODE_AUTH_SESSION_SECRET;
+    vi.resetModules();
+  });
+
+  /** A provider that authenticates from its own cookie, as WorkOS and Okta do. */
+  function providerCookieProvider() {
+    return fakeProvider({
+      authenticateToken: vi.fn(async (token: string, request: Request) => {
+        if (token) return null;
+        const cookie = request.headers.get('cookie') ?? '';
+        return /(?:^|;\s*)wos_session=live\b/.test(cookie) ? { id: 'u1' } : null;
+      }),
+    });
+  }
+
+  function board(auth: typeof import('./auth.js'), provider: IMastraAuthProvider): Hono {
+    const app = new Hono();
+    auth.mountFactoryAuth(app, { provider });
+    app.get('/web/board', c => c.json({ tenant: auth.factoryAuthTenant(c) ?? null }));
+    return app;
+  }
+
+  it('keeps a provider-minted session alive when the default turns V2 on', async () => {
+    // The upgrade most deployments actually perform. The host reads no cookie of
+    // its own here, so `requestAuthToken` yields '' — which is the provider's
+    // documented signal to read the Cookie header itself, exactly as before.
+    // Nobody is signed out.
+    const auth = await importAuthWith('true', SECRET);
+    const res = await board(auth, providerCookieProvider()).request('/web/board', {
+      headers: { Accept: 'application/json', Cookie: 'wos_session=live' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).tenant.userId).toBe('u1');
+  });
+
+  it('signs out a session minted by the host when the flag is set back to false', async () => {
+    // The cost is on the ROLLBACK, not the upgrade, and only for deployments
+    // whose provider hands back tokens instead of cookies. A session minted
+    // under V2 lives in the host's own signed cookie, and the legacy path never
+    // reads that cookie — so going back sends those people to sign-in once.
+    const on = await importAuthWith('true', SECRET);
+    const provider = fakeProvider({
+      ...ssoCapability({
+        handleCallback: vi.fn(async () => ({ user: { id: 'u1' }, tokens: { accessToken: 'access-1' } })),
+      }),
+      createSession: vi.fn(async () => ({ id: 's1' })),
+      validateSession: vi.fn(),
+      getSessionHeaders: vi.fn(() => ({ 'Set-Cookie': 'provider_session=legacy; Path=/' })),
+      authenticateToken: vi.fn(async (token: string) => (token === 'access-1' ? { id: 'u1' } : null)),
+    });
+
+    const callback = await board(on, provider).request('/auth/callback?code=ok&state=id%7C%2F');
+    const hostCookie = callback.headers.getSetCookie().find(c => c.startsWith('__Host-mastra_factory_session='))!;
+    expect(hostCookie).toBeDefined();
+
+    // Same cookie, same provider, legacy reader.
+    const off = await importAuthWith('false', SECRET);
+    const res = await board(off, provider).request('/web/board', {
+      headers: { Accept: 'application/json', Cookie: hostCookie.split(';')[0]! },
+    });
+
+    expect(res.status).toBe(401);
   });
 });
