@@ -30,7 +30,7 @@
     },
     "build:patch-commonjs": {
       "dependsOn": ["build:lib"],
-      "outputs": ["./**/*.d.ts"]
+      "outputs": ["./**/*.d.ts", "!dist/**"]
     },
     "build": {
       "dependsOn": ["build:patch-commonjs", "build:lib"],
