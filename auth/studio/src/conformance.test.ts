@@ -15,61 +15,57 @@
  * network, and restores whatever it found. Restoring ours in `afterEach` keeps
  * it out of every other file in the run.
  *
- * WHAT IS RED TODAY, AND WHY IT IS RECORDED RATHER THAN FIXED OR HIDDEN
+ * WHAT WAS RED, AND WHAT FIXED IT
  *
- * Four checks fail. All four are findings about the provider rather than about
- * this file, so each is recorded in `knownFailures` below: the suite goes
- * green and says on every run that it is not the green of a clean provider.
- * None is fixed here — every fix has a product or data consequence that is not
- * a test's to decide, and each is named with its defect. The `knownFailures`
- * entries carry the codes; this is the diagnosis behind them.
+ * Four checks used to fail here, each recorded in a `knownFailures` entry. All
+ * four are fixed in the provider and every entry is gone with them — the record
+ * is checked in both directions on every run, so an entry that outlived its
+ * defect fails the suite. `knownFailures` is deliberately absent below rather
+ * than empty: there is nothing to record.
+ *
+ * What changed, for a reader who arrives from one of the old entries:
  *
  * 1. `obligation/stateCodec/login-url#no-state-parameter`
- *    `getLoginUrl` reads the `returnTo` half out of the host's `state` and
- *    forwards it as `post_login_redirect`, then drops the value itself: the
- *    authorization URL carries no `state` parameter, so the id half — the half
- *    a host would compare on the callback for CSRF — never comes back. The
- *    Factory already works around this: `mastracode/factory/src/auth.ts` keeps
- *    a `mastra_factory_return_to` cookie because "not every provider/platform
- *    echoes `state` back to the callback".
- *    Not fixed: adding `state` to the shared API's `/auth/login` query would
- *    turn the check green whether or not the shared API echoes it back, and
- *    that is not verifiable from this repository. A green that depends on an
- *    unverified assumption is worse than a recorded red.
+ *    `getLoginUrl` read the `returnTo` half out of the host's `state`,
+ *    forwarded it as `post_login_redirect`, and dropped the value itself, so
+ *    the id half — the half a host compares on the callback for CSRF — never
+ *    came back. It now forwards the whole `state` as the OAuth `state`
+ *    parameter, in addition to `post_login_redirect` rather than instead of
+ *    it: a shared API that does not echo `state` back behaves exactly as it did
+ *    before, and the Factory's `mastra_factory_return_to` cookie still carries
+ *    the destination either way.
  *
  * 2. `obligation/stateCodec/callback#threw-without-cause-after-token-exchange`
- *    `handleCallback` reaches the shared API — the suite counts the `fetch`
- *    and can see the `state` was accepted — and then throws
+ *    `handleCallback` reached the shared API and then threw
  *    `Error('Session validation failed')` with no `cause`, because
- *    `verifySessionCookie` catches the transport failure and answers `null`.
- *    The operator gets that one sentence for an expired session, a clock skew
- *    and an unreachable shared API alike.
- *    This one was previously silenced with `sso.reachedTokenExchange`, back
- *    when the suite misread it as a `state` rejection. The suite now diagnoses
- *    it correctly, so the hook is gone: a correct diagnosis of a real gap is
- *    worth seeing on every run, and the hook would have hidden it. Fixing it
- *    means propagating the cause out of `verifySessionCookie`, which is a
- *    provider change rather than a test one.
+ *    `verifySessionCookie` caught the transport failure and answered `null`.
+ *    The operator got that one sentence for an expired session, a clock skew
+ *    and an unreachable shared API alike. `verifySessionCookie` now takes a
+ *    `throwOnFailure` option — off for the request paths, where a rejection is
+ *    an ordinary outcome — and `handleCallback` attaches what it gets as the
+ *    `cause`.
  *
  * 3. `obligation/organizationId/deterministic#not-a-string`
- *    `ensureOrganization(userId)` resolves `undefined` unless
- *    `verifySessionCookie` has previously seen a *cookie* for that user and
- *    cached it in `userSessionCookies`. The interface hands it only a user id,
- *    so a correct implementation has to work from one — and a user
- *    authenticated by bearer token (the CLI flow, `verifyBearerToken`, which
- *    never calls `rememberUserSession`) never gets an organization
- *    bootstrapped, on any request.
- *    Not fixed: `withSyntheticOrganizations` from
- *    `@mastra/factory-auth/organizations` is the kit's documented remedy, but
- *    applying it changes which partition bearer-token users' rows land in.
+ *    `ensureOrganization(userId)` resolved `undefined` unless
+ *    `verifySessionCookie` had previously seen a *cookie* for that user, so a
+ *    user authenticated by bearer token (the CLI flow) never got an
+ *    organization at all. The cookie-backed bootstrap is unchanged; a user
+ *    there is no cookie for now falls back to the derived `user:${userId}` —
+ *    the same id `resolveOrganizationId` in `mastracode/factory/src/auth.ts`
+ *    already applies to a user with no organization, so the partition is the
+ *    one those rows land in today.
  *
  * 4. `sessions/round-trip#validate-rejects-fresh-session`
- *    `createSession(userId)` with no metadata mints a random UUID, and
- *    `validateSession` only accepts a sealed shared-API session, so the two
- *    halves of the loop never meet. In production the host always passes
- *    `metadata.accessToken` (`mastracode/factory/src/auth.ts`,
- *    `packages/server/src/server/handlers/auth.ts`), which is why nothing has
- *    noticed; the declared contract makes `metadata` optional.
+ *    `createSession(userId)` with no metadata minted a random UUID that
+ *    `validateSession` — which only accepts a sealed shared-API session — could
+ *    never accept. The host always passes `metadata.accessToken`
+ *    (`mastracode/factory/src/auth.ts`,
+ *    `packages/server/src/server/handlers/auth.ts`), which is why nothing had
+ *    noticed, but the declared contract makes `metadata` optional. A session
+ *    minted with no credential behind it is now recorded in-process, so
+ *    create/validate/destroy are one loop; a sealed session is still verified
+ *    against the shared API on every call and is never held in memory, which is
+ *    what keeps revocation lag where it was.
  */
 import { describeAuthProvider } from '@mastra/factory-auth/conformance';
 import { afterEach, beforeEach } from 'vitest';
@@ -172,55 +168,10 @@ function createProvider(): MastraAuthStudio {
   return new MastraAuthStudio({ sharedApiUrl: SHARED_API });
 }
 
-/**
- * The four defects this provider ships with, recorded so the suite can be
- * green without being a lie. Each `reason` is a pointer plus a sentence; the
- * diagnosis lives in this file's header, which is where a reader of the
- * failing check already lands.
- *
- * These are checked in both directions on every run: fix one of these defects
- * and the suite fails until its entry is deleted in the same change.
- */
-const knownFailures = [
-  {
-    check: 'obligation/stateCodec/login-url',
-    code: 'obligation/stateCodec/login-url#no-state-parameter',
-    reason:
-      'getLoginUrl forwards the state’s returnTo half as post_login_redirect and drops the value, so ' +
-      'no `state` reaches the callback. Not fixed because whether the shared API echoes `state` back ' +
-      'cannot be verified from this repository. Diagnosis 1 in this file’s header.',
-  },
-  {
-    check: 'obligation/stateCodec/callback',
-    code: 'obligation/stateCodec/callback#threw-without-cause-after-token-exchange',
-    reason:
-      'handleCallback reaches the shared API and then throws Error("Session validation failed") with ' +
-      'no cause, because verifySessionCookie swallows the transport failure. Recorded rather than ' +
-      'silenced with sso.reachedTokenExchange. Diagnosis 2 in this file’s header.',
-  },
-  {
-    check: 'obligation/organizationId/deterministic',
-    code: 'obligation/organizationId/deterministic#not-a-string',
-    reason:
-      'ensureOrganization resolves undefined for any user whose cookie verifySessionCookie has not ' +
-      'cached, so bearer-token (CLI) users never get an organization. Not fixed because wrapping in ' +
-      'withSyntheticOrganizations moves which partition their rows land in. Diagnosis 3 in this file’s header.',
-  },
-  {
-    check: 'sessions/round-trip',
-    code: 'sessions/round-trip#validate-rejects-fresh-session',
-    reason:
-      'createSession(userId) with no metadata mints a UUID validateSession can never accept; the host ' +
-      'always passes metadata.accessToken, but the contract makes it optional. Diagnosis 4 in this ' +
-      'file’s header.',
-  },
-];
-
 describeAuthProvider({
   name: '@mastra/auth-studio',
   createProvider,
   token: TOKEN,
   userId: USER_ID,
   cookieHeader: `${COOKIE_NAME}=${SESSION}`,
-  knownFailures,
 });

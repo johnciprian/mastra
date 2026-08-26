@@ -432,6 +432,18 @@ describe('MastraAuthStudio', () => {
       const parsed = new URL(url);
 
       expect(parsed.searchParams.get('post_login_redirect')).toBe('/');
+      expect(parsed.searchParams.has('state')).toBe(false);
+    });
+
+    it('should forward the whole state as the OAuth state parameter', () => {
+      // Both halves: the destination still arrives as post_login_redirect, and
+      // the id half — the one a host compares on the callback for CSRF — now
+      // reaches the authorization server at all.
+      const state = 'abc-123|%2Fdashboard%2Fsettings';
+      const parsed = new URL(auth.getLoginUrl('https://deploy.mastra.ai/auth/callback', state));
+
+      expect(parsed.searchParams.get('state')).toBe(state);
+      expect(parsed.searchParams.get('post_login_redirect')).toBe('/dashboard/settings');
     });
   });
 
@@ -472,6 +484,26 @@ describe('MastraAuthStudio', () => {
       fetchSpy.mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }));
 
       await expect(auth.handleCallback('invalid-session', 'state')).rejects.toThrow('Session validation failed');
+    });
+
+    it('should carry the rejection status as the cause', async () => {
+      fetchSpy.mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }));
+
+      // An expired session, a clock skew and an unreachable shared API all
+      // surface as "Session validation failed"; the cause is what tells the
+      // operator which one this was.
+      const error = await auth.handleCallback('invalid-session', 'state').catch((e: unknown) => e);
+      expect((error as Error).message).toBe('Session validation failed');
+      expect(((error as Error).cause as Error).message).toContain('401');
+    });
+
+    it('should carry a transport failure as the cause', async () => {
+      const transport = new Error('shared API unreachable');
+      fetchSpy.mockRejectedValueOnce(transport);
+
+      const error = await auth.handleCallback('sealed-session-token', 'state').catch((e: unknown) => e);
+      expect((error as Error).message).toBe('Session validation failed');
+      expect((error as Error).cause).toBe(transport);
     });
   });
 
@@ -595,6 +627,44 @@ describe('MastraAuthStudio', () => {
       expect(s1.id).not.toBe(s2.id);
       // UUID v4 format
       expect(s1.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    });
+
+    it('should validate a session it minted with no accessToken, without a shared-API call', async () => {
+      // The half that used to be missing: createSession minted an id
+      // validateSession could never accept, so a sign-in on this path did not
+      // stick. `metadata` is optional in ISessionProvider, so a host is
+      // entitled to this path.
+      const created = await auth.createSession('user-1');
+
+      const validated = await auth.validateSession(created.id);
+      expect(validated).not.toBeNull();
+      expect(validated!.id).toBe(created.id);
+      expect(validated!.userId).toBe('user-1');
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('should stop validating a locally minted session once it is destroyed', async () => {
+      const created = await auth.createSession('user-1');
+      await auth.destroySession(created.id);
+
+      // Forgotten, not signed out upstream: the shared API never issued this
+      // id, so it is never asked about it.
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      fetchSpy.mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }));
+      expect(await auth.validateSession(created.id)).toBeNull();
+    });
+
+    it('should not answer for a sealed session from memory', async () => {
+      // A session created WITH the shared API's credential is never recorded,
+      // so every validate still costs a round trip and a revoked session stops
+      // working immediately.
+      const created = await auth.createSession('user-1', { accessToken: 'sealed-token' });
+      expect(created.id).toBe('sealed-token');
+
+      fetchSpy.mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }));
+      expect(await auth.validateSession('sealed-token')).toBeNull();
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -948,10 +1018,27 @@ describe('MastraAuthStudio IOrganizationsProvider', () => {
   }
 
   describe('ensureOrganization', () => {
-    it('returns undefined when no cached cookie exists for the user', async () => {
+    it('derives a personal org when no cached cookie exists for the user', async () => {
+      // The CLI/bearer flow: authenticated, but this provider has never held a
+      // cookie for them, so there is nothing to ask the shared API with. The
+      // derived id is what the Factory's own resolveOrganizationId already
+      // applies to a user with no organization, so the partition is unchanged.
       const orgId = await auth.ensureOrganization('never-seen-user');
-      expect(orgId).toBeUndefined();
+      expect(orgId).toBe('user:never-seen-user');
       expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('derives the same personal org on every call', async () => {
+      const first = await auth.ensureOrganization('never-seen-user');
+      const second = await auth.ensureOrganization('never-seen-user');
+      expect(first).toBe(second);
+    });
+
+    it('returns undefined for a blank user id rather than the bare prefix', async () => {
+      // `user:` on its own is not one person's organization — it is one every
+      // user with a broken id would share.
+      expect(await auth.ensureOrganization('')).toBeUndefined();
+      expect(await auth.ensureOrganization('   ')).toBeUndefined();
     });
 
     it('returns the active organizationId from /auth/me when present', async () => {
@@ -1030,7 +1117,7 @@ describe('MastraAuthStudio IOrganizationsProvider', () => {
       );
     });
 
-    it('returns undefined when POST /auth/orgs fails', async () => {
+    it('falls back to the derived personal org when POST /auth/orgs fails', async () => {
       await seedSessionCookie('sealed-4');
 
       fetchSpy.mockResolvedValueOnce(
@@ -1044,16 +1131,19 @@ describe('MastraAuthStudio IOrganizationsProvider', () => {
       );
       fetchSpy.mockResolvedValueOnce(new Response('boom', { status: 500 }));
 
+      // A bootstrap that failed and one that declined are the same thing to a
+      // caller that needs a column value, and the derived id is the narrowest
+      // partition there is: one containing a single user.
       const orgId = await auth.ensureOrganization('user-1');
-      expect(orgId).toBeUndefined();
+      expect(orgId).toBe('user:user-1');
     });
 
-    it('returns undefined when the shared API throws', async () => {
+    it('falls back to the derived personal org when the shared API throws', async () => {
       await seedSessionCookie('sealed-5');
       fetchSpy.mockRejectedValueOnce(new Error('network'));
 
       const orgId = await auth.ensureOrganization('user-1');
-      expect(orgId).toBeUndefined();
+      expect(orgId).toBe('user:user-1');
     });
 
     it('dedupes concurrent bootstraps for the same user so only one POST /auth/orgs fires', async () => {
@@ -1119,6 +1209,20 @@ describe('MastraAuthStudio IOrganizationsProvider', () => {
       const ok = await auth.isOrganizationAdmin('org-1', 'never-seen');
       expect(ok).toBe(false);
       expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('answers for a derived personal org without asking the shared API', async () => {
+      const own = await auth.isOrganizationAdmin('user:never-seen', 'never-seen');
+      expect(own).toBe(true);
+      // Nobody administers somebody else's personal organization, and the
+      // shared API is never asked about an id it did not issue.
+      const other = await auth.isOrganizationAdmin('user:someone-else', 'never-seen');
+      expect(other).toBe(false);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('is not an admin of a derived org when the user id is blank', async () => {
+      expect(await auth.isOrganizationAdmin('user:', '')).toBe(false);
     });
 
     it('returns true when the active org matches and role is admin', async () => {

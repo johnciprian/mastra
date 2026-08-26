@@ -45,6 +45,27 @@ export interface MastraAuthStudioOptions extends MastraAuthProviderOptions<Studi
 const COOKIE_NAME = 'wos-session';
 
 /**
+ * How long a session minted here is good for. The shared API's sealed cookie
+ * carries its own lifetime; this is the window this provider reports for it,
+ * and the lifetime of a locally minted session record.
+ */
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The organization id namespace for a user this provider cannot resolve a real
+ * organization for, matching `@mastra/factory-auth`'s synthetic one.
+ *
+ * The literal is duplicated rather than imported because `@mastra/factory-auth`
+ * is a devDependency here — this package must not grow a runtime dependency on
+ * it — and because the value is a compatibility constant rather than a free
+ * choice: `resolveOrganizationId` in the Factory
+ * (`mastracode/factory/src/auth.ts`) already resolves a no-organization user to
+ * `user:${userId}`, so rows for these users are in deployed databases under it.
+ * `auth/firebase` and `auth/supabase` duplicate it for the same reason.
+ */
+const SYNTHETIC_ORGANIZATION_PREFIX = 'user:';
+
+/**
  * Upper bound for shared-API verification fetches. Matches the platform API
  * client's request budget: a slow shared API must fail a single request in
  * bounded time instead of hanging every authenticated endpoint behind it.
@@ -98,6 +119,15 @@ export class MastraAuthStudio
    */
   private verifiedCredentials = new Map<string, { user: StudioUser; expiresAt: number }>();
   private readonly maxCachedVerifications = 1000;
+
+  /**
+   * Sessions this provider minted with no shared-API credential behind them —
+   * `createSession(userId)` with no `metadata.accessToken`. Sealed sessions are
+   * never stored here; see {@link createSession}. Bounded and insert-order
+   * evicted like the caches above.
+   */
+  private localSessions = new Map<string, Session>();
+  private readonly maxLocalSessions = 1000;
 
   /**
    * In-flight `ensureOrganization` promises keyed by userId. Concurrent calls
@@ -211,6 +241,21 @@ export class MastraAuthStudio
       product: 'deploy',
       redirect_uri: redirectUri,
       post_login_redirect: postLoginRedirect,
+      // The host's `state`, forwarded whole and unmodified.
+      //
+      // `post_login_redirect` above carries only the destination half of it. The
+      // other half is the id a host mints per sign-in and compares on the
+      // callback to tell its own redirect apart from one somebody else started
+      // — the CSRF check — and dropping the value meant that half never came
+      // back, on any request. Forwarding it under the OAuth parameter name is
+      // the only spelling a host can read back, since the callback receives
+      // whatever the authorization server echoes as `state`.
+      //
+      // Carried in addition to `post_login_redirect`, never instead of it: a
+      // shared API that does not echo `state` back keeps behaving exactly as it
+      // does today, and the destination still arrives by the parameter it
+      // arrives by now.
+      ...(state ? { state } : {}),
       // Force re-authentication so AuthKit always shows the account picker
       prompt: 'login',
       ...(this.organizationId ? { organization_id: this.organizationId } : {}),
@@ -227,7 +272,21 @@ export class MastraAuthStudio
       sharedApiUrl: this.sharedApiUrl,
       codeLength: code?.length,
     });
-    const user = await this.verifySessionCookie(code);
+    // `throwOnFailure` so the reason survives. Without it every way this can go
+    // wrong — an expired session, a clock skew, an unreachable shared API —
+    // reaches the operator as the same one sentence, and the one that matters
+    // (the shared API is down) is the one that looks like all the others.
+    let user: StudioUser | null;
+    try {
+      user = await this.verifySessionCookie(code, { throwOnFailure: true });
+    } catch (error) {
+      this.logger.error('SSO callback: session validation failed', {
+        sharedApiUrl: this.sharedApiUrl,
+        codeLength: code?.length,
+        error: error instanceof Error ? { message: error.message, stack: error.stack } : String(error),
+      });
+      throw new Error('Session validation failed', { cause: error });
+    }
     if (!user) {
       this.logger.error('SSO callback: session validation failed — verifySessionCookie returned null', {
         sharedApiUrl: this.sharedApiUrl,
@@ -295,18 +354,55 @@ export class MastraAuthStudio
   // ISessionProvider
   // ---------------------------------------------------------------------------
 
+  /**
+   * Mint a session for a signed-in user.
+   *
+   * Two shapes, decided by whether the caller supplies the credential the
+   * shared API issued. The host does, on every path that exists today
+   * (`mastracode/factory/src/auth.ts`, `packages/server/src/server/handlers/auth.ts`):
+   * `metadata.accessToken` is the sealed session, it becomes the session id,
+   * and {@link validateSession} verifies it against the shared API on every
+   * call — no local state, no revocation lag.
+   *
+   * Without it there is no shared-API session to name, and this used to mint a
+   * random UUID that {@link validateSession} could never accept: a session the
+   * provider created and then denied, which is a sign-in that does not stick.
+   * `metadata` is optional in `ISessionProvider`, so that path is reachable by
+   * any host that does not happen to pass one. Such a session is now recorded
+   * here, so create/validate/destroy are one loop rather than two halves that
+   * never meet.
+   *
+   * What a locally recorded session is NOT is a credential the shared API
+   * knows: it authenticates nobody with `authenticateToken`, which reads the
+   * `wos-session` cookie and asks the shared API about it. It is a record of a
+   * sign-in this process performed, held in this process — so it does not
+   * survive a restart and is not visible to another replica.
+   */
   async createSession(userId: string, metadata?: Record<string, unknown>): Promise<Session> {
     const now = new Date();
-    return {
-      id: (metadata?.accessToken as string) || crypto.randomUUID(),
+    const accessToken = metadata?.accessToken;
+    const session: Session = {
+      id: (accessToken as string) || crypto.randomUUID(),
       userId,
-      expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000), // 24 hours
+      expiresAt: new Date(now.getTime() + SESSION_TTL_MS),
       createdAt: now,
       metadata,
     };
+    // Only the sessions with no shared-API credential behind them. Recording a
+    // sealed session here would let this provider answer for it from memory for
+    // a whole day, which is exactly the revocation lag `validateSession` avoids
+    // by asking the shared API every time.
+    if (!accessToken) this.rememberLocalSession(session);
+    return session;
   }
 
   async validateSession(sessionId: string): Promise<Session | null> {
+    // Locally minted sessions only — the map never holds a sealed session, so
+    // this cannot shadow one, and a sealed session still costs a shared-API
+    // round trip on every call.
+    const local = this.readLocalSession(sessionId);
+    if (local) return local;
+
     const user = await this.verifySessionCookie(sessionId);
     if (!user) return null;
 
@@ -314,12 +410,16 @@ export class MastraAuthStudio
     return {
       id: sessionId,
       userId: user.id,
-      expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+      expiresAt: new Date(now.getTime() + SESSION_TTL_MS),
       createdAt: now,
     };
   }
 
   async destroySession(sessionId: string): Promise<void> {
+    // A locally minted session is destroyed by forgetting it. Sending its id to
+    // the shared API would ask it to sign out a cookie it never issued.
+    if (this.localSessions.delete(sessionId)) return;
+
     try {
       await fetch(`${this.sharedApiUrl}/auth/logout`, {
         method: 'POST',
@@ -369,7 +469,7 @@ export class MastraAuthStudio
       return {
         id: newSessionId,
         userId: user.id,
-        expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+        expiresAt: new Date(now.getTime() + SESSION_TTL_MS),
         createdAt: now,
       };
     } catch (error) {
@@ -436,19 +536,35 @@ export class MastraAuthStudio
   // ---------------------------------------------------------------------------
 
   /**
-   * Ensure the user belongs to an organization, bootstrapping a personal org
-   * on first use when they have none.
+   * The organization this user's data is stored under, bootstrapping a real
+   * personal organization on the shared API when there is a session to do it
+   * with, and deriving one when there is not.
    *
-   * Because the shared API's org endpoints are cookie-authenticated but this
-   * method only receives a userId, we look up the user's sealed session cookie
-   * from the {@link userSessionCookies} cache populated by
-   * {@link verifySessionCookie}. If we have never seen a cookie for this user
-   * (e.g. bearer-token flow, or the cache was evicted), we skip bootstrap and
-   * return `undefined` — the caller keeps the user in their current no-org
-   * state and the next authenticated request retries.
+   * WHY THERE ARE TWO ANSWERS
    *
-   * Best-effort: any shared-API failure returns `undefined` rather than
-   * throwing, mirroring `MastraAuthWorkos.ensureOrganization`.
+   * The shared API's org endpoints are cookie-authenticated and this method
+   * receives only a userId, so the real bootstrap runs against the sealed
+   * session cookie last seen for that user in {@link userSessionCookies}
+   * (populated by {@link verifySessionCookie}). That is the browser flow, and
+   * it is unchanged: an existing org wins, a membership wins, and a user with
+   * neither gets a personal organization created on the shared API.
+   *
+   * A user this provider holds no cookie for used to get `undefined` on every
+   * request forever — the CLI/API-token flow, which authenticates through
+   * `verifyBearerToken` and never records a cookie, never got an organization
+   * bootstrapped at all. `undefined` is a value a host cannot store, so this
+   * now falls back to the same derived `user:${userId}` the Factory's own
+   * `resolveOrganizationId` already applies to a user with no organization
+   * (`mastracode/factory/src/auth.ts`): the partition those rows land in is the
+   * one they land in today, decided one layer earlier and reported honestly.
+   *
+   * The fallback covers a failed bootstrap for the same reason, which is the
+   * rule `withSyntheticOrganizations` states: a delegate that declines and one
+   * that fails are the same thing to a caller that needs a column value, and
+   * the derived id is the narrowest partition there is — one containing a
+   * single user.
+   *
+   * Never throws: a shared-API failure degrades to the derived id.
    */
   async ensureOrganization(userId: string): Promise<string | undefined> {
     // Dedupe concurrent bootstraps for the same user — otherwise parallel tabs
@@ -467,8 +583,8 @@ export class MastraAuthStudio
   private async doEnsureOrganization(userId: string): Promise<string | undefined> {
     const sessionCookie = this.userSessionCookies.get(userId);
     if (!sessionCookie) {
-      this.logger.debug('ensureOrganization: no cached session cookie for user; skipping bootstrap', { userId });
-      return undefined;
+      this.logger.debug('ensureOrganization: no cached session cookie for user; deriving a personal org', { userId });
+      return this.syntheticOrganizationId(userId);
     }
 
     try {
@@ -498,29 +614,55 @@ export class MastraAuthStudio
           status: res.status,
           userId,
         });
-        return undefined;
+        return this.syntheticOrganizationId(userId);
       }
 
       const data = (await res.json()) as { organization?: { id?: string } };
-      return data.organization?.id;
+      return data.organization?.id ?? this.syntheticOrganizationId(userId);
     } catch (error) {
       this.logger.error('ensureOrganization: fetch to shared API failed', {
         userId,
         error: error instanceof Error ? { message: error.message, stack: error.stack } : String(error),
       });
-      return undefined;
+      return this.syntheticOrganizationId(userId);
     }
+  }
+
+  /**
+   * The derived personal organization for a user, or `undefined` when the id
+   * names no user.
+   *
+   * Blank is the case worth stating: `user:` on its own is not one person's
+   * organization, it is an organization every user with a broken id would
+   * share. `undefined` is the honest answer there, and it is the one
+   * `IOrganizationsProvider` already documents for a user who stays no-org.
+   */
+  private syntheticOrganizationId(userId: string): string | undefined {
+    if (typeof userId !== 'string' || userId.trim() === '') return undefined;
+    return `${SYNTHETIC_ORGANIZATION_PREFIX}${userId}`;
   }
 
   /**
    * Whether the user holds an admin-equivalent role in the organization.
    *
-   * Fast path: if the org matches the user's currently-active session org, we
+   * Derived organizations are decided here and never asked of the shared API,
+   * in either direction: a user administers their own personal organization
+   * and nobody administers somebody else's. Asking the shared API about an id
+   * it has never issued could only produce a wrong answer, and one of the two
+   * wrong answers hands a user administrative rights over another user's data.
+   *
+   * Otherwise: if the org matches the user's currently-active session org, we
    * read the role directly from `/auth/me`. Cross-org path: we call
    * `/auth/orgs` (which returns per-membership roles) and look up the target
    * org. Any shared-API failure resolves to `false`.
    */
   async isOrganizationAdmin(organizationId: string, userId: string): Promise<boolean> {
+    if (typeof organizationId === 'string' && organizationId.startsWith(SYNTHETIC_ORGANIZATION_PREFIX)) {
+      // `syntheticOrganizationId` answers `undefined` for a blank user id, and
+      // `undefined === 'user:...'` is false, so a broken id administers nothing.
+      return organizationId === this.syntheticOrganizationId(userId);
+    }
+
     const sessionCookie = this.userSessionCookies.get(userId);
     if (!sessionCookie) return false;
 
@@ -563,6 +705,26 @@ export class MastraAuthStudio
       const oldest = this.userSessionCookies.keys().next().value;
       if (oldest !== undefined) this.userSessionCookies.delete(oldest);
     }
+  }
+
+  /** Record a locally minted session, evicting the oldest past the bound. */
+  private rememberLocalSession(session: Session): void {
+    this.localSessions.set(session.id, session);
+    if (this.localSessions.size > this.maxLocalSessions) {
+      const oldest = this.localSessions.keys().next().value;
+      if (oldest !== undefined) this.localSessions.delete(oldest);
+    }
+  }
+
+  /** A locally minted session, or `null` when there is none or it has expired. */
+  private readLocalSession(sessionId: string): Session | null {
+    const session = this.localSessions.get(sessionId);
+    if (!session) return null;
+    if (session.expiresAt.getTime() <= Date.now()) {
+      this.localSessions.delete(sessionId);
+      return null;
+    }
+    return session;
   }
 
   /** Cache key for a verified credential — hash, never the raw secret. */
@@ -620,8 +782,19 @@ export class MastraAuthStudio
   /**
    * Forward a sealed session cookie to the shared API's /auth/me endpoint
    * to validate it and get user info.
+   *
+   * @param options.throwOnFailure Surface *why* verification failed instead of
+   * answering `null`. Off by default, because the request paths that call this
+   * — `authenticateToken`, `getCurrentUser` — are asking a yes/no question on a
+   * public endpoint, where a rejection is an ordinary outcome and not an
+   * exception. {@link handleCallback} is the caller that needs the reason: it
+   * has to throw either way, and a throw with no cause tells its operator
+   * nothing.
    */
-  private async verifySessionCookie(sessionCookie: string): Promise<StudioUser | null> {
+  private async verifySessionCookie(
+    sessionCookie: string,
+    options?: { throwOnFailure?: boolean },
+  ): Promise<StudioUser | null> {
     const cacheKey = this.verificationKey('cookie', sessionCookie);
     const cached = this.getCachedVerification(cacheKey);
     if (cached) {
@@ -644,6 +817,9 @@ export class MastraAuthStudio
           statusText: res.statusText,
           url: `${this.sharedApiUrl}/auth/me`,
         });
+        if (options?.throwOnFailure) {
+          throw new Error(`Shared API GET /auth/me responded ${res.status} ${res.statusText}`.trim());
+        }
         return null;
       }
 
@@ -684,6 +860,10 @@ export class MastraAuthStudio
         url: `${this.sharedApiUrl}/auth/me`,
         error: error instanceof Error ? { message: error.message, stack: error.stack } : String(error),
       });
+      // Rethrown unchanged rather than wrapped, so the caller that asked for
+      // the reason gets the transport failure itself and can wrap it as its own
+      // `cause`.
+      if (options?.throwOnFailure) throw error;
       return null;
     }
   }

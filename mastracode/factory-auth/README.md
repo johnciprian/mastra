@@ -269,12 +269,16 @@ provider is not told it "rejected a state" about a call that threw for a missing
 
 Two checks, and between them they cover a gap in the guard you are probably relying on.
 
-`isUserProvider` tests `getCurrentUser` and stops. `IUserProvider` requires `getUser` as well — so a
-provider with one of the two required members passes the guard, and a host that writes
-`if (isUserProvider(auth)) auth.getUser(id)` compiles against a narrowed type and throws
-`auth.getUser is not a function` on a request. That is why `users/get-user` reports a missing
-`getUser` as a **failure** rather than skipping: the gate can only ask the guard, and gating on the
-member would skip exactly the provider the check is looking for.
+`isUserProvider` tests both members `IUserProvider` requires, so a provider carrying one of them
+fails the guard — and a host branching on it treats that provider as having no user directory at all,
+silently losing the half it did implement. Half an interface is a defect either way: before the guard
+was narrowed the cost was a run-time `auth.getUser is not a function` inside the host; now it is a
+capability that quietly disappears.
+
+That is why this section gates on carrying **either** member rather than on the guard, and why
+`users/get-user` and `users/current-user` each report their own member missing as a **failure**
+rather than skipping. Gating on the guard would skip exactly the provider these checks are looking
+for. A provider with neither member skips, because that is a decision rather than an unfinished job.
 
 `users/current-user` asks whether your two identity paths agree. It sends one request carrying every
 credential the suite holds — the bearer token, and your `cookieHeader` if you supplied one — and
