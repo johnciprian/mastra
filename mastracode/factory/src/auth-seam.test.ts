@@ -773,20 +773,22 @@ describe('identity resolution under the compat flag', () => {
     expect(on?.userId ?? null).toBe(v2);
   });
 
-  it('takes the org from the user half when the session names none, only under v2', async () => {
-    // A widening rather than a fix: a session that resolved as personal can now
-    // resolve into an organization the user does belong to. Worth stating on its
-    // own because it changes which org-scoped data a request can reach.
+  it('ignores the org on the user half when the session names none, under both readers', async () => {
+    // The payload P12 settled. The kit used to read `user.organizationId` here
+    // and resolve into org_u, which widened org scope under the flag: a session
+    // that resolved as personal reached an organization it had never activated.
+    // Membership is not activation, so the fallback was removed and both
+    // readers now resolve the private partition.
     const payload = { session: {}, user: { id: 'u1', organizationId: 'org_u' } };
 
-    // This provider does no organization bootstrap, so legacy never reads the
-    // org sitting on the user half. Since B12 the tenant still resolves an
-    // organization for that user — their own private one — rather than none.
+    // This provider does no organization bootstrap, so neither reader has an
+    // organization to use. Since B12 the tenant still resolves one for that
+    // user — their own private one — rather than none.
     const off = await tenantFor(await importAuthWith(undefined), payload);
     expect(off).toEqual({ userId: 'u1', orgId: 'user:u1' });
 
     const on = await tenantFor(await importAuthWith('true'), payload);
-    expect(on).toEqual({ userId: 'u1', orgId: 'org_u' });
+    expect(on).toEqual({ userId: 'u1', orgId: 'user:u1' });
   });
 
   it('lets a provider map its own payload through the kit escape hatch, under v2', async () => {

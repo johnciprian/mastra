@@ -194,9 +194,11 @@ written as state-of-the-world claims — "`RouteAuth` becomes the *only* identit
 "org-lessness stops 403ing" — with no notion of a dark launch. Worse, `tasks.json` `notes`
 says `B18` ("flip the compat flag on by default and soak") is "deliberately deferred by one
 release … not on the path to A−". That is the plan grading its own migration complete while
-it is off. The re-grade rejects that: **`B18` is on the path to A− for this seam**, and
-`P12` (settle the organization fallback) blocks it, because the fallback decides which
-organization's data a request can reach and the flag flips exactly one assertion about it.
+it is off. The re-grade rejects that: **`B18` is on the path to A− for this seam**. `P12`
+(settle the organization fallback) used to block it, because the fallback decided which
+organization's data a request could reach and the flag flipped exactly one assertion about
+it. `P12` is now **settled fail-closed and done**, so nothing about org scope stands between
+`B18` and the flag: the suite is identical with the flag on and off. See below.
 
 B rather than B− because the org-lessness and logout work is real, live and unflagged, and
 three of four bypasses are genuinely closed. B rather than A− because calling this A− would
@@ -434,34 +436,44 @@ holds. Each now carries a task.
   this. Nothing is broken; it is simply documented by no interface, which is why a fresh
   reader invented their own method for it. → **`P11`**
 
-### Unsettled: the organization fallback — decide before B18
+### Settled: the organization fallback — fail closed
 
-**This is a data-access boundary and it needs a human decision.** It does not block
-anything today: `MASTRACODE_AUTH_IDENTITY_V2` defaults off, and B18 (which turns it on) is
-deferred by one release. But it must be settled before that flag flips.
+**Decided, implemented, and no longer a gate on B18.** → **`P12`**, done.
 
-`toAuthIdentity` resolves a `{ session, user }` wrapper's organization from
-`session.activeOrganizationId`, **falling back to the `user` half's own
-`organizationId`** when the session names none. `mastracode/factory/src/workspace.test.ts`
-asserts the opposite: no active org on the session half means no org at all, and the
-request is refused.
+`toAuthIdentity` resolved a `{ session, user }` wrapper's organization from
+`session.activeOrganizationId`, **falling back to the `user` half's own `organizationId`**
+when the session named none. `mastracode/factory/src/workspace.test.ts` asserted the
+opposite, and it was the only assertion in 1,794 that the flag flipped.
 
-It is the only assertion in 1,794 that the flag flips, and both positions are defensible:
+**The fallback is removed.** A wrapper's organization now comes from the session and from
+nowhere else. A session that has activated no organization resolves to no organization, and
+`resolveOrganizationId` turns that into the user's private partition, `user:<id>` — the same
+answer any no-org caller gets.
 
-- **Refuse (shipped today).** The user has not chosen to act in that organization for this
-  session. Fail closed; this is also what a signed-in user sees before picking an org.
-- **Fall back (the kit).** The user does belong to that organization, and refusing a
-  request from someone with exactly one organization is a worse first-run experience.
+**Why this side won.** The `user` half's `organizationId` proves the user is a *member* of
+that organization. It does not prove this session was switched into it, and a session that
+never activated an organization must not reach that organization's shared data. Membership
+is not activation. Reading one as the other is a data leak; the reverse is not.
 
-The difference decides **which organization's data a request can reach**, so it is a
-product and security call rather than a fixture update. The test currently asserts shipped
-behaviour and records the conflict in place. → **`P12`**
+**The cost, stated rather than argued away.** A user who belongs to exactly one organization
+and has not switched into it sees their private partition rather than their team's. That is
+confusing, and it is the same thing a signed-in user sees before picking an organization. It
+is not a leak, which is why it is the side that lost the first-run argument and still won.
+Providers avoid it entirely by putting the active organization on the session when they mint
+it, which the [provider obligations](../../docs/src/content/en/docs/auth/provider-obligations.mdx)
+page now says explicitly.
 
-**The re-grade sharpens the framing above.** "It does not block anything today" is true
-only because the flag is off — and the flag being off is itself the backend seam's blocking
-gap, not a neutral fact. `B18` is on the A− path for that seam, whatever `tasks.json`
-`notes` says, so `P12` is not a someday item: it gates the flag, and the flag gates the
-grade.
+**A third implementation had already picked this side.** `resolveTenantFromRequestContext`
+in `mastracode/sdk/src/agents/credential-resolver.ts` reads a wrapper's org from the session
+half only, with a comment that the two parsers "cannot share code across the package
+boundary, so they must agree by rule". They did not agree; they do now. The removal closed a
+latent divergence rather than creating one.
+
+**Verified both ways.** The factory suite is **1881 passed | 6 skipped** with
+`MASTRACODE_AUTH_IDENTITY_V2` unset and **1881 passed | 6 skipped** with it `true` —
+identical, which is the real proof the conflict is gone. The kit is at 824 (823 plus one new
+assertion pinning the private-partition resolution). The conflict note in `workspace.test.ts`
+was rewritten to record the decision and its reasoning, not deleted.
 
 ### Blocked, not forgotten: B7's dependency removal
 

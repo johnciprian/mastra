@@ -1214,17 +1214,20 @@
     },
     {
       "id": "P12",
-      "status": "pending",
+      "status": "done",
       "title": "Settle the organization fallback",
       "lane": "B",
       "size": "S",
       "deps": [],
       "files": [
         "mastracode/factory/src/workspace.test.ts",
-        "mastracode/factory-auth/src/identity.ts"
+        "mastracode/factory-auth/src/identity.ts",
+        "mastracode/factory/src/auth-seam.test.ts",
+        "docs/src/content/en/docs/auth/provider-obligations.mdx"
       ],
-      "detail": "BLOCKS B18. This is a data-access boundary and it needs a human decision, not a fixture update. The kit's toAuthIdentity resolves a `{ session, user }` wrapper's organization from session.activeOrganizationId and falls back to the user half's own organizationId when the session names none. mastracode/factory/src/workspace.test.ts:742 asserts the opposite: no active org on the session half means no org at all, and the request is refused. It is the only assertion in the suite that MASTRACODE_AUTH_IDENTITY_V2 flips, and the test records the conflict in place rather than hiding it. Both positions are defensible - refuse, because the user has not chosen to act in that organization this session and that is what a signed-in user sees before picking one; or fall back, because the user does belong to it and refusing someone with exactly one organization is a poor first run. The difference decides which organization's data a request can reach, so it is a product and security call. Settle it, make both sides agree, and delete the conflict note.",
-      "doneWhen": "toAuthIdentity and workspace.test.ts agree, the decision and its reasoning are recorded, and no assertion changes behaviour when the flag flips."
+      "detail": "SETTLED FAIL-CLOSED, and it no longer blocks B18. The kit's toAuthIdentity used to resolve a `{ session, user }` wrapper's organization from session.activeOrganizationId and fall back to the user half's own organizationId when the session named none; mastracode/factory/src/workspace.test.ts asserted the opposite, and it was the only assertion in the suite that MASTRACODE_AUTH_IDENTITY_V2 flipped. The fallback is removed. A wrapper's organization now comes from the session and from nowhere else, and a session that has activated none resolves to the user's private partition via resolveOrganizationId - the same answer any no-org caller gets. Rationale: the user half's organizationId proves membership, not activation, and a session that never activated an organization must not reach that organization's shared data. Membership is not activation. The cost is accepted and stated in the code, the tests and the docs rather than hidden: a user who belongs to exactly one organization and has not switched into it sees their private partition instead of their team's, which is confusing but is not a data leak. The other direction is a leak, which is why it lost. A third implementation, resolveTenantFromRequestContext in mastracode/sdk, already read the wrapper this way and documented that the two parsers must agree by rule - so the removal closed a latent divergence rather than creating one. The conflict note in workspace.test.ts is rewritten to record the decision and its reasoning, not deleted.",
+      "doneWhen": "toAuthIdentity and workspace.test.ts agree, the decision and its reasoning are recorded, and no assertion changes behaviour when the flag flips.",
+      "notes": "Verified by running the factory suite under both flag states: 1881 passed with MASTRACODE_AUTH_IDENTITY_V2 unset and 1881 passed with it true, identical counts. factory-auth is at 824 (823 + one new assertion pinning the private-partition resolution)."
     },
     {
       "id": "P13",

@@ -203,6 +203,14 @@ Wrapping is still worth doing for a provider that has organizations. `ensureOrga
 
 On the host side, `resolveOrganizationId(identity)` answers the same question for code holding an identity rather than a provider. A declared `organizationId` always wins, and the return type is a plain `string`, so no caller has to write the branch that 403s.
 
+### Where a session-shaped payload's organization comes from
+
+If your `authenticateToken` returns a `{ session, user }` wrapper, `toAuthIdentity` takes the organization from `session.activeOrganizationId` and from nowhere else. An `organizationId` sitting on the `user` half is not read as a fallback.
+
+That's deliberate, and it's the one rule to know if your provider has organizations a person can belong to several of. `user.organizationId` says the person is a _member_ of that organization. It doesn't say this session was switched into it, and a session that never activated an organization must not reach that organization's shared data. Membership isn't activation.
+
+A session that names no active organization resolves to no organization, and `resolveOrganizationId` then returns the private partition `` `user:${userId}` ``, the same answer any caller without an organization gets. The cost is worth stating plainly: someone who belongs to exactly one organization and hasn't switched into it sees their private partition rather than their team's. Set the active organization on the session when you mint it and that case doesn't arise.
+
 ## When each obligation is enforced
 
 The [conformance suite](#check-your-work) skips a check only when a structural guard says the provider doesn't declare the capability that check is about. A check is never skipped because a provider declared a capability and then didn't deliver it.

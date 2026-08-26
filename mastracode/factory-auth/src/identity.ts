@@ -194,10 +194,18 @@ function asText(value: unknown): string | undefined {
 }
 
 /**
- * Read one flat object: an id under any of {@link ID_KEYS}, plus the optional
+ * Read one object: an id under any of {@link ID_KEYS}, plus the optional display
  * fields under their own names.
+ *
+ * The organization is a parameter rather than a field this function reads,
+ * which is deliberate. Where the organization comes from is the one thing that
+ * differs between the shapes below - a flat payload declares its own, a
+ * `{ session, user }` wrapper takes it from the session and from nowhere else -
+ * and making it an argument puts that decision at each call site, in the open,
+ * instead of behind a fallback chain in here that every caller inherits whether
+ * it wanted it or not.
  */
-function readFlat(record: Record<string, unknown>, organizationId?: string): AuthIdentity | null {
+function readFields(record: Record<string, unknown>, organizationId: string | undefined): AuthIdentity | null {
   let id: string | undefined;
   for (const key of ID_KEYS) {
     id = asId(record[key]);
@@ -210,8 +218,13 @@ function readFlat(record: Record<string, unknown>, organizationId?: string): Aut
     email: asText(record.email),
     name: asText(record.name),
     avatarUrl: asText(record.avatarUrl),
-    organizationId: organizationId ?? asId(record.organizationId),
+    organizationId,
   };
+}
+
+/** Read a payload that declares its own organization at the top level. */
+function readFlat(record: Record<string, unknown>): AuthIdentity | null {
+  return readFields(record, asId(record.organizationId));
 }
 
 /**
@@ -231,10 +244,29 @@ function readFlat(record: Record<string, unknown>, organizationId?: string): Aut
  *    id. Preferring the wrapper is what keeps the id and the organization from
  *    being read out of two different subjects.
  *
- *    The organization comes from `session.activeOrganizationId`, falling back to
- *    the `user` half. The session wins because it is the authenticated context:
- *    a user who belongs to three organizations is acting in exactly one of them
- *    for this request, and that is the one the session names.
+ *    The organization comes from `session.activeOrganizationId`, and from
+ *    nowhere else. The session is the authenticated context: a user who belongs
+ *    to three organizations is acting in exactly one of them for this request,
+ *    and that is the one the session names.
+ *
+ *    A session that names none resolves to no organization - the `user` half's
+ *    own `organizationId` is not read as a fallback. `./organizations` then
+ *    turns that absence into the user's private partition, `user:${id}`, which
+ *    is the same answer every no-org caller gets.
+ *
+ *    ACTIVATION IS NOT MEMBERSHIP, AND THE COST OF SAYING SO
+ *
+ *    The `user` half's `organizationId` says the user is a member of that
+ *    organization. It does not say this session was switched into it, and a
+ *    session that never activated an organization must not reach that
+ *    organization's shared data. Reading membership as activation is the
+ *    direction that leaks; this direction is not.
+ *
+ *    The cost is real and is accepted rather than hidden: a user who belongs to
+ *    exactly one organization and has not switched into it sees their private
+ *    partition instead of their team's. That is confusing, and it is what a
+ *    signed-in user sees before they pick an organization. It is not a data
+ *    leak, which is why it is the side that won.
  *
  *    Once the wrapper is recognized there is no fallthrough to step 2. If the
  *    `user` half names no one, the answer is `null` - reaching past it to the
@@ -298,9 +330,10 @@ export function toAuthIdentity(raw: unknown, provider?: unknown): AuthIdentity |
   const session = asRecord(record.session);
   const user = asRecord(record.user);
   if (session !== undefined && user !== undefined) {
-    // `readFlat` falls back to the `user` half's own `organizationId` when the
-    // session names none, which is the documented precedence.
-    return readFlat(user, asId(session[SESSION_ORGANIZATION_KEY]));
+    // The session names the organization, or nothing does. The `user` half's own
+    // `organizationId` is never consulted - see the note above on why activation
+    // is not membership.
+    return readFields(user, asId(session[SESSION_ORGANIZATION_KEY]));
   }
 
   return readFlat(record);

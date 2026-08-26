@@ -866,16 +866,27 @@ describe('GitHub session workspace preparation', () => {
     // user is never consulted for one. Refusing is the only safe answer, and it
     // is the answer a signed-in user gets before they pick an organization.
     //
-    // THIS INVARIANT AND THE KIT DISAGREE, AND IT IS NOT YET SETTLED.
-    // `toAuthIdentity` falls back to the `user` half's own `organizationId` when
-    // the session names none, so under MASTRACODE_AUTH_IDENTITY_V2 this resolves
-    // into org-1 instead of refusing, and this is the only assertion in the
-    // whole suite that the flag flips. The two positions are both defensible —
-    // the user does belong to that organization, but they have not chosen to act
-    // in it for this session — and the difference decides which org's data a
-    // request can reach. Left asserting the shipped behaviour on purpose: the
-    // flag defaults off, and reversing a deliberate refusal is a product call,
-    // not a fixture update. Settle it before the flag is turned on.
+    // P12 SETTLED THIS, AND IT SETTLED FAIL-CLOSED.
+    // The kit's `toAuthIdentity` used to fall back to the `user` half's own
+    // `organizationId` when the session named none, which made this the only
+    // assertion in the whole suite that MASTRACODE_AUTH_IDENTITY_V2 flipped:
+    // under the flag the same request resolved into org-1 instead of refusing.
+    // The fallback was removed, so both readers now take a wrapper's
+    // organization from `session.activeOrganizationId` and from nowhere else,
+    // and this assertion holds with the flag on and off alike.
+    //
+    // The reasoning, because the bare assertion does not carry it: the `user`
+    // half's `organizationId` says the user is a *member* of org-1. It does not
+    // say this session was switched into it, and a session that never activated
+    // an organization must not reach that organization's shared data.
+    // Membership is not activation. The identity resolves to no organization,
+    // and `resolveOrganizationId` turns that into the private partition
+    // `user:user-1`, the same answer every no-org caller gets.
+    //
+    // The cost was weighed and accepted rather than argued away: a user who
+    // belongs to exactly one organization and has not switched into it sees
+    // their private partition instead of their team's. That is confusing, and
+    // it is not a data leak. The other direction is, which is why it lost.
     //
     // B13 CHANGED WHICH REFUSAL FIRES, NOT WHETHER ONE DOES.
     // The caller here has an identity and no organization. That used to trip the
