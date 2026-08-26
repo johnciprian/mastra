@@ -293,8 +293,11 @@ export interface AuthDescriptorOverrides {
  * `features.logout` asks whether anything exists to sign out of, so it takes a
  * third guard as well: `isAuthHttpHandler` means the provider mounts its own
  * auth routes and therefore has a sign-out of its own, even where the kind is
- * `none`. A provider with `destroySession` can end a session too, and counts
- * here whether or not it satisfies the whole session interface.
+ * `none`. Two members count here on their own, whether or not the provider
+ * satisfies the whole session interface: `destroySession` ends the session
+ * server-side, and `getClearSessionHeaders` ends it in the browser - which is
+ * the member a hosted-login provider that mints its own cookie implements, and
+ * the one the Factory already reads structurally on sign-out.
  * `features.organizations` is `isOrganizationsProvider` directly.
  *
  * `features.refresh` and `features.sessionRevocation` are read off the two
@@ -336,12 +339,13 @@ export function toAuthDescriptor(
   const withMembers = provider as Partial<ISessionProvider>;
   const refresh = typeof withMembers.refreshSession === 'function';
   const sessionRevocation = typeof withMembers.destroySession === 'function';
+  const canClearSession = typeof withMembers.getClearSessionHeaders === 'function';
   const session = isSessionProvider(provider);
 
   return {
     signIn,
     features: {
-      logout: kind !== 'none' || session || sessionRevocation || isAuthHttpHandler(provider),
+      logout: kind !== 'none' || session || sessionRevocation || canClearSession || isAuthHttpHandler(provider),
       organizations: isOrganizationsProvider(provider),
       refresh,
       sessionRevocation,
