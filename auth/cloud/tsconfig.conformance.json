@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["src/**/*", "tsdown.config.ts"],
+  "exclude": ["node_modules", "**/*.test.ts"],
+  "files": ["src/conformance.test.ts"]
+}
