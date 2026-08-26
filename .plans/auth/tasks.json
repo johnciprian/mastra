@@ -537,7 +537,7 @@
     },
     {
       "id": "B13",
-      "status": "pending",
+      "status": "done",
       "title": "Remove the org-required throw in the workspace layer",
       "lane": "B",
       "size": "S",
@@ -552,7 +552,7 @@
     },
     {
       "id": "B14",
-      "status": "pending",
+      "status": "done",
       "title": "Migrate workspace.ts onto RouteAuth",
       "lane": "B",
       "size": "M",
@@ -567,7 +567,7 @@
     },
     {
       "id": "B15",
-      "status": "pending",
+      "status": "done",
       "title": "Migrate rules/binding-context.ts onto RouteAuth",
       "lane": "B",
       "size": "S",
@@ -582,7 +582,7 @@
     },
     {
       "id": "B16",
-      "status": "pending",
+      "status": "done",
       "title": "Migrate github/session-subscriptions.ts onto RouteAuth",
       "lane": "B",
       "size": "S",
@@ -597,7 +597,7 @@
     },
     {
       "id": "B17",
-      "status": "pending",
+      "status": "done",
       "title": "Backend exit-gate tests",
       "lane": "B",
       "size": "L",
@@ -668,7 +668,7 @@
     },
     {
       "id": "U2",
-      "status": "pending",
+      "status": "done",
       "title": "Server-side descriptor tests",
       "lane": "U",
       "size": "S",
