@@ -40,6 +40,16 @@
  * file already declares, which is how a guide adds methods without re-listing
  * the class. See {@link BlockMode}.
  *
+ * IMPORTS RESOLVE AGAINST BUILT PACKAGES, NOT AGAINST STAND-INS
+ *
+ * A documented `import` is only worth checking if it resolves to the same
+ * declarations a reader gets from npm. {@link CHECKED_PACKAGES} lists the
+ * workspace packages the examples may import, each mapped to its emitted
+ * `dist`; {@link VENDORED_PACKAGES} does the same for a third-party package,
+ * resolved through the workspace package that depends on it. A page reporting
+ * "cannot find module" for a real package needs a line in one of those, not an
+ * opt-out.
+ *
  * DIAGNOSTICS POINT AT THE MDX, NOT AT THE FIXTURE
  *
  * Every generated line remembers the `.mdx` file and line it came from, so a
@@ -69,53 +79,144 @@ const SCOPES = ['src/content/en/docs/auth', 'src/content/en/reference/auth']
  * Pages inside {@link SCOPES} that predate this check, with the reason each is
  * not checked yet. **Debt, not policy.**
  *
- * A page not listed here is checked. That is the property worth protecting: a
- * new auth page is covered the day it is added, and the only way to exclude one
- * is to add a line here, in a diff, with a reason a reviewer reads. Nothing
- * about the default is opt-in.
+ * **This map is empty, and that is the point.** Every page in scope is checked.
+ * It stays here because emptiness is the interesting state: a page can only
+ * leave the check by adding a line, in a diff, with a reason a reviewer reads.
+ * Nothing about the default is opt-in.
  *
- * Most entries need the same small thing: their examples are class-member
- * fragments written before `docscheck=member` existed, so they parse as
- * module-level source and fail on syntax rather than on any claim about the
- * contract. Annotating a page's fences and deleting its line here is a
- * self-contained change, and shrinking this map to empty is the follow-up this
- * script is meant to make possible.
+ * Adding a line is a last resort. A page whose examples import a package the
+ * check cannot resolve belongs in {@link CHECKED_PACKAGES} or
+ * {@link VENDORED_PACKAGES}; a block that is genuinely not compilable source -
+ * pseudocode, a bare signature - belongs behind `docscheck=skip` with its own
+ * reason, which excludes one block instead of a whole page.
  *
  * A listed page that no longer exists fails the run, so the map cannot rot.
  */
-const LEGACY_UNCHECKED: Readonly<Record<string, string>> = {
-  'src/content/en/docs/auth/composite-auth.mdx': 'class-member fragments predate docscheck=member',
-  'src/content/en/docs/auth/custom-auth-provider.mdx': 'class-member fragments predate docscheck=member',
-  'src/content/en/docs/auth/fga.mdx': 'examples reference packages the docs workspace does not install',
-  'src/content/en/docs/auth/jwt.mdx': 'examples reference packages the docs workspace does not install',
-  'src/content/en/docs/auth/simple-auth.mdx': 'examples reference packages the docs workspace does not install',
-  'src/content/en/docs/auth/workers.mdx': 'examples reference packages the docs workspace does not install',
-  'src/content/en/reference/auth/auth0.mdx': 'provider reference examples import unpublished vendor packages',
-  'src/content/en/reference/auth/better-auth.mdx': 'provider reference examples import unpublished vendor packages',
-  'src/content/en/reference/auth/clerk.mdx': 'provider reference examples import unpublished vendor packages',
-  'src/content/en/reference/auth/fga.mdx': 'provider reference examples import unpublished vendor packages',
-  'src/content/en/reference/auth/firebase.mdx': 'provider reference examples import unpublished vendor packages',
-  'src/content/en/reference/auth/google.mdx': 'provider reference examples import unpublished vendor packages',
-  'src/content/en/reference/auth/jwt.mdx': 'provider reference examples import unpublished vendor packages',
-  'src/content/en/reference/auth/okta.mdx': 'provider reference examples import unpublished vendor packages',
-  'src/content/en/reference/auth/supabase.mdx': 'provider reference examples import unpublished vendor packages',
-  'src/content/en/reference/auth/workos.mdx': 'provider reference examples import unpublished vendor packages',
-  'src/content/en/docs/auth/overview.mdx': 'no TypeScript examples; listed so the page is not silently added later',
-}
+const LEGACY_UNCHECKED: Readonly<Record<string, string>> = {}
 
 /** Where the generated fixtures land. Removed and rebuilt on every run. */
 const OUT_DIR = join(DOCS_ROOT, '.typecheck-examples')
 
+/** A workspace package the examples are allowed to import. */
+interface CheckedPackage {
+  /** The specifier a documented example writes. */
+  readonly name: string
+  /** Its `dist` directory, relative to the repository root. */
+  readonly dist: string
+  /** The turbo filter that produces that directory. */
+  readonly filter: string
+  /** A declaration file that exists only after a successful build. */
+  readonly proof: string
+  /**
+   * Where subpath imports resolve, as patterns under `dist`. The default suits
+   * a package whose `./x` entry point emits `dist/x/index.d.ts` or `dist/x.d.ts`.
+   */
+  readonly subpaths?: readonly string[]
+}
+
 /**
  * The emitted declarations the examples are checked against.
  *
- * Both are build outputs, so this script needs them present. `pnpm turbo build
- * --filter ./mastracode/factory-auth` produces both, and on a documentation-only
- * change every input to those two packages is unchanged, so a warm turbo cache
- * turns that command into a restore rather than a build.
+ * Every one is a build output, so this script needs it present. The workflow
+ * that runs this script builds them by filter, and on a documentation-only
+ * change every input to them is unchanged, so a warm turbo cache turns that
+ * command into a restore rather than a build.
+ *
+ * Adding a package here is how a page whose examples import it stops being
+ * legacy debt: the import resolves against what a reader installing the package
+ * actually gets, rather than against a hand-written stand-in that can drift.
+ * The examples are checked against emitted declarations rather than sources
+ * because checking through `packages/core/src` pulls core's whole tree into the
+ * program, reports core's own pre-existing diagnostics as documentation
+ * failures, and takes minutes.
+ *
+ * `.github/workflows/lint-docs.yml` builds this list. Keep the two in step.
  */
-const KIT_DIST = join(REPO_ROOT, 'mastracode', 'factory-auth', 'dist')
-const CORE_DIST = join(REPO_ROOT, 'packages', 'core', 'dist')
+const CHECKED_PACKAGES: readonly CheckedPackage[] = [
+  {
+    name: '@mastra/factory-auth',
+    dist: 'mastracode/factory-auth/dist',
+    filter: './mastracode/factory-auth',
+    proof: 'index.d.ts',
+  },
+  { name: '@mastra/core', dist: 'packages/core/dist', filter: './packages/core', proof: 'server/index.d.ts' },
+  { name: '@mastra/auth', dist: 'packages/auth/dist', filter: './packages/auth', proof: 'index.d.ts' },
+  {
+    name: '@mastra/client-js',
+    dist: 'client-sdks/client-js/dist',
+    filter: './client-sdks/client-js',
+    proof: 'index.d.ts',
+  },
+  {
+    name: '@mastra/server',
+    dist: 'packages/server/dist',
+    filter: './packages/server',
+    proof: 'index.d.ts',
+    subpaths: ['server/*/index.d.ts', 'server/*.d.ts', '*/index.d.ts', '*.d.ts'],
+  },
+  { name: '@mastra/auth-auth0', dist: 'auth/auth0/dist', filter: './auth/auth0', proof: 'index.d.ts' },
+  {
+    name: '@mastra/auth-better-auth',
+    dist: 'auth/better-auth/dist',
+    filter: './auth/better-auth',
+    proof: 'index.d.ts',
+  },
+  { name: '@mastra/auth-clerk', dist: 'auth/clerk/dist', filter: './auth/clerk', proof: 'index.d.ts' },
+  { name: '@mastra/auth-firebase', dist: 'auth/firebase/dist', filter: './auth/firebase', proof: 'index.d.ts' },
+  { name: '@mastra/auth-google', dist: 'auth/google/dist', filter: './auth/google', proof: 'index.d.ts' },
+  { name: '@mastra/auth-okta', dist: 'auth/okta/dist', filter: './auth/okta', proof: 'index.d.ts' },
+  { name: '@mastra/auth-supabase', dist: 'auth/supabase/dist', filter: './auth/supabase', proof: 'index.d.ts' },
+  { name: '@mastra/auth-workos', dist: 'auth/workos/dist', filter: './auth/workos', proof: 'index.d.ts' },
+]
+
+/**
+ * Third-party packages a documented example imports, resolved through the
+ * workspace package that depends on them.
+ *
+ * A provider reference page shows the vendor's own entry point next to the
+ * Mastra one, because that is what the reader writes. Installing a second copy
+ * into the documentation site would pin a version that can drift from the one
+ * the provider package is built against; resolving through that package's own
+ * `node_modules` checks the example against the version a reader installs
+ * alongside it.
+ *
+ * The mapping points at the package directory rather than at a file inside it,
+ * so the package's own `exports` map decides which declarations are used.
+ */
+interface VendoredPackage {
+  /** The specifier a documented example writes. */
+  readonly name: string
+  /** The workspace package that depends on it, relative to the repository root. */
+  readonly through: string
+}
+
+const VENDORED_PACKAGES: readonly VendoredPackage[] = [{ name: 'better-auth', through: 'auth/better-auth' }]
+
+const DEFAULT_SUBPATHS = ['*/index.d.ts', '*.d.ts'] as const
+
+function distDir(entry: CheckedPackage): string {
+  return join(REPO_ROOT, entry.dist)
+}
+
+function vendoredDir(entry: VendoredPackage): string {
+  return join(REPO_ROOT, entry.through, 'node_modules', entry.name)
+}
+
+/** The `compilerOptions.paths` the checked packages resolve through. */
+function packagePaths(): Record<string, string[]> {
+  const paths: Record<string, string[]> = {}
+  for (const entry of CHECKED_PACKAGES) {
+    const dist = distDir(entry)
+    paths[entry.name] = [join(dist, 'index.d.ts')]
+    paths[`${entry.name}/*`] = (entry.subpaths ?? DEFAULT_SUBPATHS).map(pattern => join(dist, pattern))
+  }
+  for (const entry of VENDORED_PACKAGES) {
+    const dir = vendoredDir(entry)
+    paths[entry.name] = [dir]
+    paths[`${entry.name}/*`] = [join(dir, '*')]
+  }
+  return paths
+}
 
 /** Fence languages this script treats as TypeScript. */
 const TS_LANGUAGES = new Set(['ts', 'typescript', 'tsx'])
@@ -149,6 +250,8 @@ interface Block {
   readonly reason: string | undefined
   /** Name of a file in `scripts/example-scaffolds` to compose this block into. */
   readonly scaffold: string | undefined
+  /** True for a `tsx` fence, so the composed file is written with a `.tsx` extension. */
+  readonly jsx: boolean
 }
 
 /** One generated line, and where in the documentation it came from. */
@@ -270,6 +373,7 @@ function parseBlocks(mdxPath: string): Block[] {
         mode,
         reason,
         scaffold: readMeta(meta, 'docscheck-scaffold'),
+        jsx: language === 'tsx',
       })
     }
 
@@ -286,8 +390,30 @@ function parseBlocks(mdxPath: string): Block[] {
 /** A virtual file under construction: emitted lines plus where each came from. */
 interface Fixture {
   readonly name: string
+  /** The fence `title` this file was built from, when the blocks carried one. */
+  readonly title: string | undefined
+  /**
+   * True when this file is a fragment composed into a scaffold rather than the
+   * file the page documents, so a relative import must not be pointed at it.
+   */
+  readonly scaffolded: boolean
   readonly lines: string[]
   readonly origins: (Origin | null)[]
+  /** True once any block in this file came from a `tsx` fence. */
+  jsx: boolean
+}
+
+/** The file name a fixture is written under. JSX only parses in a `.tsx` file. */
+function fixtureFileName(fixture: Fixture): string {
+  return `${fixture.name}.${fixture.jsx ? 'tsx' : 'ts'}`
+}
+
+/** A quoted relative module specifier, such as `'./auth-provider'` or `'../lib/client'`. */
+const RELATIVE_SPECIFIER = /(['"])((?:\.\.?\/)+[A-Za-z0-9._/-]+)\1/g
+
+/** The file name a path refers to, without directories or extension. */
+function moduleBaseName(path: string): string {
+  return path.replace(/^.*\//, '').replace(/\.[cm]?tsx?$/, '')
 }
 
 function push(fixture: Fixture, text: string, origin: Origin | null): void {
@@ -387,10 +513,25 @@ function loadScaffold(name: string, block: Block): string {
   }
 }
 
+/**
+ * A page's identity inside the flat fixture directory.
+ *
+ * The route rather than the file name, because `docs/auth/jwt.mdx` and
+ * `reference/auth/jwt.mdx` are two different pages: keying on the base name
+ * alone merged their fixtures and reported each page's declarations as
+ * duplicates of the other's.
+ */
+function pageKeyFor(mdxPath: string): string {
+  return mdxPath
+    .replace(/^.*\/content\/en\//, '')
+    .replace(/\.mdx$/, '')
+    .replace(/[^A-Za-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+}
+
 function fixtureNameFor(mdxPath: string, title: string | undefined, fallback: number): string {
-  const page = mdxPath.replace(/^.*\/([^/]+)\.mdx$/, '$1')
   const base = title === undefined ? `block-${fallback}` : title.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '')
-  return `${page}__${base}`
+  return `${pageKeyFor(mdxPath)}__${base}`
 }
 
 function buildFixtures(blocks: Block[]): Map<string, Fixture> {
@@ -417,7 +558,14 @@ function buildFixtures(blocks: Block[]): Map<string, Fixture> {
       generations.set(name, generation)
       key = generation === 0 ? name : `${name}--${generation}`
       current.set(name, key)
-      const fresh: Fixture = { name: key, lines: [], origins: [] }
+      const fresh: Fixture = {
+        name: key,
+        title: block.title,
+        scaffolded: scaffold !== undefined,
+        lines: [],
+        origins: [],
+        jsx: false,
+      }
       if (scaffold !== undefined) {
         for (const text of loadScaffold(scaffold, block).split('\n')) push(fresh, text, null)
       }
@@ -425,6 +573,7 @@ function buildFixtures(blocks: Block[]): Map<string, Fixture> {
     }
 
     const fixture = fixtures.get(key)!
+    if (block.jsx) fixture.jsx = true
 
     if (block.mode === 'member') {
       const close = lastClassClose(fixture)
@@ -506,18 +655,9 @@ const TSCONFIG = {
     types: ['node'],
     resolveJsonModule: true,
     jsx: 'react-jsx',
-    // Resolved against the built packages rather than their sources. Checking
-    // through `packages/core/src` pulls core's whole tree into the program,
-    // which reports core's own pre-existing diagnostics as documentation
-    // failures and takes minutes. The emitted declarations are what a reader
-    // installing these packages actually gets, so they are also the honest
-    // thing to check a documented import against.
-    paths: {
-      '@mastra/factory-auth': [`${KIT_DIST}/index.d.ts`],
-      '@mastra/factory-auth/*': [`${KIT_DIST}/*.d.ts`, `${KIT_DIST}/*/index.d.ts`],
-      '@mastra/core': [`${CORE_DIST}/index.d.ts`],
-      '@mastra/core/*': [`${CORE_DIST}/*/index.d.ts`, `${CORE_DIST}/*.d.ts`],
-    },
+    // Resolved against the built packages rather than their sources. See
+    // {@link CHECKED_PACKAGES}.
+    paths: packagePaths(),
   },
   include: ['*.ts', '*.tsx'],
 }
@@ -575,12 +715,9 @@ function report(diagnostics: Diagnostic[], origins: Map<string, (Origin | null)[
  * been built, rather than reporting a documented import as missing.
  */
 function requireBuiltPackages(): void {
-  const missing = [
-    { path: join(KIT_DIST, 'index.d.ts'), name: '@mastra/factory-auth' },
-    { path: join(CORE_DIST, 'server', 'index.d.ts'), name: '@mastra/core' },
-  ].filter(entry => {
+  const missing = CHECKED_PACKAGES.filter(entry => {
     try {
-      statSync(entry.path)
+      statSync(join(distDir(entry), entry.proof))
       return false
     } catch {
       return true
@@ -591,16 +728,41 @@ function requireBuiltPackages(): void {
 
   throw new DocsExampleError(
     'typecheck-examples: the examples are checked against emitted declarations, and these are not built:\n' +
-      missing.map(entry => `  ${entry.name} (expected ${relative(REPO_ROOT, entry.path)})`).join('\n') +
+      missing.map(entry => `  ${entry.name} (expected ${entry.dist}/${entry.proof})`).join('\n') +
       '\n\nBuild them from the repository root:\n' +
-      '  pnpm turbo build --filter ./mastracode/factory-auth\n\n' +
+      `  pnpm turbo build ${CHECKED_PACKAGES.map(entry => `--filter ${entry.filter}`).join(' ')}\n\n` +
       'Reporting this as a build problem rather than as a missing module keeps a stale checkout from ' +
       'looking like a documentation defect.',
   )
 }
 
+/**
+ * Fail early and specifically when a vendored dependency has not been installed,
+ * for the same reason: a missing `node_modules` is not a documentation defect.
+ */
+function requireVendoredPackages(): void {
+  const missing = VENDORED_PACKAGES.filter(entry => {
+    try {
+      statSync(join(vendoredDir(entry), 'package.json'))
+      return false
+    } catch {
+      return true
+    }
+  })
+
+  if (missing.length === 0) return
+
+  throw new DocsExampleError(
+    'typecheck-examples: the examples import these third-party packages through the workspace package ' +
+      'that depends on each, and they are not installed:\n' +
+      missing.map(entry => `  ${entry.name} (expected ${entry.through}/node_modules/${entry.name})`).join('\n') +
+      '\n\nRun pnpm install from the repository root.',
+  )
+}
+
 function main(): number {
   requireBuiltPackages()
+  requireVendoredPackages()
   const mdxFiles = discover()
   const blocks = mdxFiles.flatMap(parseBlocks)
   const checked = blocks.filter(block => block.mode !== 'skip')
@@ -625,27 +787,30 @@ function main(): number {
     if (entry.endsWith('.ts')) writeFileSync(join(OUT_DIR, entry), readFileSync(join(SCAFFOLD_DIR, entry), 'utf8'))
   }
 
-  // A page's examples import each other by relative path (`./auth-provider`).
-  // Point those at the composed fixture the same page built under that title,
-  // so a conformance example is checked against the provider the page actually
-  // documented rather than against a stand-in that can drift from it.
+  // A page's examples import each other by relative path (`./auth-provider`, or
+  // `../../lib/mastra-client` from a component). Point those at the composed
+  // fixture the same page built under that file name, so a conformance example
+  // is checked against the provider the page actually documented rather than
+  // against a stand-in that can drift from it. Everything lands in one flat
+  // directory, so only the file name can carry the link, not the directories
+  // above it.
   const byPageAndModule = new Map<string, string>()
   for (const fixture of fixtures.values()) {
-    const match = /^(.+?)__src-(.+?)-ts(?:--\d+)?$/.exec(fixture.name)
-    if (match === null) continue
-    byPageAndModule.set(`${match[1]}::${match[2]}`, fixture.name)
+    if (fixture.title === undefined || fixture.scaffolded) continue
+    const page = /^(.+?)__/.exec(fixture.name)?.[1] ?? ''
+    byPageAndModule.set(`${page}::${moduleBaseName(fixture.title)}`, fixture.name)
   }
 
   const origins = new Map<string, (Origin | null)[]>()
   for (const fixture of fixtures.values()) {
     const page = /^(.+?)__/.exec(fixture.name)?.[1] ?? ''
     const resolved = fixture.lines.map(line =>
-      line.replace(/(['"])\.\/([A-Za-z0-9-]+)\1/g, (whole, quote: string, module: string) => {
-        const target = byPageAndModule.get(`${page}::${module}`)
+      line.replace(RELATIVE_SPECIFIER, (whole, quote: string, specifier: string) => {
+        const target = byPageAndModule.get(`${page}::${moduleBaseName(specifier)}`)
         return target === undefined || target === fixture.name ? whole : `${quote}./${target}${quote}`
       }),
     )
-    const fileName = `${fixture.name}.ts`
+    const fileName = fixtureFileName(fixture)
     writeFileSync(join(OUT_DIR, fileName), `${resolved.join('\n')}\n`, 'utf8')
     origins.set(fileName, fixture.origins)
   }

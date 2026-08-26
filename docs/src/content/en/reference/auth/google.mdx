@@ -195,7 +195,7 @@ After authentication, `authorizeUser` checks that the user has a valid Google us
 
 Authenticates a Google ID token. When SSO is enabled, this method checks the encrypted session cookie before it verifies the Bearer token.
 
-```typescript
+```typescript docscheck=statements docscheck-scaffold=google-reference
 const user = await auth.authenticateToken(idToken, request)
 ```
 
@@ -205,7 +205,7 @@ Returns: `Promise<GoogleUser | null>`
 
 Returns the authenticated user from a session cookie or Bearer Google ID token.
 
-```typescript
+```typescript docscheck=statements docscheck-scaffold=google-reference
 const user = await auth.getCurrentUser(request)
 ```
 
@@ -215,7 +215,7 @@ Returns: `Promise<GoogleUser | null>`
 
 Returns `true` when the user has an ID, hasn't expired, and matches `allowedDomains` when domains are configured.
 
-```typescript
+```typescript docscheck=statements docscheck-scaffold=google-reference
 const allowed = auth.authorizeUser(user)
 ```
 
@@ -225,7 +225,7 @@ Returns: `boolean`
 
 Returns `null`. Google ID tokens are verified directly, so this provider doesn't perform user lookup by ID.
 
-```typescript
+```typescript docscheck=statements docscheck-scaffold=google-reference
 const user = await auth.getUser(userId)
 ```
 
@@ -306,7 +306,7 @@ RBAC requires a valid Enterprise Edition license. It works without a license in 
 
 Use `MastraRBACGoogle` alongside an auth provider by passing it to the `rbac` option:
 
-```typescript title="src/mastra/index.ts"
+```typescript title="src/mastra/index.ts" docscheck=replace
 import { Mastra } from '@mastra/core'
 import { MastraAuthGoogle, MastraRBACGoogle } from '@mastra/auth-google'
 
@@ -330,9 +330,9 @@ export const mastra = new Mastra({
 })
 ```
 
-To use Google Workspace RBAC with a different auth provider, pass a `getUserKey` function to resolve the Google Directory API user key from the other provider's user object:
+To use Google Workspace RBAC with a different auth provider, pass a `getUserKey` function to resolve the Google Directory API user key from the other provider's user object. `getUserKey` receives `unknown`, because the user shape belongs to whichever provider authenticated the request, so narrow it to the shape that provider returns:
 
-```typescript title="src/mastra/index.ts"
+```typescript title="src/mastra/index.ts" docscheck=replace
 import { Mastra } from '@mastra/core'
 import { MastraAuthAuth0 } from '@mastra/auth-auth0'
 import { MastraRBACGoogle } from '@mastra/auth-google'
@@ -341,7 +341,7 @@ export const mastra = new Mastra({
   server: {
     auth: new MastraAuthAuth0(),
     rbac: new MastraRBACGoogle({
-      getUserKey: user => user.email,
+      getUserKey: user => (user as { email?: string }).email,
       serviceAccount: {
         clientEmail: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL!,
         privateKey: process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY!,
@@ -470,7 +470,7 @@ export const mastra = new Mastra({
 
 Returns Google Workspace group role IDs for a user.
 
-```typescript
+```typescript docscheck=statements docscheck-scaffold=google-reference
 const roles = await rbac.getRoles(user)
 ```
 
@@ -480,7 +480,7 @@ Returns: `Promise<string[]>`
 
 Returns Mastra permissions resolved from Google Workspace groups and `roleMapping`.
 
-```typescript
+```typescript docscheck=statements docscheck-scaffold=google-reference
 const permissions = await rbac.getPermissions(user)
 ```
 
@@ -490,7 +490,7 @@ Returns: `Promise<string[]>`
 
 Checks whether a user has a permission.
 
-```typescript
+```typescript docscheck=statements docscheck-scaffold=google-reference
 const canReadAgents = await rbac.hasPermission(user, 'agents:read')
 ```
 
@@ -500,7 +500,7 @@ Returns: `Promise<boolean>`
 
 Checks whether a user resolved to a specific Google Workspace group role.
 
-```typescript
+```typescript docscheck=statements docscheck-scaffold=google-reference
 const isAdmin = await rbac.hasRole(user, 'admins@example.com')
 ```
 
@@ -510,7 +510,7 @@ Returns: `Promise<boolean>`
 
 Checks whether a user has every requested permission.
 
-```typescript
+```typescript docscheck=statements docscheck-scaffold=google-reference
 const canManageAgents = await rbac.hasAllPermissions(user, ['agents:read', 'agents:update'])
 ```
 
@@ -520,7 +520,7 @@ Returns: `Promise<boolean>`
 
 Checks whether a user has at least one requested permission.
 
-```typescript
+```typescript docscheck=statements docscheck-scaffold=google-reference
 const canReadSomething = await rbac.hasAnyPermission(user, ['agents:read', 'workflows:read'])
 ```
 
@@ -530,7 +530,7 @@ Returns: `Promise<boolean>`
 
 Returns the role IDs configured in `roleMapping`, excluding `_default`.
 
-```typescript
+```typescript docscheck=statements docscheck-scaffold=google-reference
 const roles = await rbac.getAvailableRoles()
 ```
 
@@ -540,7 +540,7 @@ Returns: `Promise<{ id: string; name: string }[]>`
 
 Returns the permissions configured for a role ID.
 
-```typescript
+```typescript docscheck=statements docscheck-scaffold=google-reference
 const permissions = await rbac.getPermissionsForRole('engineering@example.com')
 ```
 
@@ -550,7 +550,7 @@ Returns: `Promise<string[]>`
 
 Clears all cached Google Workspace group lookups.
 
-```typescript
+```typescript docscheck=statements docscheck-scaffold=google-reference
 rbac.clearCache()
 ```
 
@@ -560,7 +560,7 @@ Returns: `void`
 
 Clears the cached group lookup for one Directory API user key, such as an email address.
 
-```typescript
+```typescript docscheck=statements docscheck-scaffold=google-reference
 rbac.clearUserCache('user@example.com')
 ```
 
@@ -570,7 +570,7 @@ Returns: `void`
 
 Returns the current group lookup cache size and maximum size.
 
-```typescript
+```typescript docscheck=statements docscheck-scaffold=google-reference
 const stats = rbac.getCacheStats()
 ```
 

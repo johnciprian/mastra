@@ -43,8 +43,11 @@ jobs:
           # The example type-check also has to run when the contract those
           # examples import changes. A rename in the kit breaks the guide
           # without touching a single file under docs/, and that is precisely
-          # the drift this check exists to catch.
-          if echo "$CHANGED" | grep -qE '^docs/|^mastracode/factory-auth/|^packages/core/src/server/|^packages/_internals/auth/|^\.github/workflows/lint-docs\.yml$'; then
+          # the drift this check exists to catch. The list mirrors
+          # CHECKED_PACKAGES in docs/scripts/typecheck-examples.ts; auth/ is
+          # matched whole rather than provider by provider, so a new provider
+          # package is covered without editing this regex.
+          if echo "$CHANGED" | grep -qE '^docs/|^mastracode/factory-auth/|^packages/core/src/server/|^packages/_internals/auth/|^packages/auth/src/|^packages/server/src/|^client-sdks/client-js/src/|^auth/|^\.github/workflows/lint-docs\.yml$'; then
             echo "examples=true" >> $GITHUB_OUTPUT
           else
             echo "examples=false" >> $GITHUB_OUTPUT
@@ -218,8 +221,9 @@ jobs:
     timeout-minutes: 20
     env:
       # Same cache the Prebuild workflow populates. On a documentation-only
-      # change every input to @mastra/core and @mastra/factory-auth is
-      # unchanged, so this restores rather than builds.
+      # change every input to the packages the examples import is unchanged, so
+      # this restores rather than builds. The list is BUILT_PACKAGES in
+      # docs/scripts/typecheck-examples.ts; keep the two in step.
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ secrets.TURBO_TEAM }}
       TURBO_CACHE: ${{ secrets.TURBO_TOKEN == '' && 'local:rw' || 'remote:rw' }}
@@ -243,7 +247,21 @@ jobs:
             turbo-${{ runner.os }}-
 
       - name: Build the packages the examples import
-        run: pnpm turbo build --filter ./mastracode/factory-auth
+        run: >-
+          pnpm turbo build
+          --filter ./mastracode/factory-auth
+          --filter ./packages/core
+          --filter ./packages/auth
+          --filter ./client-sdks/client-js
+          --filter ./packages/server
+          --filter ./auth/auth0
+          --filter ./auth/better-auth
+          --filter ./auth/clerk
+          --filter ./auth/firebase
+          --filter ./auth/google
+          --filter ./auth/okta
+          --filter ./auth/supabase
+          --filter ./auth/workos
 
       - name: Type-check documented examples
         working-directory: ./docs
