@@ -1583,3 +1583,270 @@ describe('/auth/me descriptor, against the kit fakes', () => {
     expect(body.auth).toBeDefined();
   });
 });
+
+/**
+ * B17 — BACKEND EXIT GATE.
+ *
+ * Everything here runs with `MASTRACODE_AUTH_IDENTITY_V2` ON, which is the
+ * state the lane is trying to reach. The suites above mostly assert the shipped
+ * default; this one asserts the destination, so the two together say what the
+ * flag actually switches.
+ *
+ * It is a gate rather than a coverage pass, so every case drives a real
+ * `app.request()` through `mountFactoryAuth` and asserts an HTTP outcome. A test
+ * that calls an exported helper directly can keep passing while the wiring that
+ * reaches it rots; the point of a gate is to fail when the seam regresses, not
+ * when a function does.
+ *
+ * The five it exists for:
+ *
+ *   1. a cookie-only request authenticates through the gate — the browser path,
+ *      which nothing covered before;
+ *   2. a `{ uid }`-shaped provider authenticates end to end;
+ *   3. a provider with no organizations reaches the board without a 403;
+ *   4. each capability branch — SSO, http-handler, neither — drives real
+ *      responses rather than a route-table assertion;
+ *   5. the `{ session, tokens }` callback branch, which neither host asserted.
+ */
+describe('BACKEND EXIT GATE (flag ON)', () => {
+  const SECRET = 'g'.repeat(32);
+
+  /** The auth module, loaded with the flag and the cookie secret set. */
+  async function gateAuth(): Promise<typeof import('./auth.js')> {
+    process.env.MASTRACODE_AUTH_IDENTITY_V2 = 'true';
+    process.env.MASTRACODE_AUTH_SESSION_SECRET = SECRET;
+    vi.resetModules();
+    return import('./auth.js');
+  }
+
+  afterEach(() => {
+    delete process.env.MASTRACODE_AUTH_IDENTITY_V2;
+    delete process.env.MASTRACODE_AUTH_SESSION_SECRET;
+    vi.resetModules();
+  });
+
+  /** A gated app with a protected board route that reports the tenant. */
+  function board(auth: typeof import('./auth.js'), provider: IMastraAuthProvider): Hono {
+    const app = new Hono();
+    auth.mountFactoryAuth(app, { provider });
+    app.get('/web/board', c => c.json({ ok: true, tenant: auth.factoryAuthTenant(c) ?? null }));
+    return app;
+  }
+
+  const json = { Accept: 'application/json' };
+
+  it('1. authenticates a cookie-only request, with no Authorization header', async () => {
+    // A browser navigation sends no Authorization header. The provider reads the
+    // Cookie header itself, which the empty token is its documented signal to
+    // do. Nothing exercised this path before: every gate test sent a bearer.
+    const auth = await gateAuth();
+    const authenticateToken = vi.fn(async (token: string, request: Request) => {
+      if (token) return null;
+      const cookie = request.headers.get('cookie') ?? '';
+      return /(?:^|;\s*)provider_session=good\b/.test(cookie) ? { id: 'u-cookie', organizationId: 'org_a' } : null;
+    });
+    const app = board(auth, fakeProvider({ authenticateToken }));
+
+    const ok = await app.request('/web/board', { headers: { ...json, Cookie: 'provider_session=good' } });
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ ok: true, tenant: { orgId: 'org_a', userId: 'u-cookie' } });
+
+    // And the negative, so the assertion above is about the cookie and not
+    // about a provider that says yes to everything.
+    const denied = await app.request('/web/board', { headers: { ...json, Cookie: 'provider_session=stale' } });
+    expect(denied.status).toBe(401);
+  });
+
+  it('1b. authenticates a cookie-only request against the host-minted session cookie', async () => {
+    // The other cookie source: the host mints and reads its own signed cookie,
+    // so the token reaches the provider as an argument.
+    const auth = await gateAuth();
+    const provider = fakeProvider({
+      ...ssoCapability({
+        handleCallback: vi.fn(async () => ({ user: { id: 'u-host' }, tokens: { accessToken: 'host-token' } })),
+      }),
+      createSession: vi.fn(async () => ({ id: 'sess' })),
+      validateSession: vi.fn(),
+      getSessionHeaders: vi.fn(() => ({ 'Set-Cookie': 'ignored=1' })),
+      authenticateToken: vi.fn(async (token: string) => (token === 'host-token' ? { id: 'u-host' } : null)),
+    });
+    const app = board(auth, provider);
+
+    const callback = await app.request('/auth/callback?code=ok&state=id%7C%2F');
+    const session = callback.headers.getSetCookie().find(c => c.startsWith('__Host-mastra_factory_session='))!;
+    expect(session).toBeDefined();
+
+    const res = await app.request('/web/board', { headers: { ...json, Cookie: session.split(';')[0]! } });
+    expect(res.status).toBe(200);
+    expect((await res.json()).tenant.userId).toBe('u-host');
+  });
+
+  it('2. authenticates a { uid }-shaped provider end to end', async () => {
+    // Firebase names its id `uid`. Before the kit this authenticated as nobody
+    // and then failed somewhere unrelated with a message about state.
+    const auth = await gateAuth();
+    const app = board(auth, fakeProvider({ authenticateToken: vi.fn(async () => ({ uid: 'fb-1' })) }));
+
+    const res = await app.request('/web/board', { headers: { ...json, Authorization: 'Bearer t' } });
+    expect(res.status).toBe(200);
+    expect((await res.json()).tenant.userId).toBe('fb-1');
+  });
+
+  it('2b. authenticates a { sub }-shaped provider end to end', async () => {
+    // Raw OIDC claims. Same story as `uid`.
+    const auth = await gateAuth();
+    const app = board(auth, fakeProvider({ authenticateToken: vi.fn(async () => ({ sub: 'oidc-1' })) }));
+
+    const res = await app.request('/web/board', { headers: { ...json, Authorization: 'Bearer t' } });
+    expect(res.status).toBe(200);
+    expect((await res.json()).tenant.userId).toBe('oidc-1');
+  });
+
+  it('3. lets a provider with no organizations reach the board', async () => {
+    // Every org-gated route used to refuse this user with a 403 that reads as
+    // "not allowed". They now act inside a private organization of their own.
+    const auth = await gateAuth();
+    const app = board(auth, fakeProvider({ authenticateToken: vi.fn(async () => ({ id: 'solo' })) }));
+
+    const res = await app.request('/web/board', { headers: { ...json, Authorization: 'Bearer t' } });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, tenant: { orgId: 'user:solo', userId: 'solo' } });
+  });
+
+  it('3b. keeps two organization-less users apart', async () => {
+    // The property that makes case 3 a fix rather than a leak.
+    const auth = await gateAuth();
+    const first = board(auth, fakeProvider({ authenticateToken: vi.fn(async () => ({ id: 'a' })) }));
+    const second = board(auth, fakeProvider({ authenticateToken: vi.fn(async () => ({ id: 'b' })) }));
+
+    const one = await (await first.request('/web/board', { headers: { ...json, Authorization: 'Bearer t' } })).json();
+    const two = await (await second.request('/web/board', { headers: { ...json, Authorization: 'Bearer t' } })).json();
+    expect(one.tenant.orgId).not.toBe(two.tenant.orgId);
+  });
+
+  describe('4. every capability branch drives real responses', () => {
+    it('SSO: login redirects to the provider and the gate stays open on /auth/*', async () => {
+      const auth = await gateAuth();
+      const app = board(auth, fakeProvider(ssoCapability()));
+
+      const login = await app.request('/auth/login?returnTo=%2Fdash');
+      expect(login.status).toBe(302);
+      expect(login.headers.get('location')).toBe('https://fake.example/login');
+
+      const logout = await app.request('/auth/logout', { method: 'POST' });
+      expect(logout.status).toBe(302);
+
+      // An SSO provider serves no /auth/api/* surface.
+      expect((await app.request('/auth/api/anything', { method: 'POST' })).status).toBe(404);
+    });
+
+    it('http-handler: /auth/api/* is proxied and login goes to the SPA form', async () => {
+      const auth = await gateAuth();
+      const handleAuthRequest = vi.fn(async () => new Response('handled', { status: 200 }));
+      const app = board(auth, fakeProvider(httpHandlerCapability({ handleAuthRequest })));
+
+      const proxied = await app.request('/auth/api/sign-in/email', { method: 'POST' });
+      expect(proxied.status).toBe(200);
+      expect(await proxied.text()).toBe('handled');
+
+      const login = await app.request('/auth/login?returnTo=%2Fchat');
+      expect(login.status).toBe(302);
+      expect(login.headers.get('location')).toBe('/signin?returnTo=%2Fchat');
+    });
+
+    it('neither: only /auth/me is served, and the gate still protects the app', async () => {
+      const auth = await gateAuth();
+      const app = board(auth, fakeProvider({ authenticateToken: vi.fn(async () => null) }));
+
+      const me = await app.request('/auth/me');
+      expect(me.status).toBe(200);
+      expect((await me.json()).auth.signIn.kind).toBe('none');
+
+      // No hosted login exists to redirect to, and the app is still gated.
+      expect((await app.request('/auth/login')).status).toBe(404);
+      expect((await app.request('/web/board', { headers: json })).status).toBe(401);
+    });
+  });
+
+  it('5. completes the { session, tokens } callback branch', async () => {
+    // The branch neither host asserted: a provider that returns tokens but no
+    // cookies, leaving the session for the host to create and the cookie for
+    // the host to mint.
+    const auth = await gateAuth();
+    const createSession = vi.fn(async () => ({ id: 'sess-1' }));
+    const provider = fakeProvider({
+      ...ssoCapability({
+        handleCallback: vi.fn(async () => ({
+          user: { id: 'u-1', organizationId: 'org_a' },
+          tokens: { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: 123 },
+        })),
+      }),
+      createSession,
+      validateSession: vi.fn(),
+      getSessionHeaders: vi.fn(() => ({ 'Set-Cookie': 'provider=1' })),
+    });
+    const app = board(auth, provider);
+
+    const res = await app.request('/auth/callback?code=ok&state=id%7C%2Fdash');
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('/dash');
+    // The provider's session record is created from the tokens it returned,
+    // carrying the org so a later validate resolves the same tenant.
+    expect(createSession).toHaveBeenCalledWith('u-1', {
+      accessToken: 'access-1',
+      refreshToken: 'refresh-1',
+      expiresAt: 123,
+      organizationId: 'org_a',
+    });
+    // And the host mints the cookie, rather than the provider's headers landing.
+    const cookies = res.headers.getSetCookie();
+    expect(cookies.some(c => c.startsWith('__Host-mastra_factory_session='))).toBe(true);
+    expect(cookies.some(c => c.startsWith('provider='))).toBe(false);
+  });
+
+  /**
+   * The B3 differential table, re-run with the flag ON against real HTTP.
+   *
+   * The table in `identity resolution under the compat flag` compares the two
+   * readers; this asserts what the destination state actually serves, so a
+   * regression in identity resolution fails the gate rather than only the
+   * comparison.
+   */
+  describe('identity shapes, end to end', () => {
+    it.each([
+      { what: 'a flat id', payload: { id: 'u1' }, userId: 'u1' },
+      { what: 'a Firebase uid', payload: { uid: 'fb1' }, userId: 'fb1' },
+      { what: 'raw OIDC claims', payload: { sub: 'oidc1' }, userId: 'oidc1' },
+      { what: 'uid winning over sub', payload: { uid: 'fb1', sub: 'oidc1' }, userId: 'fb1' },
+      { what: 'id winning over both', payload: { id: 'i1', uid: 'fb1', sub: 'oidc1' }, userId: 'i1' },
+      { what: 'a numeric id', payload: { id: 7 }, userId: '7' },
+      {
+        what: 'a session wrapper',
+        payload: { session: { activeOrganizationId: 'o' }, user: { id: 'u1' } },
+        userId: 'u1',
+      },
+    ])('authenticates $what', async ({ payload, userId }) => {
+      const auth = await gateAuth();
+      const app = board(auth, fakeProvider({ authenticateToken: vi.fn(async () => payload) }));
+
+      const res = await app.request('/web/board', { headers: { ...json, Authorization: 'Bearer t' } });
+      expect(res.status).toBe(200);
+      expect((await res.json()).tenant.userId).toBe(userId);
+    });
+
+    it.each([
+      { what: 'a blank id', payload: { id: '   ' } },
+      { what: 'a vendor-only id the kit does not read', payload: { workosId: 'w1' } },
+      { what: 'a wrapper whose user half names nobody', payload: { session: {}, user: {}, id: 'top' } },
+      { what: 'a payload naming no user', payload: { email: 'e@x.com' } },
+      { what: 'no payload at all', payload: null },
+    ])('refuses $what', async ({ payload }) => {
+      const auth = await gateAuth();
+      const app = board(auth, fakeProvider({ authenticateToken: vi.fn(async () => payload) }));
+
+      const res = await app.request('/web/board', { headers: { ...json, Authorization: 'Bearer t' } });
+      expect(res.status).toBe(401);
+    });
+  });
+});
