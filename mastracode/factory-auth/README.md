@@ -393,7 +393,7 @@ direction but is still a red you have to think about rather than a case the kit 
 | Import                               | Answers                                                    | Main exports                                                                        |
 | ------------------------------------ | ---------------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | `@mastra/factory-auth`               | The pure layer: contract, identity, capabilities.          | everything from `./contract`, `./identity` and `./capabilities`                     |
-| `@mastra/factory-auth/contract`      | The same contract symbols, narrower import.                | `MastraAuthProvider`, the seven guards, `getRequestHeader`, `getWebRequest`         |
+| `@mastra/factory-auth/contract`      | The same contract symbols, narrower import.                | `MastraAuthProvider`, the eight guards, `getRequestHeader`, `getWebRequest`         |
 | `@mastra/factory-auth/identity`      | What is this provider's user, in one shape?                | `toAuthIdentity`, `AuthIdentity`, `IIdentityProvider`, `isIdentityProvider`         |
 | `@mastra/factory-auth/capabilities`  | Which capabilities does this provider have?                | `toAuthDescriptor`, `AuthDescriptor`                                                |
 | `@mastra/factory-auth/organizations` | Which organization does this identity belong to?           | `withSyntheticOrganizations`, `resolveOrganizationId`, `syntheticOrganizationId`    |
@@ -419,13 +419,14 @@ Everything comes from `@mastra/core/server`, and nothing in this package imports
 anywhere else.
 
 - `MastraAuthProvider` — the base class a provider extends.
-- Seven capability guards: `isSSOProvider`, `isSessionProvider`, `isUserProvider`,
-  `isCredentialsProvider`, `isOrganizationsProvider`, `isAuthHttpHandler`, and `hasAuthInit`. Note
-  the `has` prefix on the last one, and note there is no guard for `IMastraAuthProvider` — implementing
-  the base contract is a precondition, not a capability. All seven are structural, so a plain object
-  with the right methods satisfies them.
+- Eight capability guards: `isSSOProvider`, `isSessionProvider`, `isUserProvider`,
+  `isCredentialsProvider`, `isOrganizationsProvider`, `isAuthHttpHandler`, `hasAuthInit`, and
+  `canClearSession`. Two of them break the `is` prefix the other six share, and there is no guard for
+  `IMastraAuthProvider` — implementing the base contract is a precondition, not a capability. All
+  eight are structural, so a plain object with the right methods satisfies them, and each tests every
+  member its interface requires and no optional one.
 - The types: `IMastraAuthProvider`, `MastraAuthProviderOptions`, `AuthInitContext`, `IAuthHttpHandler`,
-  `IAuthInit`, `ICredentialsProvider`, `IOrganizationsProvider`, `ISessionProvider`, `ISSOProvider`,
+  `IAuthInit`, `ICredentialsProvider`, `IOrganizationsProvider`, `ISessionClearer`, `ISessionProvider`, `ISSOProvider`,
   `IUserProvider`.
 - Framework-neutral request primitives: `getRequestHeader`, `getWebRequest`, and the types
   `MastraAuthRequest` and `HonoRequestLike`. They come from a core module with zero imports, and they

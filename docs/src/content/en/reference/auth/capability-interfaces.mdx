@@ -12,11 +12,11 @@ Every Mastra auth provider implements one base contract, `IMastraAuthProvider`. 
 
 A host detects capabilities with structural guards rather than `instanceof`, so any object carrying the right methods qualifies. Use this page to look up which interface covers which behavior and what it obliges you to implement. The [provider capability matrix](#provider-capability-matrix) records which provider satisfies which.
 
-`@mastra/core/server` exports the base class `MastraAuthProvider`, the capability guards, and ten types. `@mastra/factory-auth` re-exports those same symbols through a single import site and adds an identity normalizer, a capability descriptor, and a provider conformance suite.
+`@mastra/core/server` exports the base class `MastraAuthProvider`, the capability guards, and eleven types. `@mastra/factory-auth` re-exports those same symbols through a single import site and adds an identity normalizer, a capability descriptor, and a provider conformance suite.
 
 ## Capability guards
 
-`@mastra/core/server` exports seven guards. Each answers one question: does this provider declare this capability?
+`@mastra/core/server` exports eight guards. Each answers one question: does this provider declare this capability?
 
 Each guard tests every member its interface requires, and no optional one.
 
@@ -29,8 +29,9 @@ Each guard tests every member its interface requires, and no optional one.
 | `isOrganizationsProvider` | `IOrganizationsProvider` | `ensureOrganization`, `isOrganizationAdmin` |
 | `isAuthHttpHandler` | `IAuthHttpHandler` | `handleAuthRequest` |
 | `hasAuthInit` | `IAuthInit` | `init` |
+| `canClearSession` | `ISessionClearer` | `getClearSessionHeaders` |
 
-Watch the naming before you write a lookup of your own. The last guard is `hasAuthInit`, which breaks the `is` prefix the other six use. And no guard exists for `IMastraAuthProvider`, because implementing the base contract is what makes an object a provider in the first place.
+Watch the naming before you write a lookup of your own. Two guards break the `is` prefix the other six use: `hasAuthInit` and `canClearSession`. And no guard exists for `IMastraAuthProvider`, because implementing the base contract is what makes an object a provider in the first place.
 
 Every guard checks `typeof provider.someMethod === 'function'` against a non-null object. Nothing uses `instanceof`, so the guards keep working when a dependency tree holds two copies of `@mastra/core`, and a plain object with the right methods passes.
 
@@ -113,6 +114,14 @@ Server-side sessions the provider creates, validates, and revokes. All seven mem
 
 A `Session` holds `id`, `userId`, `createdAt`, `expiresAt`, and optional `metadata`.
 
+### `ISessionClearer`
+
+One member, `getClearSessionHeaders() => Record<string, string>`, returning `Set-Cookie` values that expire the cookies this provider set.
+
+`ISessionProvider` extends this, so a full session provider satisfies `canClearSession` too and the member is declared in one place. The narrower interface exists because a provider can have only this one. A hosted-login provider mints its own cookie during `handleCallback` and has to clear it on logout, while creating no session a host can address by id, so the other six members mean nothing to it. `@mastra/auth-better-auth` is that shape.
+
+Return one cookie where you can. A host that receives several joined into one comma-separated value has to split them apart again, and an `Expires` date contains a comma of its own.
+
 ### `IUserProvider`
 
 Look a user up by identifier, or read the current one off a request.
@@ -184,6 +193,7 @@ Each guard tests every member its interface requires, and no optional member.
 | `IUserProvider` | 4 | 2 | 2 |
 | `ICredentialsProvider` | 5 | 2 | 2 |
 | `IOrganizationsProvider` | 2 | 2 | 2 |
+| `ISessionClearer` | 1 | 1 | 1 |
 | `IAuthHttpHandler` | 1 | 1 | 1 |
 | `IAuthInit` | 1 | 1 | 1 |
 

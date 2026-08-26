@@ -1,5 +1,6 @@
 import {
   registerApiRoute,
+  canClearSession,
   isAuthHttpHandler,
   isOrganizationsProvider,
   isSessionProvider,
@@ -42,7 +43,8 @@ import { timedAboveThreshold } from './timing.js';
  * - `IOrganizationsProvider` — personal-org bootstrap + admin checks
  * - `ICredentialsProvider.isSignUpEnabled` — SPA sign-up affordance, read
  *   through the kit's capability descriptor (see {@link authMeta})
- * - `getClearSessionHeaders` — session cookie clearing on logout
+ * - `ISessionClearer` — session cookie clearing on logout, which a provider can
+ *   implement on its own without the rest of `ISessionProvider`
  *
  * One behavioural switch lives here: {@link isAuthIdentityV2Enabled}, now on by
  * default and kept for one release as the rollback for the identity, session
@@ -706,8 +708,14 @@ async function ensureUserOrg(provider: IMastraAuthProvider, user: FactoryAuthUse
 }
 
 /**
- * `Set-Cookie` values that clear the provider's session cookie(s), from the
- * provider's (possibly partial) `ISessionProvider.getClearSessionHeaders`.
+ * `Set-Cookie` values that clear the provider's session cookie(s).
+ *
+ * Gated on `canClearSession`, which narrows to `ISessionClearer` - the
+ * one-member interface a provider can implement on its own. It used to read the
+ * member off a `Partial<ISessionProvider>` cast, which worked and was described
+ * by no interface: `@mastra/auth-better-auth` implements exactly this one member
+ * and nothing else, and a fresh reader following the declarations would not have
+ * found a way to do that. Every full `ISessionProvider` satisfies the guard too.
  *
  * THE UN-JOIN, AND WHAT IT IS DEFENDING AGAINST
  *
@@ -729,9 +737,8 @@ async function ensureUserOrg(provider: IMastraAuthProvider, user: FactoryAuthUse
  * to be rediscovered.
  */
 function providerClearCookies(provider: IMastraAuthProvider): string[] {
-  const getClearSessionHeaders = (provider as Partial<ISessionProvider>).getClearSessionHeaders;
-  if (typeof getClearSessionHeaders !== 'function') return [];
-  const headers = getClearSessionHeaders.call(provider) ?? {};
+  if (!canClearSession(provider)) return [];
+  const headers = provider.getClearSessionHeaders() ?? {};
   const setCookie = headers['Set-Cookie'];
   if (!setCookie) return [];
   // A provider may join several clearing cookies into one header value.

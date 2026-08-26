@@ -29,6 +29,7 @@
  * interfaces themselves are in `./contract`.
  */
 import {
+  canClearSession,
   isAuthHttpHandler,
   isCredentialsProvider,
   isOrganizationsProvider,
@@ -339,13 +340,13 @@ export function toAuthDescriptor(
   const withMembers = provider as Partial<ISessionProvider>;
   const refresh = typeof withMembers.refreshSession === 'function';
   const sessionRevocation = typeof withMembers.destroySession === 'function';
-  const canClearSession = typeof withMembers.getClearSessionHeaders === 'function';
+  const clearsSession = canClearSession(provider);
   const session = isSessionProvider(provider);
 
   return {
     signIn,
     features: {
-      logout: kind !== 'none' || session || sessionRevocation || canClearSession || isAuthHttpHandler(provider),
+      logout: kind !== 'none' || session || sessionRevocation || clearsSession || isAuthHttpHandler(provider),
       organizations: isOrganizationsProvider(provider),
       refresh,
       sessionRevocation,

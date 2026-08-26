@@ -1213,7 +1213,7 @@ function buildChecks(fixtures: Fixtures): readonly Omit<AuthConformanceCheck, 'k
           observed: problems,
           why:
             'Everything else in this suite, and everything the host does, is built on these two methods.\n' +
-            'The seven capability guards are structural and would happily report capabilities on an\n' +
+            'The eight capability guards are structural and would happily report capabilities on an\n' +
             'object that cannot authenticate anybody.',
           how:
             `Extend \`MastraAuthProvider\`, which ${KIT_PACKAGE_NAME}/contract re-exports, and implement\n` +

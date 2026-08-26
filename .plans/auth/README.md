@@ -44,9 +44,12 @@ The audit's three headline claims, and how each stands at `a7909efb`:
   eighteen conformance checks.
 
 Two of the audit's own statements were measured wrong during the work and should not be
-carried forward: its "eight small interfaces / eight guards" is the origin of a persistent
-"8 guards" error (`packages/core/src/server/auth.ts` exports **7 guards**, the
-`MastraAuthProvider` class, and 10 types), and its capability matrix predates `C5`.
+carried forward: its "eight small interfaces / eight guards" was the origin of a persistent
+"8 guards" error at a time when there were **7**, and its capability matrix predates `C5`.
+`P11` has since added an eighth — `canClearSession`, narrowing to `ISessionClearer` — so
+`packages/core/src/server/auth.ts` now exports 8 guards, the `MastraAuthProvider` class and
+11 types. The audit was wrong when it was written and is right by accident now, which is a
+reason to cite the code rather than either document.
 
 ## Licence boundary
 
@@ -57,7 +60,7 @@ All proposed work is Apache-2.0 and imports nothing from any `ee/` directory
   which re-exports `./ee`, and `packages/core/src/auth/ee/index.ts` opens with a
   side-effecting `import './telemetry'`.
 - `@mastra/core/server` **is** safe: `packages/core/src/server/auth.ts` re-exports the
-  capability interfaces and the seven guards by explicit name, and EE appears only as
+  capability interfaces and the eight guards by explicit name, and EE appears only as
   erased `import type` in `types.ts`.
 
 The plan enforces this with an ESLint rule plus a CI test over the resolved module graph,
@@ -369,8 +372,10 @@ to match; these are the ones that changed the shape of the work.
   (`@mastra/core/storage`, `/agent-controller`, `@mastra/code-sdk`, `@mastra/auth-studio`
   …), and `B7` removes only `@mastra/auth-workos`, so a zero-EE claim is unavailable to
   that package now and at the end of the plan. It got a narrower, true rule instead.
-- The plan's "8 guards" is wrong throughout: `packages/core/src/server/auth.ts` exports
-  **7 guards**, the `MastraAuthProvider` class, and 10 types.
+- The plan's "8 guards" was wrong throughout at the time: `packages/core/src/server/auth.ts`
+  exported **7 guards**, the `MastraAuthProvider` class, and 10 types. `P11` has since added
+  `canClearSession` and `ISessionClearer`, making it 8 and 11 — for a different reason than
+  the plan gave, and after every "8 guards" claim in it had already been corrected to 7.
 
 ### Open items — now tracked
 

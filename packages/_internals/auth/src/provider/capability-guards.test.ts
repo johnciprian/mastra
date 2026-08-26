@@ -5,10 +5,12 @@ import type {
   ICredentialsProvider,
   IOrganizationsProvider,
   ISSOProvider,
+  ISessionClearer,
   ISessionProvider,
   IUserProvider,
 } from '../index';
 import {
+  canClearSession,
   hasAuthInit,
   isAuthHttpHandler,
   isCredentialsProvider,
@@ -107,6 +109,7 @@ const GUARDS = [
   ),
   guardCase<IAuthHttpHandler>()('isAuthHttpHandler', isAuthHttpHandler, ['handleAuthRequest'], true),
   guardCase<IAuthInit>()('hasAuthInit', hasAuthInit, ['init'], true),
+  guardCase<ISessionClearer>()('canClearSession', canClearSession, ['getClearSessionHeaders'], true),
 ] as const;
 
 /** An object carrying exactly `members`, each a function. */
@@ -160,6 +163,29 @@ describe('capability guards', () => {
    * point - provider packages bundle their own `MastraAuthProvider` copy and
    * cannot be compared nominally across package boundaries.
    */
+  /**
+   * Every full session provider is also a clearer, because `ISessionProvider`
+   * extends `ISessionClearer`. A provider with only the one member is not a
+   * session provider, which is the whole reason the narrower interface exists.
+   */
+  it('relates canClearSession and isSessionProvider the way the interfaces do', () => {
+    const clearerOnly = objectWith(['getClearSessionHeaders']);
+    expect(canClearSession(clearerOnly)).toBe(true);
+    expect(isSessionProvider(clearerOnly)).toBe(false);
+
+    const full = objectWith([
+      'createSession',
+      'validateSession',
+      'destroySession',
+      'refreshSession',
+      'getSessionIdFromRequest',
+      'getSessionHeaders',
+      'getClearSessionHeaders',
+    ]);
+    expect(isSessionProvider(full)).toBe(true);
+    expect(canClearSession(full)).toBe(true);
+  });
+
   it('narrows to a type whose required members are all callable', () => {
     const candidate: unknown = objectWith([
       'createSession',
