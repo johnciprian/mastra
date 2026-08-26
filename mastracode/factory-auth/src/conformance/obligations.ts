@@ -247,10 +247,103 @@ export const AUTH_OBLIGATION_GUIDANCE: Readonly<Record<AuthObligation, AuthOblig
   },
 };
 
+// ============================================================================
+// Failure codes
+// ============================================================================
+
+/**
+ * The stable name of one *way* a check can go red.
+ *
+ * Every check can fail for several different reasons - `sessions/round-trip`
+ * has five - and until this existed nothing told those reasons apart except the
+ * prose of the message, which this package's own semver policy declares
+ * patch-level and asks you not to assert on. So the reasons are named
+ * separately here, and the name rather than the wording is what
+ * {@link AuthConformanceKnownFailure} records.
+ *
+ * The format is the check id, a `#`, and a slug:
+ * `sessions/round-trip#validate-rejects-fresh-session`. That makes the check a
+ * code belongs to readable without a lookup, and lets a mistyped pairing be
+ * caught rather than accepted.
+ *
+ * One namespace is deliberately not check-scoped. A failure raised by a shared
+ * fixture step - the `token` option the provider will not accept, the missing
+ * `userId` - is named `fixture/...`, because the same fault surfaces from
+ * whichever check happened to need a payload first. Those are mistakes in the
+ * calling test file rather than provider defects, and
+ * {@link AUTH_CONFORMANCE_FIXTURE_CODE_PREFIX} is what keeps them out of the set
+ * a `knownFailures` entry may name: "my fixtures are wrong" is not a thing to
+ * grant a provider an exemption for.
+ */
+export type AuthConformanceFailureCode = string;
+
+/** The namespace for a failure that is about the fixtures, not about the provider. */
+export const AUTH_CONFORMANCE_FIXTURE_CODE_PREFIX = 'fixture/';
+
+/** Whether `code` names a fixture fault rather than a provider defect. */
+export function isFixtureFailureCode(code: string): boolean {
+  return code.startsWith(AUTH_CONFORMANCE_FIXTURE_CODE_PREFIX);
+}
+
+/**
+ * Where {@link attachFailureCode} puts the code, and
+ * {@link readFailureCode} reads it back.
+ *
+ * A property on the thrown assertion rather than a substring of the rendered
+ * message. The message is prose and may be reworded in a patch; the code is the
+ * thing callers key on, so it travels structurally and survives any rewording.
+ * Non-enumerable, so a reporter that serializes the error does not grow a field.
+ */
+const FAILURE_CODE_PROPERTY = '__mastraAuthConformanceFailureCode';
+
+/**
+ * Mark `error` as the failure named by `code`, and hand it back.
+ *
+ * Called on an assertion that vitest built, so the value keeps its
+ * `AssertionError` identity and still reports as "your provider is wrong"
+ * rather than as "the conformance suite crashed".
+ */
+export function attachFailureCode<T>(error: T, code: string): T {
+  if (typeof error === 'object' && error !== null) {
+    Object.defineProperty(error, FAILURE_CODE_PROPERTY, {
+      value: code,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return error;
+}
+
+/**
+ * The code {@link attachFailureCode} put on this error, or `null`.
+ *
+ * `null` for anything the suite did not raise itself - a provider that threw
+ * out of a check body in a way no `fail` site anticipated, or a bare `expect`
+ * somewhere. That distinction matters to the known-failure machinery: an
+ * uncoded failure can never match a recorded entry, so it can never be covered
+ * by one.
+ */
+export function readFailureCode(error: unknown): string | null {
+  if (typeof error !== 'object' || error === null) return null;
+  const code: unknown = (error as Record<string, unknown>)[FAILURE_CODE_PROPERTY];
+  return typeof code === 'string' && code !== '' ? code : null;
+}
+
 /** One conformance failure, before it is turned into text. */
 export interface ConformanceFailure {
   /** The provider, as the caller named it in the suite options. */
   readonly provider: string;
+
+  /**
+   * Which way this check went red. See {@link AuthConformanceFailureCode}.
+   *
+   * Optional on this type and required at every call site inside the suite: an
+   * external caller of {@link formatConformanceFailure} predates the field, and
+   * making it required here would narrow a published input. `src/conformance/
+   * index.ts` narrows it back for its own use.
+   */
+  readonly code?: string;
 
   /**
    * The obligation this failure belongs to, when it is one of the four.
@@ -293,6 +386,53 @@ function indent(block: string): string {
 }
 
 /**
+ * The layout every message in this package shares: a title, then shouted
+ * section headings over indented blocks, then the docs URL.
+ *
+ * Factored out rather than repeated, because there are now three kinds of
+ * message - a violation, a recorded known failure, and a recorded entry that has
+ * gone stale - and a reader who has learned to scan one has learned to scan all
+ * three. A section whose body is `undefined` is dropped entirely.
+ */
+function renderSections(title: string, sections: readonly (readonly [string | null, string | undefined])[]): string {
+  const lines: string[] = [title];
+  for (const [heading, body] of sections) {
+    if (body === undefined) continue;
+    lines.push('');
+    if (heading !== null) lines.push(heading);
+    lines.push(indent(body));
+  }
+  lines.push('', `Docs: ${CONFORMANCE_DOCS_URL}`);
+  return lines.join('\n');
+}
+
+/**
+ * The `CODE` block, and the offer that goes with it.
+ *
+ * Printed on every provider defect, because the moment somebody is reading a
+ * red is the moment they need to know both the name of what broke and that
+ * recording it is an option. A fixture fault gets the name without the offer:
+ * `knownFailures` grants a provider an exemption, and "the token I told the
+ * suite to use does not work" is not something to be exempt from.
+ */
+function codeBlock(code: string | undefined): string | undefined {
+  if (code === undefined || code === '') return undefined;
+  if (isFixtureFailureCode(code)) return code;
+  return (
+    `${code}\n` +
+    '\n' +
+    'Cannot fix this one now? Record it rather than excluding the provider or leaving CI red:\n' +
+    '\n' +
+    '  knownFailures: [\n' +
+    `    { check: ${QUOTE}${code.split('#')[0]}${QUOTE}, code: ${QUOTE}${code}${QUOTE}, reason: ${QUOTE}why, and where the diagnosis lives${QUOTE} },\n` +
+    '  ]\n' +
+    '\n' +
+    'The suite then reports it as a known failure instead of a red, and goes red again the day it\n' +
+    'stops failing, stops applying, or starts failing for a different reason than the one recorded.'
+  );
+}
+
+/**
  * Render a failure as the text a provider author reads.
  *
  * The layout follows `src/__tests__/no-ee-boundary.test.ts`: a headline that
@@ -325,20 +465,172 @@ export function formatConformanceFailure(failure: ConformanceFailure): string {
       : `Auth conformance violation: ${failure.provider} does not meet obligation ` +
         `${guidance.ordinal} of ${AUTH_OBLIGATION_COUNT}, '${guidance.obligation}'.`;
 
-  return [
-    title,
-    '',
-    indent(headline),
-    '',
-    'OBSERVED',
-    indent(failure.observed.join('\n')),
-    '',
-    'WHY THIS EXISTS',
-    indent(why),
-    '',
-    'HOW TO FIX IT',
-    indent(how),
-    '',
-    `Docs: ${CONFORMANCE_DOCS_URL}`,
-  ].join('\n');
+  return renderSections(title, [
+    [null, headline],
+    ['OBSERVED', failure.observed.join('\n')],
+    ['WHY THIS EXISTS', why],
+    ['HOW TO FIX IT', how],
+    ['CODE', codeBlock(failure.code)],
+  ]);
+}
+
+// ============================================================================
+// Known failures
+// ============================================================================
+
+/**
+ * The marker on the title of a check the caller recorded as a known failure.
+ *
+ * A prefix on the `it` title rather than only a note on the skip, so the
+ * declaration is visible in any output that prints test names at all - a
+ * verbose run, a list reporter, a CI job summary - without the reader having to
+ * expand a skip reason. Exported so a host that filters or greps a run can key
+ * on it instead of on a substring somebody may reword.
+ */
+export const KNOWN_FAILURE_TITLE_PREFIX = 'known failure: ';
+
+/** One recorded known failure, as it is reported when it fails as recorded. */
+export interface KnownFailureReport {
+  /** The provider, as the caller named it in the suite options. */
+  readonly provider: string;
+
+  /** The check that failed. */
+  readonly check: string;
+
+  /** The failure code recorded for it, which is the one it produced. */
+  readonly code: string;
+
+  /** The caller's stated reason. */
+  readonly reason: string;
+
+  /** What the check actually said, unedited. */
+  readonly message: string;
+}
+
+/**
+ * Render a check that failed exactly as its `knownFailures` entry recorded.
+ *
+ * Deliberately *not* quiet. The suite stays green, and the run has to stay
+ * obviously different from a clean one - so this carries the same shouted
+ * layout as a violation, quotes the reason the caller gave, and reproduces the
+ * original failure underneath it. A reader scanning CI sees a provider that
+ * does not conform and the sentence somebody wrote about why.
+ */
+export function formatKnownFailure(report: KnownFailureReport): string {
+  return renderSections(
+    `Auth conformance KNOWN FAILURE: ${report.provider} does not conform, and this suite was told to expect it.`,
+    [
+      [null, `${report.check} failed with ${report.code}, which is what its knownFailures entry records.`],
+      ['RECORDED REASON', report.reason],
+      ['THE FAILURE ITSELF, UNCHANGED', report.message],
+      [
+        'WHAT MAKES THIS DIFFERENT FROM AN EXCLUSION',
+        'The entry is checked in both directions on every run. This check going green, ceasing to\n' +
+          'apply, or failing for a different reason than the one recorded all fail the suite, so the\n' +
+          'entry cannot quietly outlive the defect it describes.',
+      ],
+    ],
+  );
+}
+
+/** Why a recorded entry is no longer true. */
+export type StaleKnownFailureKind = 'passed' | 'skipped' | 'different-code';
+
+/** One recorded entry that no longer describes what the check does. */
+export interface StaleKnownFailureReport {
+  /** The provider, as the caller named it in the suite options. */
+  readonly provider: string;
+
+  /** The check the entry names. */
+  readonly check: string;
+
+  /** The code the entry records. */
+  readonly code: string;
+
+  /** The caller's stated reason. */
+  readonly reason: string;
+
+  /** What happened instead. */
+  readonly kind: StaleKnownFailureKind;
+
+  /** The gate's reason, for `skipped`; the actual failure, for `different-code`. */
+  readonly detail?: string;
+
+  /** The code the check actually produced, for `different-code`. */
+  readonly actualCode?: string | null;
+}
+
+/**
+ * Render a recorded entry that has stopped being true.
+ *
+ * This is the assertion that keeps the list from rotting, and it is a failure
+ * of the *test file* rather than of the provider - so the title says so. A
+ * provider whose defect was fixed must lose its entry in the same change,
+ * because an exemption nobody is forced to delete is how a list becomes fiction.
+ */
+export function formatStaleKnownFailure(report: StaleKnownFailureReport): string {
+  const headline =
+    report.kind === 'passed'
+      ? `${report.check} is recorded as a known failure, and it passed.`
+      : report.kind === 'skipped'
+        ? `${report.check} is recorded as a known failure, and it did not run at all.`
+        : `${report.check} is recorded as a known failure, and it failed for a different reason.`;
+
+  const observed =
+    report.kind === 'passed'
+      ? [
+          `The knownFailures entry records ${report.code}.`,
+          `${report.check} passed, so there is nothing for the entry to cover.`,
+        ].join('\n')
+      : report.kind === 'skipped'
+        ? [
+            `The knownFailures entry records ${report.code}.`,
+            `${report.check} was skipped, because a structural guard says it does not apply to this`,
+            'provider:',
+            `  ${report.detail ?? '(no reason given)'}`,
+            'A check that does not apply cannot be failing, so the entry covers nothing.',
+          ].join('\n')
+        : [
+            `The knownFailures entry records ${report.code}.`,
+            `${report.check} failed with ${report.actualCode ?? '(no code: the failure did not come from a check assertion)'}.`,
+            '',
+            'What it actually said:',
+            indent(report.detail ?? '(no message)'),
+          ].join('\n');
+
+  const why =
+    report.kind === 'different-code'
+      ? 'An entry records one named defect, not "this check may fail". Letting any failure of a listed\n' +
+        'check count would make the entry cover a second, unrelated regression that arrived later in\n' +
+        'the same check - which is the exact outcome recording a known failure is supposed to rule\n' +
+        'out. A check with several ways to go red is the normal case: matching on which one is what\n' +
+        'keeps the record specific enough to be worth having.'
+      : 'A recorded known failure is an admission with an expiry date. The suite fails when one stops\n' +
+        'being true so that fixing the defect forces the entry to be deleted in the same change. An\n' +
+        'exemption nobody is ever made to remove stops describing the provider and starts granting it\n' +
+        'cover, and nothing reports that it happened.';
+
+  const how =
+    report.kind === 'passed'
+      ? `Delete the knownFailures entry for ${report.check}. If the defect was fixed, that is the whole\n` +
+        'change, and this failure is the suite asking you to make it.'
+      : report.kind === 'skipped'
+        ? `Delete the knownFailures entry for ${report.check}. The provider no longer declares the\n` +
+          'capability the check is about, so the check is not being skipped over a defect - there is\n' +
+          'nothing left for the entry to admit to.'
+        : 'Read the failure above. If it is the same defect surfacing at a different point, update the\n' +
+          "entry's `code` and its `reason` to match. If it is a new defect, that is a regression this\n" +
+          'record just caught: fix it, or record it separately and say so.';
+
+  return renderSections(
+    `Auth conformance knownFailures entry is stale: ${report.provider} lists ${report.check}, ` +
+      'and that is no longer what happens.',
+    [
+      [null, headline],
+      ['OBSERVED', observed],
+      ['RECORDED REASON', report.reason],
+      ['WHY THIS EXISTS', why],
+      ['HOW TO FIX IT', how],
+    ],
+  );
 }

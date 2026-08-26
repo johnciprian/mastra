@@ -214,19 +214,32 @@ const TESTING: Omit<Surface, 'module'> = {
 /** `./conformance` - the suite. The one subpath that imports a test runner. */
 const CONFORMANCE: Omit<Surface, 'module'> = {
   values: [
+    'AUTH_CONFORMANCE_FIXTURE_CODE_PREFIX',
     'AUTH_OBLIGATION_COUNT',
     'AUTH_OBLIGATION_GUIDANCE',
     'CONFORMANCE_DOCS_URL',
+    'KNOWN_FAILURE_TITLE_PREFIX',
     'authConformanceChecks',
     'describeAuthProvider',
     'formatConformanceFailure',
+    'formatKnownFailure',
+    'formatStaleKnownFailure',
+    'isFixtureFailureCode',
+    'readFailureCode',
+    'runAuthConformanceCheck',
   ],
   types: [
     'AuthConformanceCheck',
+    'AuthConformanceFailureCode',
+    'AuthConformanceKnownFailure',
+    'AuthConformanceOutcome',
     'AuthConformanceSSOOptions',
     'AuthObligationGuidance',
     'AuthProviderConformanceOptions',
     'ConformanceFailure',
+    'KnownFailureReport',
+    'StaleKnownFailureKind',
+    'StaleKnownFailureReport',
   ],
 };
 
@@ -266,7 +279,7 @@ const SURFACE: Readonly<Record<string, Surface>> = {
  * A single number, so that "one export appeared and another vanished" cannot net
  * out to a green run across nine separate list comparisons.
  */
-const TOTAL_DISTINCT_EXPORTS = 112;
+const TOTAL_DISTINCT_EXPORTS = 125;
 
 // ============================================================================
 // Reading the built declarations

@@ -64,6 +64,21 @@
  *   to read a cookie for, and requiring one would be requiring it to invent a
  *   cookie nobody sets.
  *
+ * A PROVIDER THAT DOES NOT CONFORM, AND SHIPS ANYWAY
+ *
+ * There is a third outcome besides pass and skip, and it exists because the
+ * first providers this suite was run against had real defects with no small fix
+ * - a `validateSession` that returns `null` unconditionally, a `getLoginUrl`
+ * that drops `state`. With conformance required in CI, the only moves available
+ * were to weaken the suite, leave the build red until nobody reads it, or drop
+ * the provider from the run. All three end with nobody knowing.
+ *
+ * {@link AuthProviderConformanceOptions.knownFailures} is the fourth: record the
+ * failure, name which one it is, and say why. The suite stays green and says
+ * loudly that it is only green because somebody wrote the defect down. What
+ * stops that from decaying into a permanent exemption is that the record is
+ * checked in both directions - see {@link runAuthConformanceCheck}.
+ *
  * @module
  */
 import { describe, expect, it } from 'vitest';
@@ -83,20 +98,45 @@ import { decodeState, encodeState, parseStateId } from '../oauth-state.js';
 import { resolveOrganizationId } from '../organizations.js';
 import type { AuthObligation } from '../testing/index.js';
 import {
+  attachFailureCode,
+  AUTH_CONFORMANCE_FIXTURE_CODE_PREFIX,
   AUTH_OBLIGATION_COUNT,
   AUTH_OBLIGATION_GUIDANCE,
   formatConformanceFailure,
+  formatKnownFailure,
+  formatStaleKnownFailure,
+  isFixtureFailureCode,
   KIT_PACKAGE_NAME,
   kitImport,
+  KNOWN_FAILURE_TITLE_PREFIX,
+  readFailureCode,
 } from './obligations.js';
+import type { ConformanceFailure } from './obligations.js';
 
+// `attachFailureCode` is deliberately NOT re-exported. It is how a `fail` site
+// stamps its code onto the assertion, which is this module's own business;
+// `readFailureCode` is the half a consumer needs. Adding an export later is a
+// minor and removing one is a major, so the surface starts at what is used.
 export {
+  AUTH_CONFORMANCE_FIXTURE_CODE_PREFIX,
   AUTH_OBLIGATION_COUNT,
   AUTH_OBLIGATION_GUIDANCE,
   CONFORMANCE_DOCS_URL,
   formatConformanceFailure,
+  formatKnownFailure,
+  formatStaleKnownFailure,
+  isFixtureFailureCode,
+  KNOWN_FAILURE_TITLE_PREFIX,
+  readFailureCode,
 } from './obligations.js';
-export type { AuthObligationGuidance, ConformanceFailure } from './obligations.js';
+export type {
+  AuthConformanceFailureCode,
+  AuthObligationGuidance,
+  ConformanceFailure,
+  KnownFailureReport,
+  StaleKnownFailureKind,
+  StaleKnownFailureReport,
+} from './obligations.js';
 
 // ============================================================================
 // Options
@@ -143,6 +183,81 @@ export interface AuthConformanceSSOOptions {
    * a reviewer can see you doing.
    */
   reachedTokenExchange?: (error: unknown) => boolean;
+}
+
+/**
+ * One check this provider is known not to pass, recorded rather than hidden.
+ *
+ * The case this exists for is a provider that ships today and does not conform,
+ * where the defect is real and the fix is not small. Three options existed
+ * before it: change the suite so the provider passes, leave CI red until
+ * somebody stops reading it, or exclude the provider from conformance
+ * altogether. Every one of those ends with nobody knowing the provider is
+ * broken. Recording it ends with everybody knowing.
+ *
+ * ```ts
+ * knownFailures: [
+ *   {
+ *     check: 'sessions/round-trip',
+ *     code: 'sessions/round-trip#validate-rejects-fresh-session',
+ *     reason:
+ *       'validateSession returns null unconditionally; every ISessionProvider member is a no-op. ' +
+ *       'Full diagnosis in this file’s header, under WHAT IS RED TODAY.',
+ *   },
+ * ]
+ * ```
+ *
+ * An entry is not an exclusion, and the difference is that it is checked in
+ * both directions on every run. The suite fails when a recorded check passes,
+ * when it stops applying, and when it fails for a reason other than the one
+ * recorded - so the entry cannot outlive the defect, and cannot spread to cover
+ * a second one.
+ */
+export interface AuthConformanceKnownFailure {
+  /**
+   * The check id, exactly as {@link AuthConformanceCheck.id} spells it -
+   * `'sessions/round-trip'`.
+   *
+   * An id no check has fails at registration, loudly, listing the ids that do
+   * exist. A typo must not become a permanent silent exemption, and a check
+   * that was renamed must not leave a dead entry behind still granting cover.
+   */
+  readonly check: string;
+
+  /**
+   * Which *way* this check fails, as
+   * {@link AuthConformanceCheck.failureCodes} spells it -
+   * `'sessions/round-trip#validate-rejects-fresh-session'`.
+   *
+   * Required, and the reason it is required is that a check id alone records
+   * only *that* a check fails. `sessions/round-trip` has five distinct ways to
+   * go red, and two providers can fail it for genuinely different defects. An
+   * entry keyed on the id alone would silently cover a second, unrelated
+   * regression arriving later in the same check - which is the outcome this
+   * whole mechanism exists to rule out.
+   *
+   * The code is a stable identifier this package owns, not a substring of the
+   * failure text: message wording is patch-level here and asserting on it would
+   * break your suite on a rewording. Run the check once and the red quotes the
+   * code to paste in.
+   *
+   * It must belong to the check named above, which is checked at registration.
+   */
+  readonly code: string;
+
+  /**
+   * Why this is not fixed, in a sentence or two.
+   *
+   * Required, and non-empty. An exemption without a stated reason is how the
+   * four undocumented obligations happened in the first place: everybody
+   * involved knew why at the time, and the knowledge left with them.
+   *
+   * A pointer plus a sentence is the intended shape rather than an essay -
+   * where the full diagnosis lives, and enough of it that a reader of the CI
+   * output does not have to go and find it to know whether this matters to
+   * them.
+   */
+  readonly reason: string;
 }
 
 /**
@@ -234,6 +349,14 @@ export interface AuthProviderConformanceOptions<TProvider extends IMastraAuthPro
 
   /** See {@link AuthConformanceSSOOptions}. Ignored unless `isSSOProvider(provider)`. */
   sso?: AuthConformanceSSOOptions;
+
+  /**
+   * Checks this provider is known not to pass, each with a reason.
+   *
+   * See {@link AuthConformanceKnownFailure}. Leave it off for a provider that
+   * conforms; an empty array means the same thing.
+   */
+  knownFailures?: readonly AuthConformanceKnownFailure[];
 }
 
 // ============================================================================
@@ -271,6 +394,21 @@ export interface AuthConformanceCheck {
   readonly obligation: AuthObligation | null;
 
   /**
+   * Every way this check can go red, as stable codes.
+   *
+   * `['sessions/round-trip#create-threw', 'sessions/round-trip#validate-rejects-fresh-session', ...]`.
+   * A check has several because a check asks several questions, and telling
+   * those apart is what lets a {@link AuthConformanceKnownFailure} record one
+   * named defect instead of "this check may fail". Each entry is this check's
+   * `id`, a `#`, and a slug.
+   *
+   * Not exhaustive of everything that can *throw* out of {@link run}: a shared
+   * fixture step fails under the `fixture/` namespace, which no check declares
+   * and no entry may name. See {@link AUTH_CONFORMANCE_FIXTURE_CODE_PREFIX}.
+   */
+  readonly failureCodes: readonly string[];
+
+  /**
    * Why this check does not apply to `provider`, or `null` when it does.
    *
    * The only legitimate reason is that a structural guard says the provider does
@@ -281,7 +419,47 @@ export interface AuthConformanceCheck {
 
   /** Run it. Resolves when the provider conforms, throws when it does not. */
   readonly run: (provider: IMastraAuthProvider) => Promise<void>;
+
+  /**
+   * The caller's `knownFailures` entry for this check, or `null`.
+   *
+   * Resolved here rather than left for the runner to look up, so that an
+   * adapter walking this list - a script, a different runner, a CLI - gets the
+   * declaration as data and enforces the same policy through
+   * {@link runAuthConformanceCheck} without re-deriving any of it.
+   */
+  readonly knownFailure: AuthConformanceKnownFailure | null;
 }
+
+// ============================================================================
+// Outcomes
+// ============================================================================
+
+/**
+ * What one check did, once the known-failure policy has been applied to it.
+ *
+ * The half of {@link runAuthConformanceCheck} worth reading twice is that
+ * `knownFailure` is the *only* non-failing outcome a recorded check can reach.
+ * A recorded check that passes, that turns out not to apply, or that fails
+ * under a different code all arrive here as `failed`, with a message about the
+ * record rather than about the provider.
+ */
+export type AuthConformanceOutcome =
+  /** It ran and the provider conformed. */
+  | { readonly status: 'passed' }
+  /** A structural guard says it does not apply. `reason` is that guard's. */
+  | { readonly status: 'skipped'; readonly reason: string }
+  /** It went red. `code` is `null` when the throw came from outside a `fail` site. */
+  | { readonly status: 'failed'; readonly message: string; readonly code: string | null }
+  /** It went red exactly as its `knownFailures` entry records. Not a suite failure. */
+  | {
+      readonly status: 'knownFailure';
+      readonly entry: AuthConformanceKnownFailure;
+      /** The full report, laid out like every other message in this package. */
+      readonly message: string;
+      /** The original failure, unedited. */
+      readonly failure: string;
+    };
 
 // ============================================================================
 // Internals: fixtures
@@ -298,6 +476,7 @@ interface Fixtures {
   readonly redirectUri: string;
   readonly code: string;
   readonly reachedTokenExchange: ((error: unknown) => boolean) | undefined;
+  readonly knownFailures: readonly AuthConformanceKnownFailure[];
 }
 
 const DEFAULT_REQUEST_URL = 'https://conformance.test/api/agents';
@@ -334,7 +513,132 @@ function readFixtures(options: AuthProviderConformanceOptions): Fixtures {
     redirectUri: options.sso?.redirectUri ?? DEFAULT_REDIRECT_URI,
     code: options.sso?.code ?? DEFAULT_CODE,
     reachedTokenExchange: options.sso?.reachedTokenExchange,
+    knownFailures: readKnownFailures(options.knownFailures),
   };
+}
+
+/**
+ * Validate `knownFailures` for shape, before any check exists to run.
+ *
+ * Everything wrong with an entry is wrong in the calling test file, so it is
+ * raised the way this module already raises a missing `token`: a `TypeError` at
+ * registration, which fails the whole file rather than one test. That is the
+ * loudest thing available and the only volume worth having here. An exemption
+ * that is *quietly* ignored - a typo, a stale id after a rename - is
+ * indistinguishable from an exemption that works, and it grants cover forever.
+ *
+ * Ids and codes are checked against the real list in
+ * {@link resolveKnownFailures}, which needs the built checks. This pass is the
+ * part that needs nothing.
+ */
+function readKnownFailures(entries: readonly AuthConformanceKnownFailure[] | undefined): AuthConformanceKnownFailure[] {
+  if (entries === undefined) return [];
+  if (!Array.isArray(entries)) {
+    throw new TypeError('describeAuthProvider: `knownFailures` must be an array of { check, code, reason } entries.');
+  }
+  const seen = new Set<string>();
+  return entries.map((entry, index) => {
+    const at = `describeAuthProvider: knownFailures[${index}]`;
+    if (typeof entry !== 'object' || entry === null) {
+      throw new TypeError(`${at} is ${String(entry)}, not a { check, code, reason } entry.`);
+    }
+    if (typeof entry.check !== 'string' || entry.check.trim() === '') {
+      throw new TypeError(`${at}.check must be a non-empty check id, e.g. 'sessions/round-trip'.`);
+    }
+    if (typeof entry.code !== 'string' || entry.code.trim() === '') {
+      throw new TypeError(
+        `${at}.code must be a non-empty failure code, e.g. ` +
+          `'sessions/round-trip#validate-rejects-fresh-session'. It names WHICH way the check fails; ` +
+          'the check id alone would let this entry cover a second, unrelated defect in the same check. ' +
+          'Run the check once - the failure it prints quotes the code to record here.',
+      );
+    }
+    if (typeof entry.reason !== 'string' || entry.reason.trim() === '') {
+      throw new TypeError(
+        `${at}.reason must be a non-empty explanation of why '${entry.check}' is not fixed. ` +
+          'An exemption with no stated reason is how an undocumented obligation gets created: ' +
+          'everybody knows why at the time, and the knowledge leaves with them.',
+      );
+    }
+    if (isFixtureFailureCode(entry.code)) {
+      throw new TypeError(
+        `${at}.code is ${JSON.stringify(entry.code)}, which is a fixture fault rather than a provider ` +
+          'defect. `knownFailures` grants a provider an exemption, and "the token this suite was told ' +
+          'to use does not work" is not something to be exempt from - fix the fixture instead.',
+      );
+    }
+    if (seen.has(entry.check)) {
+      throw new TypeError(
+        `${at} is a second entry for ${JSON.stringify(entry.check)}. A check stops at its first failure, ` +
+          'so only one of them could ever match; the other would sit there unevaluated, never checked ' +
+          'and never made to expire. Record the one that actually fires.',
+      );
+    }
+    seen.add(entry.check);
+    return { check: entry.check, code: entry.code, reason: entry.reason };
+  });
+}
+
+/**
+ * The five nearest ids to a mistyped one, for the message that reports it.
+ *
+ * Nothing clever: shared prefix, then shared characters. The point is only that
+ * somebody who typed `sessions/roundtrip` sees `sessions/round-trip` at the top
+ * of the list rather than eighteen ids in registration order.
+ */
+function nearest(target: string, candidates: readonly string[]): string[] {
+  const score = (candidate: string): number => {
+    const characters = new Set(target);
+    let shared = 0;
+    for (const character of candidate) if (characters.has(character)) shared += 1;
+    let prefix = 0;
+    while (prefix < target.length && prefix < candidate.length && target[prefix] === candidate[prefix]) prefix += 1;
+    return prefix * 10 + shared;
+  };
+  return [...candidates].sort((left, right) => score(right) - score(left)).slice(0, 5);
+}
+
+/**
+ * Bind every entry to the check it names, failing on any that names nothing.
+ *
+ * Two different mistakes, reported differently because they need different
+ * fixes. An unknown check id is usually a typo or a rename, and the reader
+ * needs the list of ids. A code that does not belong to a real check is usually
+ * a defect that now surfaces somewhere else, and the reader needs that check's
+ * own codes rather than all of them.
+ */
+function resolveKnownFailures(
+  fixtures: Fixtures,
+  checks: readonly Omit<AuthConformanceCheck, 'knownFailure'>[],
+): Map<string, AuthConformanceKnownFailure> {
+  const byId = new Map(checks.map(check => [check.id, check]));
+  const resolved = new Map<string, AuthConformanceKnownFailure>();
+
+  for (const entry of fixtures.knownFailures) {
+    const check = byId.get(entry.check);
+    if (check === undefined) {
+      throw new TypeError(
+        `describeAuthProvider: knownFailures names the check ${JSON.stringify(entry.check)}, which does ` +
+          'not exist. An entry for a check that is not in the suite is never evaluated, so it would sit ' +
+          'there granting cover that nothing ever re-examines - which is exactly what a recorded known ' +
+          'failure is supposed not to be. If a check was renamed, the entry has to be renamed with it.\n' +
+          `Closest ids: ${nearest(entry.check, [...byId.keys()]).join(', ')}\n` +
+          `All ${byId.size} ids: ${[...byId.keys()].join(', ')}`,
+      );
+    }
+    if (!check.failureCodes.includes(entry.code)) {
+      throw new TypeError(
+        `describeAuthProvider: knownFailures records the code ${JSON.stringify(entry.code)} for ` +
+          `${JSON.stringify(entry.check)}, and that check cannot produce it. A code names one of the ways ` +
+          'a check goes red; an unproduceable one can never match, so the entry would never cover the ' +
+          'failure it was written for and the suite would stay red with nobody able to see why.\n' +
+          `Codes ${JSON.stringify(entry.check)} can produce:\n` +
+          check.failureCodes.map(code => `  ${code}`).join('\n'),
+      );
+    }
+    resolved.set(entry.check, entry);
+  }
+  return resolved;
 }
 
 // ============================================================================
@@ -365,18 +669,21 @@ function show(value: unknown): string {
  * it as an assertion rather than as a crash in the suite itself, which is the
  * difference between "your provider is wrong" and "the conformance suite is
  * broken" in a CI summary.
+ *
+ * `code` is required here and optional on the published
+ * {@link ConformanceFailure}. Requiring it at the call site is the whole
+ * enforcement: a new way for a check to go red does not compile until it has
+ * been named, and a `knownFailures` entry can only ever be as specific as the
+ * names that exist. The assertion carries the code as a property as well as in
+ * its text, so the runner reads it structurally instead of parsing prose that
+ * this package's semver policy allows to be reworded in a patch.
  */
-function fail(
-  fixtures: Fixtures,
-  failure: {
-    obligation?: AuthObligation;
-    headline?: string;
-    observed: readonly string[];
-    why?: string;
-    how?: string;
-  },
-): never {
-  expect.fail(formatConformanceFailure({ provider: fixtures.name, ...failure }));
+function fail(fixtures: Fixtures, failure: Omit<ConformanceFailure, 'provider' | 'code'> & { code: string }): never {
+  try {
+    expect.fail(formatConformanceFailure({ provider: fixtures.name, ...failure }));
+  } catch (error) {
+    throw attachFailureCode(error, failure.code);
+  }
 }
 
 // ============================================================================
@@ -409,13 +716,19 @@ class TokenExchangeReached extends Error {
  * one call, restored in `finally`, never spanning an `await` the caller does not
  * control. Do not run the suite with `describe.concurrent`.
  */
-async function withoutNetwork<T>(body: () => Promise<T>): Promise<T> {
+async function withoutNetwork<T>(body: (calls: { count: number }) => Promise<T>): Promise<T> {
   const original = globalThis.fetch;
+  // Counted, not just thrown. Whether the stub was reached at all is the one
+  // piece of first-hand evidence available about how far a provider got, and
+  // the callback check needs it: an error is what the provider chose to throw,
+  // while a call to this is something the suite watched happen.
+  const calls = { count: 0 };
   globalThis.fetch = (() => {
+    calls.count += 1;
     throw new TokenExchangeReached();
   }) as typeof fetch;
   try {
-    return await body();
+    return await body(calls);
   } finally {
     globalThis.fetch = original;
   }
@@ -489,6 +802,7 @@ async function authenticated(provider: IMastraAuthProvider, fixtures: Fixtures):
   const outcome = await settle(() => provider.authenticateToken(fixtures.token, requestWith(fixtures)));
   if (!outcome.ok) {
     fail(fixtures, {
+      code: `${AUTH_CONFORMANCE_FIXTURE_CODE_PREFIX}token-threw`,
       headline: 'authenticateToken threw for the token this suite was told the provider accepts.',
       observed: [
         `authenticateToken(${show(fixtures.token)}, request) threw.`,
@@ -513,6 +827,7 @@ async function authenticated(provider: IMastraAuthProvider, fixtures: Fixtures):
   }
   if (outcome.value === null || outcome.value === undefined) {
     fail(fixtures, {
+      code: `${AUTH_CONFORMANCE_FIXTURE_CODE_PREFIX}token-rejected`,
       headline: 'authenticateToken rejected the token this suite was told the provider accepts.',
       observed: [
         `authenticateToken(${show(fixtures.token)}, request) resolved to ${show(outcome.value)}.`,
@@ -549,6 +864,7 @@ async function userIdOf(provider: IMastraAuthProvider, fixtures: Fixtures): Prom
   const identity = await identityOf(provider, fixtures);
   if (identity !== null) return identity.id;
   fail(fixtures, {
+    code: `${AUTH_CONFORMANCE_FIXTURE_CODE_PREFIX}user-id-unavailable`,
     headline: 'This check needs a user id, and neither the options nor authenticateToken supplied one.',
     observed: [
       'The `userId` option was not set.',
@@ -671,9 +987,12 @@ function obligationSection(obligation: AuthObligation): string {
  */
 export function authConformanceChecks(options: AuthProviderConformanceOptions): readonly AuthConformanceCheck[] {
   const fixtures = readFixtures(options);
+  const built = buildChecks(fixtures);
+  const knownFailures = resolveKnownFailures(fixtures, built);
 
-  return buildChecks(fixtures).map(check => ({
+  return built.map(check => ({
     ...check,
+    knownFailure: knownFailures.get(check.id) ?? null,
     // Every gate gets the backstop, not just the runner.
     //
     // A gate runs before the check body with nothing around it, so a provider
@@ -695,7 +1014,7 @@ export function authConformanceChecks(options: AuthProviderConformanceOptions): 
   }));
 }
 
-function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
+function buildChecks(fixtures: Fixtures): readonly Omit<AuthConformanceCheck, 'knownFailure'>[] {
   return [
     // ------------------------------------------------------------------
     // The base contract
@@ -705,6 +1024,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
       section: SECTION_CONTRACT,
       title: 'implements IMastraAuthProvider',
       obligation: null,
+      failureCodes: ['contract/shape#missing-required-member'],
       skipReason: ALWAYS,
       async run(provider) {
         const problems: string[] = [];
@@ -719,6 +1039,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         }
         if (problems.length === 0) return;
         fail(fixtures, {
+          code: 'contract/shape#missing-required-member',
           headline: 'This is not a provider: the two required members of IMastraAuthProvider are not both present.',
           observed: problems,
           why:
@@ -738,11 +1059,13 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
       section: SECTION_CONTRACT,
       title: 'derives a capability descriptor a UI can render',
       obligation: null,
+      failureCodes: ['contract/descriptor#threw'],
       skipReason: ALWAYS,
       async run(provider) {
         const outcome = await settle(() => toAuthDescriptor(provider));
         if (!outcome.ok) {
           fail(fixtures, {
+            code: 'contract/descriptor#threw',
             headline: 'toAuthDescriptor threw while inspecting this provider.',
             observed: [`toAuthDescriptor(provider) threw.`, `  ${show(outcome.error)}`],
             why:
@@ -753,6 +1076,14 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
             how: 'Make property reads on your provider inert. Move work into the methods that do it.',
           });
         }
+        // Bare `expect`, and deliberately still bare. Every field below is
+        // derived by `toAuthDescriptor` from boolean guards rather than read off
+        // the provider, so none of these can fire for any provider that can be
+        // built - they are a tripwire on this package, not a claim about the one
+        // under test. That is also why they carry no failure code and are not in
+        // `failureCodes`: a `knownFailures` entry can only name a code, so
+        // leaving these uncoded is what stops a provider from ever recording
+        // "the descriptor reader is broken" as an exemption it is owed.
         const descriptor = outcome.value;
         expect(['hosted', 'credentials', 'both', 'none']).toContain(descriptor.signIn.kind);
         expect(typeof descriptor.features.logout).toBe('boolean');
@@ -764,11 +1095,13 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
       section: SECTION_CONTRACT,
       title: 'resolves null for a token it does not know',
       obligation: null,
+      failureCodes: ['contract/rejects-unknown-token#threw', 'contract/rejects-unknown-token#accepted-unknown-token'],
       skipReason: ALWAYS,
       async run(provider) {
         const outcome = await settle(() => provider.authenticateToken(fixtures.rejectedToken, requestWith(fixtures)));
         if (!outcome.ok) {
           fail(fixtures, {
+            code: 'contract/rejects-unknown-token#threw',
             headline: 'authenticateToken threw for an unknown token instead of resolving null.',
             observed: [
               `authenticateToken(${show(fixtures.rejectedToken)}, request) threw.`,
@@ -784,6 +1117,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         }
         if (outcome.value !== null && outcome.value !== undefined) {
           fail(fixtures, {
+            code: 'contract/rejects-unknown-token#accepted-unknown-token',
             headline: 'authenticateToken accepted a token it should not recognize.',
             observed: [
               `authenticateToken(${show(fixtures.rejectedToken)}, request) resolved to ${show(outcome.value)}.`,
@@ -804,6 +1138,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
       section: SECTION_CONTRACT,
       title: 'authenticates nobody when there is no token and no cookie',
       obligation: null,
+      failureCodes: ['contract/rejects-anonymous-request#authenticated-anonymous'],
       skipReason: ALWAYS,
       async run(provider) {
         // A throw is not an authentication, and `contract/rejects-unknown-token`
@@ -812,6 +1147,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         const outcome = await settle(() => provider.authenticateToken('', requestWith(fixtures)));
         if (outcome.ok && outcome.value !== null && outcome.value !== undefined) {
           fail(fixtures, {
+            code: 'contract/rejects-anonymous-request#authenticated-anonymous',
             headline: 'authenticateToken authenticated a request carrying no credentials at all.',
             observed: [
               `authenticateToken("", request) resolved to ${show(outcome.value)}.`,
@@ -833,12 +1169,14 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
       section: SECTION_CONTRACT,
       title: 'authorizeUser answers a boolean for an authenticated payload',
       obligation: null,
+      failureCodes: ['contract/authorize-user#threw', 'contract/authorize-user#not-a-boolean'],
       skipReason: ALWAYS,
       async run(provider) {
         const payload = await authenticated(provider, fixtures);
         const outcome = await settle(() => provider.authorizeUser(payload, requestWith(fixtures)));
         if (!outcome.ok) {
           fail(fixtures, {
+            code: 'contract/authorize-user#threw',
             headline: 'authorizeUser threw for a payload its own authenticateToken produced.',
             observed: [`authorizeUser(payload, request) threw.`, `  ${show(outcome.error)}`],
             why:
@@ -849,6 +1187,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         }
         if (typeof outcome.value !== 'boolean') {
           fail(fixtures, {
+            code: 'contract/authorize-user#not-a-boolean',
             headline: 'authorizeUser answered with something other than a boolean.',
             observed: [`authorizeUser(payload, request) resolved to ${show(outcome.value)}.`],
             why:
@@ -868,6 +1207,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
       section: SECTION_CONTRACT,
       title: 'mapUserToResourceId agrees with the resolved identity',
       obligation: null,
+      failureCodes: ['contract/map-user-to-resource-id#disagrees-with-identity'],
       skipReason: provider =>
         typeof provider.mapUserToResourceId === 'function'
           ? null
@@ -881,6 +1221,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         const normalized = mapped === null ? undefined : mapped;
         if (normalized !== expected) {
           fail(fixtures, {
+            code: 'contract/map-user-to-resource-id#disagrees-with-identity',
             headline: 'mapUserToResourceId and toAuthIdentity disagree about who this payload is.',
             observed: [
               `mapUserToResourceId(payload) returned ${show(mapped)}.`,
@@ -914,12 +1255,14 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
       section: obligationSection('flatId'),
       title: 'authenticateToken resolves to an identity with a non-empty id',
       obligation: 'flatId',
+      failureCodes: ['obligation/flatId#no-id-in-payload', 'obligation/flatId#wrong-user'],
       skipReason: ALWAYS,
       async run(provider) {
         const payload = await authenticated(provider, fixtures);
         const identity = toAuthIdentity(payload, provider);
         if (identity === null) {
           fail(fixtures, {
+            code: 'obligation/flatId#no-id-in-payload',
             obligation: 'flatId',
             observed: [
               `authenticateToken(${show(fixtures.token)}, request) resolved to:`,
@@ -932,6 +1275,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         }
         if (fixtures.userId !== undefined && identity.id !== fixtures.userId) {
           fail(fixtures, {
+            code: 'obligation/flatId#wrong-user',
             obligation: 'flatId',
             headline: 'authenticateToken resolved to a different user than the one this token belongs to.',
             observed: [
@@ -961,10 +1305,12 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
       section: obligationSection('cookieAuth'),
       title: 'authenticateToken reads the Cookie header when the bearer token is empty',
       obligation: 'cookieAuth',
+      failureCodes: ['obligation/cookieAuth#cookie-not-read', 'obligation/cookieAuth#different-user'],
       skipReason: requiresBrowserSession,
       async run(provider) {
         if (fixtures.cookieHeader === undefined) {
           fail(fixtures, {
+            code: 'fixture/cookie-header-missing',
             headline: 'This provider can put a session in a browser, so the suite needs its `cookieHeader` fixture.',
             observed: [
               `toAuthDescriptor(provider).features.logout is true, so obligation ` +
@@ -1007,6 +1353,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         const value = outcome.ok ? outcome.value : null;
         if (!outcome.ok || value === null || value === undefined) {
           fail(fixtures, {
+            code: 'obligation/cookieAuth#cookie-not-read',
             obligation: 'cookieAuth',
             observed: [
               `authenticateToken("", request) ${outcome.ok ? `resolved to ${show(value)}` : 'threw'}.`,
@@ -1026,6 +1373,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         const viaCookie = toAuthIdentity(outcome.value, provider)?.id;
         if (viaBearer !== undefined && viaCookie !== viaBearer) {
           fail(fixtures, {
+            code: 'obligation/cookieAuth#different-user',
             obligation: 'cookieAuth',
             headline: 'The cookie authenticated a different user than the bearer token did.',
             observed: [
@@ -1053,6 +1401,12 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
       section: obligationSection('stateCodec'),
       title: 'getLoginUrl echoes a state the kit codec can still read',
       obligation: 'stateCodec',
+      failureCodes: [
+        'obligation/stateCodec/login-url#threw',
+        'obligation/stateCodec/login-url#not-an-absolute-url',
+        'obligation/stateCodec/login-url#no-state-parameter',
+        'obligation/stateCodec/login-url#state-not-round-tripped',
+      ],
       skipReason: requiresSSO,
       async run(provider) {
         if (!isSSOProvider(provider)) return;
@@ -1060,6 +1414,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         const outcome = await settle(() => provider.getLoginUrl(fixtures.redirectUri, state));
         if (!outcome.ok) {
           fail(fixtures, {
+            code: 'obligation/stateCodec/login-url#threw',
             obligation: 'stateCodec',
             headline: 'getLoginUrl threw for a state in this package’s format.',
             observed: [`getLoginUrl(${show(fixtures.redirectUri)}, ${show(state)}) threw.`, `  ${show(outcome.error)}`],
@@ -1071,6 +1426,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
           echoed = new URL(loginUrl).searchParams.get('state');
         } catch {
           fail(fixtures, {
+            code: 'obligation/stateCodec/login-url#not-an-absolute-url',
             obligation: 'stateCodec',
             headline: 'getLoginUrl did not return an absolute URL.',
             observed: [`getLoginUrl(...) returned ${show(loginUrl)}, which does not parse as a URL.`],
@@ -1081,6 +1437,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         }
         if (echoed === null) {
           fail(fixtures, {
+            code: 'obligation/stateCodec/login-url#no-state-parameter',
             obligation: 'stateCodec',
             headline: 'getLoginUrl produced an authorization URL with no `state` parameter.',
             observed: [
@@ -1094,6 +1451,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         const { returnTo } = decodeState(echoed);
         if (id !== CONFORMANCE_STATE_ID || returnTo !== CONFORMANCE_RETURN_TO) {
           fail(fixtures, {
+            code: 'obligation/stateCodec/login-url#state-not-round-tripped',
             obligation: 'stateCodec',
             observed: [
               `The state handed to getLoginUrl was ${show(state)}.`,
@@ -1114,18 +1472,31 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
       section: obligationSection('stateCodec'),
       title: 'handleCallback accepts a state the host minted',
       obligation: 'stateCodec',
+      failureCodes: [
+        'obligation/stateCodec/callback#state-rejected',
+        'obligation/stateCodec/callback#threw-without-cause-after-token-exchange',
+      ],
       skipReason: requiresSSO,
       async run(provider) {
         if (!isSSOProvider(provider)) return;
         const state = encodeState(CONFORMANCE_RETURN_TO, CONFORMANCE_STATE_ID);
 
-        const outcome = await withoutNetwork(async () => {
+        // Counted across `handleCallback` alone. `getLoginUrl` runs inside the
+        // same stub and a provider is entitled to dial out there - fetching a
+        // discovery document is the ordinary case - so counting from zero at the
+        // callback is what keeps "it reached the token exchange" a claim about
+        // the call this check is actually asking about.
+        let callsDuringCallback = 0;
+        const outcome = await withoutNetwork(async calls => {
           // The login half runs first and inside the same stub, because a
           // provider that keeps a state store fills it here. Skipping it would
           // ask the callback about a state that was never minted, which every
           // correct provider is entitled to reject.
           await settle(() => provider.getLoginUrl(fixtures.redirectUri, state));
-          return settle(() => provider.handleCallback(fixtures.code, state));
+          const before = calls.count;
+          const settled = await settle(() => provider.handleCallback(fixtures.code, state));
+          callsDuringCallback = calls.count - before;
+          return settled;
         });
 
         // Resolving is conforming: the provider completed a callback with no
@@ -1134,7 +1505,69 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         if (isTokenExchangeError(outcome.error)) return;
         if (fixtures.reachedTokenExchange?.(outcome.error) === true) return;
 
+        // Two different failures, told apart by evidence rather than by
+        // inference, and separating them is a fix for a real misdiagnosis.
+        //
+        // The recognizer above walks the `cause` chain, which is the strongest
+        // signal there is and the one a provider earns by wrapping the transport
+        // failure properly. A provider that catches the transport failure and
+        // rethrows a flat error of its own - `Error('Session validation failed')`
+        // with no `cause` - defeats it, and this check used to answer that with
+        // "handleCallback rejected a state its own getLoginUrl was just handed".
+        // That is a sentence about `state`, and it was said about a method whose
+        // `state` parameter is named `_state` and never read. A false red that
+        // reads exactly like a true one is the specific outcome this package
+        // exists to prevent, so it is not left standing.
+        //
+        // What is NOT done here is to treat "fetch was called" as conforming.
+        // Widening the pass condition would let a provider that dials out before
+        // validating `state` - discovery first, then reject - go green on a check
+        // it fails, and a silent false green is worse than a loud wrong reason.
+        // So the check keeps its teeth: still red, with the diagnosis the
+        // evidence supports and the two fixes that actually apply. Going green
+        // stays behind `sso.reachedTokenExchange`, where a reviewer can see it.
+        if (callsDuringCallback > 0) {
+          fail(fixtures, {
+            code: 'obligation/stateCodec/callback#threw-without-cause-after-token-exchange',
+            obligation: 'stateCodec',
+            headline: 'handleCallback reached the token exchange and then threw an error that hides why.',
+            observed: [
+              `getLoginUrl(${show(fixtures.redirectUri)}, state) ran first, with state = ${show(state)}.`,
+              `handleCallback(${show(fixtures.code)}, state) called globalThis.fetch ${callsDuringCallback} time(s),`,
+              'so it accepted the state and got as far as the token exchange. It then threw:',
+              `  ${show(outcome.error)}`,
+              '',
+              'The suite replaced globalThis.fetch with one that throws a recognizable error, and that',
+              'error is not in this one’s `cause` chain - so the provider caught the transport failure',
+              'and rethrew something of its own that does not carry it.',
+              '',
+              'This is a diagnosis problem, not necessarily a `state` problem. The suite can see that the',
+              'state was accepted; it cannot see whether what followed was a real defect.',
+            ],
+            why:
+              'Swallowing the cause is what makes this unanswerable, in production as much as here. The\n' +
+              'operator gets "Session validation failed" for an expired code, a clock skew, a wrong client\n' +
+              'secret and an unreachable issuer alike, and every one of those needs a different fix. This\n' +
+              'check is simply the first reader to be unable to tell them apart.',
+            how:
+              'Attach the original failure as the `cause`, which is one argument:\n' +
+              '\n' +
+              '  } catch (error) {\n' +
+              "    throw new Error('Session validation failed', { cause: error });\n" +
+              '  }\n' +
+              '\n' +
+              'That is worth doing on its own merits, and it makes this check pass: the recognizer walks\n' +
+              'the `cause` chain and will find the transport failure at the end of it.\n' +
+              '\n' +
+              'If the error genuinely cannot carry a cause, pass `sso.reachedTokenExchange` and answer\n' +
+              '`true` for what your transport throws. That is the same escape hatch a provider whose token\n' +
+              'exchange does not go through global `fetch` uses, and it is visible in your options rather\n' +
+              'than silent.',
+          });
+        }
+
         fail(fixtures, {
+          code: 'obligation/stateCodec/callback#state-rejected',
           obligation: 'stateCodec',
           headline: 'handleCallback rejected a state its own getLoginUrl was just handed.',
           observed: [
@@ -1142,9 +1575,9 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
             `handleCallback(${show(fixtures.code)}, state) then threw, before reaching the token exchange:`,
             `  ${show(outcome.error)}`,
             '',
-            'The suite replaced globalThis.fetch for this call, so a provider that got as far as the',
-            'token exchange fails with a recognizable error instead. This failure is not that one, which',
-            'means the provider stopped at the state.',
+            'The suite replaced globalThis.fetch for this call, and it was never called: handleCallback',
+            'made no network attempt at all before throwing. So the provider stopped at the state rather',
+            'than getting as far as the token exchange.',
           ],
           why:
             `${AUTH_OBLIGATION_GUIDANCE.stateCodec.why}\n` +
@@ -1172,10 +1605,12 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
       section: obligationSection('organizationId'),
       title: 'satisfies isOrganizationsProvider, on its own or through the wrapper',
       obligation: 'organizationId',
+      failureCodes: ['obligation/organizationId/declared#not-declared'],
       skipReason: ALWAYS,
       async run(provider) {
         if (isOrganizationsProvider(provider)) return;
         fail(fixtures, {
+          code: 'obligation/organizationId/declared#not-declared',
           obligation: 'organizationId',
           headline: 'This provider resolves no organization: isOrganizationsProvider(provider) is false.',
           observed: [
@@ -1195,6 +1630,11 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
       section: obligationSection('organizationId'),
       title: 'ensureOrganization returns the same non-empty id on every call',
       obligation: 'organizationId',
+      failureCodes: [
+        'obligation/organizationId/deterministic#threw',
+        'obligation/organizationId/deterministic#not-a-string',
+        'obligation/organizationId/deterministic#not-deterministic',
+      ],
       skipReason: ALWAYS,
       async run(provider) {
         if (!isOrganizationsProvider(provider)) {
@@ -1207,6 +1647,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         const first = await settle(() => provider.ensureOrganization(userId));
         if (!first.ok) {
           fail(fixtures, {
+            code: 'obligation/organizationId/deterministic#threw',
             obligation: 'organizationId',
             headline: 'ensureOrganization threw instead of resolving an organization id.',
             observed: [`ensureOrganization(${show(userId)}) threw.`, `  ${show(first.error)}`],
@@ -1224,6 +1665,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
 
         if (typeof one !== 'string' || one === '') {
           fail(fixtures, {
+            code: 'obligation/organizationId/deterministic#not-a-string',
             obligation: 'organizationId',
             observed: [
               `ensureOrganization(${show(userId)}) resolved to ${show(one)}.`,
@@ -1234,6 +1676,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         }
         if (one !== two) {
           fail(fixtures, {
+            code: 'obligation/organizationId/deterministic#not-deterministic',
             obligation: 'organizationId',
             headline: 'ensureOrganization is not deterministic: two calls for one user gave two organizations.',
             observed: [
@@ -1272,12 +1715,14 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
       section: SECTION_SSO,
       title: 'getLoginButtonConfig describes a control a UI can draw',
       obligation: null,
+      failureCodes: ['sso/login-button#threw', 'sso/login-button#not-renderable'],
       skipReason: requiresSSO,
       async run(provider) {
         if (!isSSOProvider(provider)) return;
         const outcome = await settle(() => provider.getLoginButtonConfig());
         if (!outcome.ok) {
           fail(fixtures, {
+            code: 'sso/login-button#threw',
             headline: 'getLoginButtonConfig threw.',
             observed: [`getLoginButtonConfig() threw.`, `  ${show(outcome.error)}`],
             why: 'The sign-in screen calls this to draw its one button. A throw there is a blank page.',
@@ -1294,6 +1739,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         }
         if (problems.length === 0) return;
         fail(fixtures, {
+          code: 'sso/login-button#not-renderable',
           headline: 'getLoginButtonConfig returned a config a UI cannot render.',
           observed: [`getLoginButtonConfig() returned ${show(config)}.`, ...problems],
           why:
@@ -1308,6 +1754,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
       section: SECTION_SSO,
       title: 'getLogoutUrl, when implemented, answers a URL or null',
       obligation: null,
+      failureCodes: ['sso/logout-url#threw', 'sso/logout-url#not-an-absolute-url'],
       skipReason: provider =>
         isSSOProvider(provider) && typeof provider.getLogoutUrl === 'function'
           ? null
@@ -1317,6 +1764,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         const outcome = await settle(() => provider.getLogoutUrl?.(fixtures.redirectUri, requestWith(fixtures)));
         if (!outcome.ok) {
           fail(fixtures, {
+            code: 'sso/logout-url#threw',
             headline: 'getLogoutUrl threw.',
             observed: [`getLogoutUrl(${show(fixtures.redirectUri)}, request) threw.`, `  ${show(outcome.error)}`],
             why:
@@ -1329,6 +1777,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         if (url === null || url === undefined) return;
         if (typeof url !== 'string' || !URL.canParse(url)) {
           fail(fixtures, {
+            code: 'sso/logout-url#not-an-absolute-url',
             headline: 'getLogoutUrl answered something that is not an absolute URL.',
             observed: [`getLogoutUrl(...) returned ${show(url)}.`],
             why: 'The host redirects the browser to this value verbatim.',
@@ -1342,6 +1791,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
       section: SECTION_CREDENTIALS,
       title: 'isSignUpEnabled, when implemented, answers a literal boolean',
       obligation: null,
+      failureCodes: ['credentials/sign-up-enabled#not-a-literal-boolean'],
       skipReason: provider => {
         const gate = requiresCredentials(provider);
         if (gate !== null) return gate;
@@ -1377,6 +1827,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
           if (typeof returned === 'boolean') return;
         }
         fail(fixtures, {
+          code: 'credentials/sign-up-enabled#not-a-literal-boolean',
           headline: 'isSignUpEnabled did not answer a literal boolean.',
           observed: [
             outcome.ok
@@ -1399,6 +1850,13 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
       section: SECTION_SESSIONS,
       title: 'a created session validates, and names the user it was created for',
       obligation: null,
+      failureCodes: [
+        'sessions/round-trip#create-threw',
+        'sessions/round-trip#create-returned-no-id',
+        'sessions/round-trip#create-wrong-user',
+        'sessions/round-trip#validate-rejects-fresh-session',
+        'sessions/round-trip#destroyed-session-still-validates',
+      ],
       skipReason: requiresSessions,
       async run(provider) {
         if (!isSessionProvider(provider)) return;
@@ -1407,6 +1865,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         const created = await settle(() => provider.createSession(userId));
         if (!created.ok) {
           fail(fixtures, {
+            code: 'sessions/round-trip#create-threw',
             headline: 'createSession threw.',
             observed: [`createSession(${show(userId)}) threw.`, `  ${show(created.error)}`],
             why:
@@ -1421,6 +1880,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         const session = created.value as { id?: unknown; userId?: unknown } | null;
         if (session === null || typeof session !== 'object' || typeof session.id !== 'string' || session.id === '') {
           fail(fixtures, {
+            code: 'sessions/round-trip#create-returned-no-id',
             headline: 'createSession returned something with no session id.',
             observed: [`createSession(${show(userId)}) returned ${show(session)}.`],
             why: 'The id is the value the host puts in a cookie and hands back to `validateSession`.',
@@ -1429,6 +1889,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         }
         if (session.userId !== userId) {
           fail(fixtures, {
+            code: 'sessions/round-trip#create-wrong-user',
             headline: 'createSession returned a session belonging to a different user.',
             observed: [`createSession(${show(userId)}) returned a session with userId ${show(session.userId)}.`],
             why: 'The host reads the user back off the session on every subsequent request.',
@@ -1439,6 +1900,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         const validated = await settle(() => provider.validateSession(session.id as string));
         if (!validated.ok || validated.value === null || validated.value === undefined) {
           fail(fixtures, {
+            code: 'sessions/round-trip#validate-rejects-fresh-session',
             headline: 'validateSession rejected a session this provider had just created.',
             observed: [
               `createSession(${show(userId)}) returned session ${show(session.id)}.`,
@@ -1461,6 +1923,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         const afterDestroy = await settle(() => provider.validateSession(session.id as string));
         if (afterDestroy.ok && afterDestroy.value !== null && afterDestroy.value !== undefined) {
           fail(fixtures, {
+            code: 'sessions/round-trip#destroyed-session-still-validates',
             headline: 'A destroyed session still validates.',
             observed: [
               `destroySession(${show(session.id)}) resolved.`,
@@ -1480,6 +1943,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
       section: SECTION_ROUTES,
       title: 'handleAuthRequest answers a Response, including for a path it does not serve',
       obligation: null,
+      failureCodes: ['routes/answers-a-response#threw', 'routes/answers-a-response#not-a-response'],
       skipReason: requiresHttpHandler,
       async run(provider) {
         if (!isAuthHttpHandler(provider)) return;
@@ -1487,6 +1951,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         const outcome = await withoutNetwork(() => settle(() => provider.handleAuthRequest(request)));
         if (!outcome.ok) {
           fail(fixtures, {
+            code: 'routes/answers-a-response#threw',
             headline: 'handleAuthRequest threw for a route it does not serve.',
             observed: [`handleAuthRequest(GET ${request.url}) threw.`, `  ${show(outcome.error)}`],
             why:
@@ -1498,6 +1963,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         }
         if (!(outcome.value instanceof Response)) {
           fail(fixtures, {
+            code: 'routes/answers-a-response#not-a-response',
             headline: 'handleAuthRequest resolved to something that is not a Response.',
             observed: [`handleAuthRequest(GET ${request.url}) resolved to ${show(outcome.value)}.`],
             why: 'The host returns this value to the browser as-is.',
@@ -1511,6 +1977,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
       section: SECTION_INIT,
       title: 'init accepts the host context',
       obligation: null,
+      failureCodes: ['init/accepts-host-context#threw'],
       skipReason: requiresInit,
       async run(provider) {
         if (!hasAuthInit(provider)) return;
@@ -1524,6 +1991,7 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
         );
         if (outcome.ok) return;
         fail(fixtures, {
+          code: 'init/accepts-host-context#threw',
           headline: 'init threw for a host context carrying only a public URL and allowed origins.',
           observed: [`init({ publicUrl, allowedOrigins }) threw.`, `  ${show(outcome.error)}`],
           why:
@@ -1539,6 +2007,129 @@ function buildChecks(fixtures: Fixtures): readonly AuthConformanceCheck[] {
       },
     },
   ];
+}
+
+// ============================================================================
+// Running one check
+// ============================================================================
+
+/** The message of a thrown value, however unhelpfully it was thrown. */
+function messageOf(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+/**
+ * Run one check against one provider and say what happened, with the
+ * known-failure policy applied.
+ *
+ * This is where that policy lives, once. `describeAuthProvider` is a `describe`
+ * and an `it` around it, and an adapter for another runner is the same shape -
+ * so the two halves cannot drift, which is the thing that would quietly break
+ * the guarantee. The split C1 established is what makes the policy testable at
+ * all: there is no way to write a passing vitest test asserting that a nested
+ * vitest suite went red, so the kit's own tests call this and assert on the
+ * outcome as data.
+ *
+ * The four rules, all of them enforced here:
+ *
+ * 1. A check with no entry behaves exactly as before - pass, skip with the
+ *    gate's reason, or fail.
+ * 2. A recorded check that fails with the recorded code is a `knownFailure`.
+ *    Reported, not silent; not a suite failure.
+ * 3. A recorded check that passes, or that turns out not to apply, is a
+ *    `failed` - the record has outlived the defect and has to be deleted.
+ * 4. A recorded check that fails under a different code is a `failed` too. An
+ *    entry names one defect; letting any failure of that check count would let
+ *    it absorb the next, unrelated regression in the same check.
+ *
+ * @param check one of {@link authConformanceChecks}
+ * @param provider a freshly built provider, not shared with another check
+ * @param providerName how to name it in a message. Defaults to `check.id`'s
+ * suite name being unavailable here, so pass the caller's `name`.
+ */
+export async function runAuthConformanceCheck(
+  check: AuthConformanceCheck,
+  provider: IMastraAuthProvider,
+  providerName: string,
+): Promise<AuthConformanceOutcome> {
+  const entry = check.knownFailure;
+
+  // Safe to call unguarded: `authConformanceChecks` wraps every gate.
+  const skip = check.skipReason(provider);
+  if (skip !== null) {
+    if (entry === null) return { status: 'skipped', reason: skip };
+    return {
+      status: 'failed',
+      code: null,
+      message: formatStaleKnownFailure({
+        provider: providerName,
+        check: check.id,
+        code: entry.code,
+        reason: entry.reason,
+        kind: 'skipped',
+        detail: skip,
+      }),
+    };
+  }
+
+  let thrown: unknown;
+  let failed = false;
+  try {
+    await check.run(provider);
+  } catch (error) {
+    thrown = error;
+    failed = true;
+  }
+
+  if (entry === null) {
+    if (!failed) return { status: 'passed' };
+    return { status: 'failed', message: messageOf(thrown), code: readFailureCode(thrown) };
+  }
+
+  if (!failed) {
+    return {
+      status: 'failed',
+      code: null,
+      message: formatStaleKnownFailure({
+        provider: providerName,
+        check: check.id,
+        code: entry.code,
+        reason: entry.reason,
+        kind: 'passed',
+      }),
+    };
+  }
+
+  const actual = readFailureCode(thrown);
+  if (actual !== entry.code) {
+    return {
+      status: 'failed',
+      code: actual,
+      message: formatStaleKnownFailure({
+        provider: providerName,
+        check: check.id,
+        code: entry.code,
+        reason: entry.reason,
+        kind: 'different-code',
+        actualCode: actual,
+        detail: messageOf(thrown),
+      }),
+    };
+  }
+
+  return {
+    status: 'knownFailure',
+    entry,
+    failure: messageOf(thrown),
+    message: formatKnownFailure({
+      provider: providerName,
+      check: check.id,
+      code: entry.code,
+      reason: entry.reason,
+      message: messageOf(thrown),
+    }),
+  };
 }
 
 // ============================================================================
@@ -1586,18 +2177,39 @@ export function describeAuthProvider(options: AuthProviderConformanceOptions): v
     for (const section of sections) {
       describe(section, () => {
         for (const check of checks.filter(candidate => candidate.section === section)) {
-          it(check.title, async ctx => {
+          const title = check.knownFailure === null ? check.title : `${KNOWN_FAILURE_TITLE_PREFIX}${check.title}`;
+          it(title, async ctx => {
             // A fresh provider per check: no check can see another's state, and
             // a provider that mutates itself on first use is exercised from a
             // clean start every time.
             const provider = await options.createProvider();
-            // Safe to call unguarded: `authConformanceChecks` wraps every gate.
-            const skip = check.skipReason(provider);
-            if (skip !== null) {
-              ctx.skip(skip);
+            const outcome = await runAuthConformanceCheck(check, provider, options.name);
+
+            if (outcome.status === 'passed') return;
+            if (outcome.status === 'failed') expect.fail(outcome.message);
+            if (outcome.status === 'skipped') {
+              ctx.skip(outcome.reason);
               return;
             }
-            await check.run(provider);
+
+            // A known failure, and the two lines below are the whole reporting
+            // decision. It must not fail the run - that is the point of
+            // recording it - and it must not be invisible either, because an
+            // invisible exemption is an exclusion with extra steps.
+            //
+            // So it is announced on stderr, which the default reporter prints
+            // with the file and test name attached and which therefore survives
+            // a run nobody opens in verbose mode, and it is then skipped with
+            // the full report as the note. Together with the title prefix, a
+            // provider carrying known failures cannot be mistaken for a clean
+            // one at any level of detail somebody chooses to read.
+            //
+            // eslint-disable-next-line no-console -- the visibility is the feature; see above.
+            console.warn(
+              `[factory-auth conformance] KNOWN FAILURE  ${options.name}  ${outcome.entry.code}\n` +
+                `  ${outcome.entry.reason}`,
+            );
+            ctx.skip(outcome.message);
           });
         }
       });
