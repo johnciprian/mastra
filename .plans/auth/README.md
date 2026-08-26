@@ -155,6 +155,43 @@ conformance test.
   appears in any interface doc, and the conformance suite has no check for it. A provider
   can pass conformance with no PKCE at all.
 
+### Unsettled: the organization fallback — decide before B18
+
+**This is a data-access boundary and it needs a human decision.** It does not block
+anything today: `MASTRACODE_AUTH_IDENTITY_V2` defaults off, and B18 (which turns it on) is
+deferred by one release. But it must be settled before that flag flips.
+
+`toAuthIdentity` resolves a `{ session, user }` wrapper's organization from
+`session.activeOrganizationId`, **falling back to the `user` half's own
+`organizationId`** when the session names none. `mastracode/factory/src/workspace.test.ts`
+asserts the opposite: no active org on the session half means no org at all, and the
+request is refused.
+
+It is the only assertion in 1,794 that the flag flips, and both positions are defensible:
+
+- **Refuse (shipped today).** The user has not chosen to act in that organization for this
+  session. Fail closed; this is also what a signed-in user sees before picking an org.
+- **Fall back (the kit).** The user does belong to that organization, and refusing a
+  request from someone with exactly one organization is a worse first-run experience.
+
+The difference decides **which organization's data a request can reach**, so it is a
+product and security call rather than a fixture update. The test currently asserts shipped
+behaviour and records the conflict in place.
+
+### Blocked, not forgotten: B7's dependency removal
+
+B7 took `@mastra/auth-workos` out of the neutral auth module, which is its real
+`doneWhen`. Removing it from `mastracode/factory/package.json` is **blocked**:
+`src/integrations/workos/integration.ts` imports `WorkOSAdminPortal` at top level and it
+ships — `dist/integrations/workos/integration.js` carries the runtime import, reachable
+through the `"./*"` exports map. Dropping the dependency would leave an unresolvable import
+in published output. Nothing in the repo imports `WorkOSAuditIntegration`, so it may be
+dead code, but deleting a shipped feature is a product decision.
+
+Consequence for the lint rule: a repo-wide `@mastra/auth-*` ban stays unavailable, because
+`factory.ts:21` imports `MastraAuthStudio` and the integration imports `WorkOSAdminPortal`.
+A rule scoped to `src/auth.ts` alone is true today and catches the regression that matters.
+
 ### D5 gate result
 
 The guide was validated by an engineer with no prior knowledge of this project, building a
