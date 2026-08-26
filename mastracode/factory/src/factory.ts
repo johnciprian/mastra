@@ -29,14 +29,7 @@ import type { IMastraAuthProvider } from '@mastra/core/server';
 import type { FactoryStorage } from '@mastra/core/storage';
 import type { MastraVector } from '@mastra/core/vector';
 import type { WorkspaceSandbox } from '@mastra/core/workspace';
-import {
-  buildAuthRoutes,
-  createFactoryAuthGate,
-  createFactoryRouteAuth,
-  getFactoryAuthOrgId,
-  getFactoryAuthUserFromContext,
-  getFactoryAuthUserId,
-} from './auth.js';
+import { buildAuthRoutes, createFactoryAuthGate, createFactoryRouteAuth } from './auth.js';
 import type { FactoryIntegration, IntegrationPostToolContext, IntegrationTools } from './integrations/base.js';
 import type { GithubIntegration } from './integrations/github/integration.js';
 import {
@@ -445,10 +438,11 @@ export class MastraFactory {
       projects: factoryProjectsStorage,
       users: auth && isUserProvider(auth) ? auth : undefined,
       sinks: integrations,
-      agentTenant: requestContext => {
-        const user = getFactoryAuthUserFromContext(requestContext);
-        return { orgId: getFactoryAuthOrgId(user), userId: getFactoryAuthUserId(user) };
-      },
+      // Through the port, like every other identity read. Re-deriving it here
+      // skipped organization resolution, so an agent-emitted event from a
+      // caller with no provider organization was recorded against no
+      // organization at all.
+      agentTenant: requestContext => routeAuth.runTenant(requestContext),
     });
     const commentsDomain = new CommentsDomain({
       auth: routeAuth,
@@ -706,6 +700,7 @@ export class MastraFactory {
       prepareAgentControllerMount({
         controllerId: CONTROLLER_ID,
         workspace: createWorkspaceFactory({
+          auth: routeAuth,
           ...(this.#config.sandbox ? { sandbox: this.#config.sandbox } : {}),
           ...(githubIntegration ? { github: githubIntegration } : {}),
           ...(workItemsStorage ? { workItems: workItemsStorage } : {}),
