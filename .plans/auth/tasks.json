@@ -807,7 +807,7 @@
     },
     {
       "id": "C2",
-      "status": "held",
+      "status": "done",
       "title": "Conformance baseline: workos and studio",
       "lane": "C",
       "size": "M",
