@@ -1206,7 +1206,7 @@
     },
     {
       "id": "P11",
-      "status": "pending",
+      "status": "done",
       "title": "A blessed way to clear a provider-owned session cookie",
       "lane": "K",
       "size": "M",
@@ -1217,7 +1217,7 @@
         "mastracode/factory/src/auth.ts",
         "docs/src/content/en/reference/auth/capability-interfaces.mdx"
       ],
-      "detail": "A hosted-login provider that mints its own cookie has no supported way to clear it on logout. ISSOProvider has getLogoutUrl but nothing that returns clear-cookie headers, and getClearSessionHeaders lives on ISessionProvider - whose guard and interface demand all seven members, six of which such a provider has no reason to implement. What actually happens today works but is unblessed: mastracode/factory/src/auth.ts:741 reads getClearSessionHeaders off the provider as `Partial<ISessionProvider>` and honours it without requiring the other six, and @mastra/auth-better-auth relies on exactly that. Nothing is broken; it is documented by no interface, which is why a fresh reader in D5 invented their own method for the job. Declare the member somewhere a provider can implement it alone - an optional member on ISSOProvider, or a one-member interface with its own guard - and make the Factory's Partial read the declared path rather than a convention.",
+      "detail": "A hosted-login provider that mints its own cookie has no supported way to clear it on logout. ISSOProvider has getLogoutUrl but nothing that returns clear-cookie headers, and getClearSessionHeaders lives on ISessionProvider - whose guard and interface demand all seven members, six of which such a provider has no reason to implement. What actually happens today works but is unblessed: mastracode/factory/src/auth.ts:741 reads getClearSessionHeaders off the provider as `Partial<ISessionProvider>` and honours it without requiring the other six, and @mastra/auth-better-auth relies on exactly that. Nothing is broken; it is documented by no interface, which is why a fresh reader in D5 invented their own method for the job. Declare the member somewhere a provider can implement it alone - an optional member on ISSOProvider, or a one-member interface with its own guard - and make the Factory's Partial read the declared path rather than a convention. DONE at 59ce486a. Route taken: a one-member interface with its own guard, not an optional member on ISSOProvider. The second option in this task does not work: @mastra/auth-better-auth is the provider the pattern exists for and it is not an ISSOProvider - it is credentials, HTTP handler, user and organizations - so putting the member there would declare it for every provider that cannot use it and none that needs it. ISessionProvider extends ISessionClearer, so the member is declared once and every full session provider satisfies canClearSession too. This is the eighth guard, which makes the audit right by accident about a number it was wrong about when written.",
       "doneWhen": "A hosted-login provider can clear its own cookie by implementing one declared member, and the Factory reads that member rather than a structural Partial."
     },
     {
