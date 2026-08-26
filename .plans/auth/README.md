@@ -69,7 +69,7 @@ so the boundary is a build error rather than a code-review habit.
 ## Status
 
 **62 of 65 original tasks done**, plus **28 post-plan follow-ups** (`P1`–`P28`) filed by
-the re-grade and by the work since, of which **19 are done and 9 pending**. Each task in
+the re-grade and by the work since, of which **20 are done and 8 pending**. Each task in
 `tasks.json` carries a `status` field (`done` / `pending` / `held`) — that file is the
 source of truth for progress; update it when a task merges.
 
@@ -104,7 +104,7 @@ Apache-2.0/EE boundary, and a `describeAuthProvider` conformance suite. See
 
 ### Where the plan text was wrong, and the measurement that showed it
 
-The `P` follow-ups were written from reading the code rather than running it, and six of
+The `P` follow-ups were written from reading the code rather than running it, and seven of
 them turned out to be wrong about the defect or the fix — enough that measuring first
 before touching anything is now the rule, not a precaution. Each correction is recorded in
 that task's own `detail` in `tasks.json`, next to the claim it replaces.
@@ -134,6 +134,10 @@ that task's own `detail` in `tasks.json`, next to the claim it replaces.
   `jose` is incidental — the leak is any module mocked in one file and imported for real by
   a sibling, and it runs in both directions, which is why the failing package differed every
   time. It also assumed isolating would cost speed; measured, it costs 0.7%.
+- **`P11`'s second option would not have worked.** The task offered an optional member on
+  `ISSOProvider` as an alternative to a standalone interface. `@mastra/auth-better-auth` is
+  the provider the pattern exists for and it is not an `ISSOProvider`, so that route would
+  have declared the member for every provider that cannot use it and none that needs it.
 - **`P18` undercounted, and one of its own reasons was wrong.** `auth/studio` carried four
   recorded failures, not three. And the reason recorded against `ensureOrganization` said
   fixing it would move which partition bearer-token users' rows land in; it does not, because
