@@ -2339,9 +2339,6 @@ importers:
       '@mastra/auth-studio':
         specifier: workspace:*
         version: link:../../auth/studio
-      '@mastra/auth-workos':
-        specifier: workspace:*
-        version: link:../../auth/workos
       '@mastra/code-sdk':
         specifier: workspace:*
         version: link:../sdk

@@ -55,7 +55,6 @@
   },
   "dependencies": {
     "@mastra/auth-studio": "workspace:*",
-    "@mastra/auth-workos": "workspace:*",
     "@mastra/code-sdk": "workspace:*",
     "@mastra/core": "workspace:*",
     "@mastra/factory-auth": "workspace:*",

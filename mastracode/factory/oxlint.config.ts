@@ -27,7 +27,7 @@ const INTERNAL_AUTH_MESSAGE =
   '@internal/auth re-exports ee/ from its barrel (11 ee/ modules at runtime) and is private to the monorepo, so a published package must not name it. This package does not depend on it and should not start: take the contract from @mastra/core/server, or @mastra/factory-auth/contract. See mastracode/factory-auth/README.md#the-ee-boundary.';
 
 const VENDOR_AUTH_MESSAGE =
-  'src/auth.ts is the provider-neutral auth module: it composes whatever provider the host was given, via the capability guards, and must not name a vendor. Importing a provider package here is how the neutral module stops being neutral - it was how the WORKOS_* env fallback existed, and removing that (B6/B7) is what made this rule true. Take the contract from @mastra/core/server and the Factory-side helpers from @mastra/factory-auth. Provider packages stay legal everywhere else in this package: factory.ts constructs MastraAuthStudio, and integrations/workos/ uses WorkOSAdminPortal.';
+  'This package names no auth vendor package except in src/factory.ts, which constructs MastraAuthStudio as the default provider. Everything else composes whatever provider the host was given, via the capability guards. Take the contract from @mastra/core/server and the Factory-side helpers from @mastra/factory-auth. If you need a vendor client for an integration, take it from the host through the integration constructor - integrations/workos/ does exactly that, which is what let @mastra/auth-workos leave this package (P14).';
 
 const EE_BOUNDARY_GROUPS = [
   {
@@ -59,8 +59,11 @@ const EE_BOUNDARY_GROUPS = [
 ];
 
 /**
- * Provider packages, banned in `src/auth.ts` only. See eslint.config.js for why
- * a package-wide ban would fail on imports this package legitimately makes.
+ * Provider packages, banned everywhere except `src/factory.ts`, which
+ * constructs `MastraAuthStudio` as the default provider. This was scoped to
+ * `src/auth.ts` alone until P14 took `@mastra/auth-workos` out of the package
+ * and left one legitimate importer. See eslint.config.js for the full reasoning
+ * and for why the exemption is a separate block rather than a negated pattern.
  */
 const VENDOR_AUTH_GROUP = {
   group: ['@mastra/auth-*', '@mastra/auth-*/**'],
@@ -69,31 +72,31 @@ const VENDOR_AUTH_GROUP = {
 
 const eeBoundaryRule = ['error', { patterns: EE_BOUNDARY_GROUPS }];
 
-const neutralAuthModuleRule = ['error', { patterns: [...EE_BOUNDARY_GROUPS, VENDOR_AUTH_GROUP] }];
+const vendorAuthRule = ['error', { patterns: [...EE_BOUNDARY_GROUPS, VENDOR_AUTH_GROUP] }];
 
 export default defineConfig({
   extends: [rootConfig],
   rules: {
-    'no-restricted-imports': eeBoundaryRule,
+    'no-restricted-imports': vendorAuthRule,
   },
   overrides: [
     {
       files: ['**/*.ts?(x)', '**/*.js?(x)'],
       rules: {
-        'no-restricted-imports': eeBoundaryRule,
+        'no-restricted-imports': vendorAuthRule,
       },
     },
     {
       files: ['**/tests/**', '**/#tests/**', '**/__tests__/**/*', '**/*.test.*', '**/*.spec.*'],
       rules: {
-        'no-restricted-imports': eeBoundaryRule,
+        'no-restricted-imports': vendorAuthRule,
       },
     },
     {
-      // Last, so it wins for the provider-neutral module.
-      files: ['src/auth.ts'],
+      // Last, so it wins for the one file allowed to name a provider.
+      files: ['src/factory.ts', 'src/factory.test.ts'],
       rules: {
-        'no-restricted-imports': neutralAuthModuleRule,
+        'no-restricted-imports': eeBoundaryRule,
       },
     },
   ],

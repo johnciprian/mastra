@@ -11,6 +11,31 @@ import type { ApiRoute } from '@mastra/core/server';
 import type { Context } from 'hono';
 
 /**
+ * The signed-in user's display fields, for surfaces that show *who* acted
+ * rather than merely scoping data to them.
+ *
+ * Separate from the tenant tuple on purpose. `{ orgId, userId }` is an
+ * authorization answer and every route needs it; a name and a face are a
+ * presentation answer and only the audit trail needs it. Keeping them apart
+ * means a route cannot accidentally authorize on a display name, and the
+ * fields stay optional because no provider is obliged to supply them: a
+ * bearer-token provider legitimately knows an id and nothing else.
+ *
+ * `id` is the same id {@link RouteAuth.tenant} reports, so a caller that
+ * carries a profile alongside a tenant cannot end up describing two people.
+ */
+export interface RouteAuthProfile {
+  /** Stable provider user id — identical to `tenant().userId`. */
+  id: string;
+  /** Human-readable display name, when the provider exposes one. */
+  name?: string;
+  /** Email address, when the provider exposes one. */
+  email?: string;
+  /** Profile picture URL, when the provider exposes one. */
+  avatarUrl?: string;
+}
+
+/**
  * The auth surface factory routes need, implemented by the host server.
  *
  * Local (no-auth) deployments implement this with a stub where `enabled()`
@@ -49,6 +74,23 @@ export interface RouteAuth {
   runTenant(
     requestContext: { get: (key: string) => unknown } | undefined,
   ): { orgId: string; userId: string } | undefined;
+  /**
+   * Display profile for the signed-in user, when signed in.
+   *
+   * The audit trail is the reason this exists. Recording *that* a user moved a
+   * work item is a tenant question and {@link tenant} answers it; rendering
+   * "Ada Lovelace moved it" is not, and the audit domain used to answer it by
+   * reading the gate's `factoryAuthUser` variable straight off the Hono
+   * context — the last identity read in this package that went around this
+   * port rather than through it. That read was not an oversight: nothing here
+   * could answer the question, so there was nowhere else to go.
+   *
+   * Same lifecycle as {@link tenant}: call `ensureUser()` first, and expect
+   * `undefined` when nobody is signed in. Every field but `id` is optional,
+   * because a provider that knows only an id is a legitimate provider — a
+   * caller that needs a label should fall back to the id rather than assume.
+   */
+  profile(c: Context): RouteAuthProfile | undefined;
   /** Fail-closed check that the caller administers the given organization. */
   isOrganizationAdmin(c: Context, organizationId: string): Promise<boolean>;
 }

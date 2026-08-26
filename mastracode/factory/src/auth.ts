@@ -17,7 +17,7 @@ import { decodeState, encodeState } from '@mastra/factory-auth/oauth-state';
 import { resolveOrganizationId } from '@mastra/factory-auth/organizations';
 import type { Context, Hono } from 'hono';
 
-import type { RouteAuth } from './routes/route.js';
+import type { RouteAuth, RouteAuthProfile } from './routes/route.js';
 import { timedAboveThreshold } from './timing.js';
 
 /**
@@ -384,6 +384,39 @@ export function factoryAuthTenant(c: Context): FactoryAuthTenant | undefined {
 }
 
 /**
+ * Display fields for the signed-in user: the `RouteAuth.profile` answer.
+ *
+ * The tenant tuple deliberately carries no name, and for authorization that is
+ * right. But the audit trail has to render a person, not an opaque id, and it
+ * cannot get one from an `IUserProvider.getUser(id)` lookup either — the Studio
+ * provider proxies through the shared API and always returns `null` for an
+ * arbitrary id. So the acting user's own profile has to be captured from the
+ * request that did the acting, which is exactly what this module already has
+ * and no route module does. Exposing it here is what lets the audit domain stop
+ * reading the gate's context variable itself.
+ *
+ * Gated on the same blank-id rule as {@link factoryAuthTenant}, so the two
+ * cannot disagree about whether there is a signed-in user at all. Blank display
+ * fields are dropped rather than passed through: a name of `"  "` renders as a
+ * missing name in a UI but is truthy in code, which is the kind of value that
+ * makes an actor look present and nameless.
+ */
+export function factoryAuthProfile(c: Context): RouteAuthProfile | undefined {
+  const user = getFactoryAuthUser(c);
+  const userId = getFactoryAuthUserId(user);
+  if (!userId || userId.trim() === '') return undefined;
+  const name = user?.name?.trim();
+  const email = user?.email?.trim();
+  const avatarUrl = user?.avatarUrl?.trim();
+  return {
+    id: userId,
+    ...(name ? { name } : {}),
+    ...(email ? { email } : {}),
+    ...(avatarUrl ? { avatarUrl } : {}),
+  };
+}
+
+/**
  * Map a provider `authenticateToken` result onto the neutral SPA user shape.
  *
  * Two implementations, chosen by {@link isAuthIdentityV2Enabled}: the kit's
@@ -547,9 +580,11 @@ type SessionRefreshProvider = Pick<
  * Whether a provider can refresh a session without sending the user back
  * through a login.
  *
- * All three members are checked, not `isSessionProvider`: that guard narrows on
- * `createSession` and `validateSession`, so a provider can satisfy it while
- * implementing none of these.
+ * The three members are checked rather than `isSessionProvider`, and that is
+ * still right now the guard tests all seven. This function asks a narrower
+ * question than the guard: it needs exactly these three, and a provider that
+ * has them can refresh whether or not it implements the rest of the interface.
+ * Asking the guard would turn a smaller capability into no capability.
  */
 function supportsSessionRefresh(
   provider: IMastraAuthProvider,
@@ -706,11 +741,12 @@ function providerClearCookies(provider: IMastraAuthProvider): string[] {
 /**
  * Revoke the caller's session server-side, where the provider can.
  *
- * `ISessionProvider` declares seven members and the guard tests two, so both
- * halves are checked as methods rather than inferred: a provider can satisfy
- * `isSessionProvider` with no `destroySession` at all. Mirrors what
- * `packages/server` does at its own logout — read the session id off the
- * request, then destroy it.
+ * Both halves are checked as methods rather than through `isSessionProvider`.
+ * The guard now tests all seven members, so asking it here would decline to
+ * revoke for a provider that has `getSessionIdFromRequest` and
+ * `destroySession` but not the rest — the two this needs and the only two it
+ * calls. Mirrors what `packages/server` does at its own logout — read the
+ * session id off the request, then destroy it.
  *
  * Best-effort by design. A provider that throws here has still had its cookies
  * cleared by the caller, so the browser is signed out either way; failing the
@@ -802,6 +838,7 @@ export function createFactoryRouteAuth(provider: IMastraAuthProvider | undefined
     ensureUser: (c: Context) => ensureFactoryAuthUser(provider, c),
     tenant: (c: Context) => factoryAuthTenant(c),
     runTenant: (requestContext: RequestContextLike | undefined) => factoryRunTenant(requestContext),
+    profile: (c: Context) => factoryAuthProfile(c),
     isOrganizationAdmin: (c: Context, organizationId: string) => isOrganizationAdmin(provider, c, organizationId),
   };
 }

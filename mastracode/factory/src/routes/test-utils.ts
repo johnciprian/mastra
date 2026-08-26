@@ -34,6 +34,10 @@ export function mountApiRoutes(app: Hono<any>, routes: ApiRoute[]): void {
 export interface TestAuthUser {
   id: string;
   organizationId?: string;
+  /** Display fields, surfaced through `RouteAuth.profile()`. Optional, as they are on a real provider. */
+  name?: string;
+  email?: string;
+  avatarUrl?: string;
 }
 
 /**
@@ -59,6 +63,21 @@ export function fakeRouteAuth(
       const raw = requestContext?.get('user') as TestAuthUser | undefined;
       if (!raw?.id) return undefined;
       return { orgId: resolveOrganizationId({ id: raw.id, organizationId: raw.organizationId }), userId: raw.id };
+    },
+    profile: c => {
+      const u = user(c);
+      if (!u?.id) return undefined;
+      // Blank fields dropped, matching the real seam — a fixture that sets
+      // `name: ''` must model a nameless user, not a user named nothing.
+      const name = u.name?.trim();
+      const email = u.email?.trim();
+      const avatarUrl = u.avatarUrl?.trim();
+      return {
+        id: u.id,
+        ...(name ? { name } : {}),
+        ...(email ? { email } : {}),
+        ...(avatarUrl ? { avatarUrl } : {}),
+      };
     },
     tenant: c => {
       const u = user(c);

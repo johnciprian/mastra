@@ -277,6 +277,59 @@ describe('AuditDomain', () => {
     });
   });
 
+  it('takes the acting profile from RouteAuth, not from the request context', async () => {
+    // The domain used to read `factoryAuthUser` off the Hono context itself,
+    // which was the last identity read in this package that went around the
+    // port. This proves it goes through `RouteAuth.profile()` now: the context
+    // carries one name and the port reports another, and the trail records the
+    // port's answer. A domain that still read the context would store 'Stale'.
+    const seed = await createFactoryStorageForTests();
+    const auth = fakeRouteAuth();
+    const profile = vi.fn(() => ({ id: 'user-1', name: 'Ada Lovelace', avatarUrl: 'https://avatars.example/ada.png' }));
+    const domain = auditDomain(seed, { auth: { ...auth, profile } });
+    const app = new Hono();
+    app.post('/emit', async c => {
+      c.set('factoryAuthUser' as never, { id: 'user-1', organizationId: 'org-1', name: 'Stale' } as never);
+      await domain.emit({
+        context: c,
+        input: { action: 'factory.work_item.updated', targets: [{ type: 'work_item', id: 'wi-1' }] },
+      });
+      return c.json({ ok: true });
+    });
+
+    await app.request('/emit', { method: 'POST' });
+
+    expect(profile).toHaveBeenCalledTimes(1);
+    const [event] = (await seed.audit.list({ orgId: 'org-1' })).events;
+    expect(event?.metadata).toMatchObject({
+      __actorProfile: { name: 'Ada Lovelace', avatarUrl: 'https://avatars.example/ada.png' },
+    });
+  });
+
+  it('records the event with no stamped profile when the provider supplies no display fields', async () => {
+    // An id-only provider is a valid provider. The event still records who
+    // acted; it just leaves the name for `#resolveActorProfiles` to find some
+    // other way, rather than stamping an actor whose name is the empty string.
+    const seed = await createFactoryStorageForTests();
+    const auth = fakeRouteAuth();
+    const domain = auditDomain(seed, { auth: { ...auth, profile: () => ({ id: 'user-1' }) } });
+    const app = new Hono();
+    app.post('/emit', async c => {
+      c.set('factoryAuthUser' as never, { id: 'user-1', organizationId: 'org-1' } as never);
+      await domain.emit({
+        context: c,
+        input: { action: 'factory.work_item.updated', targets: [{ type: 'work_item', id: 'wi-1' }] },
+      });
+      return c.json({ ok: true });
+    });
+
+    await app.request('/emit', { method: 'POST' });
+
+    const [event] = (await seed.audit.list({ orgId: 'org-1' })).events;
+    expect(event?.actorId).toBe('user-1');
+    expect(event?.metadata).not.toHaveProperty('__actorProfile');
+  });
+
   it('prefers actor profiles stamped in event metadata over the user provider', async () => {
     const seed = await createFactoryStorageForTests();
     const project = await seed.projects.create({
