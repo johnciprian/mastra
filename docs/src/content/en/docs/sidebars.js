@@ -478,6 +478,14 @@ const sidebars = {
                 tags: ['new'],
               },
             },
+            {
+              type: 'doc',
+              id: 'auth/write-a-provider',
+              label: 'Write an Auth Provider',
+              customProps: {
+                tags: ['new'],
+              },
+            },
           ],
         },
         {
