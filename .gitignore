@@ -90,3 +90,6 @@ om-reflector-fixture.json
 
 # Local git worktrees (scratch checkouts; never part of a commit)
 .worktrees/
+
+# Relocated turbo cache (build artifacts; never part of a commit)
+.turbo-parked/
