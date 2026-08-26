@@ -2,12 +2,13 @@ import { MastraAuthWorkos } from '@mastra/auth-workos';
 import {
   registerApiRoute,
   isAuthHttpHandler,
-  isCredentialsProvider,
   isOrganizationsProvider,
   isSessionProvider,
   isSSOProvider,
 } from '@mastra/core/server';
 import type { ApiRoute, IMastraAuthProvider, ISessionProvider } from '@mastra/core/server';
+import { toAuthDescriptor } from '@mastra/factory-auth/capabilities';
+import type { AuthDescriptor } from '@mastra/factory-auth/capabilities';
 import type { Context, Hono } from 'hono';
 
 import type { RouteAuth } from './routes/route.js';
@@ -33,7 +34,8 @@ import { timedAboveThreshold } from './timing.js';
  * - `ISSOProvider` — hosted-login `/auth/login`, `/auth/callback`, `/auth/logout`
  * - `IAuthHttpHandler` — provider-owned `/auth/api/*` endpoints (better-auth)
  * - `IOrganizationsProvider` — personal-org bootstrap + admin checks
- * - `ICredentialsProvider.isSignUpEnabled` — SPA sign-up affordance
+ * - `ICredentialsProvider.isSignUpEnabled` — SPA sign-up affordance, read
+ *   through the kit's capability descriptor (see {@link authMeta})
  * - `getClearSessionHeaders` — session cookie clearing on logout
  *
  * One behavioural switch lives here: {@link isAuthIdentityV2Enabled}, the
@@ -442,19 +444,71 @@ function isNavigationRequest(path: string, accept: string | undefined): boolean 
 }
 
 /**
+ * Provider description for the SPA, identical whether or not the caller has a
+ * session, and the same object on every `/auth/me` response.
+ *
+ * `auth` is the capability descriptor: what this provider can do, in the shape
+ * `@mastra/factory-auth` declares, so `/signin` can branch on capabilities
+ * instead of on a vendor name. `provider` is the old answer — a bare name the
+ * SPA still switches on — and it stays for one release so a browser holding a
+ * cached bundle keeps working across the deploy. U9 removes it.
+ *
+ * THE TWO SIGN-UP FIELDS, AND WHY THEY ARE DERIVED RATHER THAN COMPUTED TWICE
+ *
+ * This response carries the same fact under two names of opposite polarity for
+ * one release: `auth.signIn.signUpEnabled` is positive (it matches the provider
+ * method, `isSignUpEnabled`), and the legacy `signUpDisabled` is negative. That
+ * is the shape `factory-ui` reads today, so it cannot simply be dropped, and
+ * U9 is where it goes.
+ *
+ * The hazard is a missing `!`. A sign-up link rendered on a deployment that
+ * deliberately disabled sign-up looks like a working page from every angle —
+ * nothing errors, nothing logs, and the only symptom is accounts that should
+ * not exist. So `signUpDisabled` is *derived from* the descriptor here rather
+ * than computed a second time from the provider: there is exactly one call to
+ * `isSignUpEnabled` behind both fields, one negation between them, and no way
+ * for the pair to drift apart as the code around them changes.
+ *
+ * That negation is also stricter than the expression it replaces, deliberately.
+ * `toAuthDescriptor` answers `false` for a provider whose `isSignUpEnabled`
+ * throws or returns a non-boolean (an `async` implementation returns a Promise,
+ * which is truthy), where the old inline `=== false` let both cases through as
+ * "sign-up is on". Both fields now fail closed on a misbehaving provider.
+ *
+ * `credentialsBasePath` is left at the kit's default, `/auth`, because that is
+ * where {@link registerAuthRoutes} and {@link buildAuthRoutes} mount this
+ * host's auth routes. A credentials provider's own endpoints hang below it at
+ * `/auth/api/*`, which is what the SPA posts to.
+ */
+function authMeta(provider: IMastraAuthProvider): {
+  /**
+   * Optional because `IMastraAuthProvider.name` is. An unnamed provider drops
+   * the key from the JSON rather than sending `null`, which is what this
+   * response has always done and what the SPA's optional `provider?: string`
+   * already expects.
+   */
+  provider: string | undefined;
+  auth: AuthDescriptor;
+  signUpDisabled?: true;
+} {
+  const auth = toAuthDescriptor(provider);
+  const signUpDisabled = auth.signIn.signUpEnabled === false;
+  return { provider: provider.name, auth, ...(signUpDisabled ? { signUpDisabled: true } : {}) };
+}
+
+/**
  * Handle the provider-neutral `/auth/me` route: validate the session with the
  * active provider and report the signed-in user (no tokens) to the SPA.
  * `/auth/me` is public (the gate skips `/auth/*`), so it validates the session
  * itself rather than reading a value the gate would have stashed.
+ *
+ * Both responses carry {@link authMeta}, so a signed-out browser learns how to
+ * sign in from the same payload that tells it that it is signed out.
  */
 async function handleAuthMe(provider: IMastraAuthProvider, c: Context): Promise<Response> {
   const token = getBearerToken(c.req.header('Authorization'));
   const user = await authenticateRequest(provider, token, c.req.raw);
-  // Provider identity for the SPA: `/signin` renders the hosted-login button
-  // for WorkOS and an email/password form for better-auth (with sign-up hidden
-  // when the provider disables it).
-  const signUpDisabled = isCredentialsProvider(provider) && provider.isSignUpEnabled?.() === false;
-  const meta = { provider: provider.name, ...(signUpDisabled ? { signUpDisabled: true } : {}) };
+  const meta = authMeta(provider);
   if (!user) {
     return c.json({ authenticated: false, user: null, ...meta });
   }

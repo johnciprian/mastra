@@ -162,6 +162,12 @@ describe('mountFactoryAuth with an explicit custom provider', () => {
       authenticated: true,
       user: { userId: 'user_fake', email: 'fake@example.com', organizationId: 'org_fake' },
       provider: 'fake',
+      // A bare provider validates tokens but cannot sign anyone in from a
+      // browser, which is `kind: 'none'` — not "auth is off".
+      auth: {
+        signIn: { kind: 'none', providerHint: 'generic' },
+        features: { logout: false, organizations: false, refresh: false, sessionRevocation: false },
+      },
     });
   });
 
@@ -180,6 +186,15 @@ describe('mountFactoryAuth with an explicit custom provider', () => {
       user: null,
       provider: 'fake',
       signUpDisabled: true,
+      auth: {
+        signIn: {
+          kind: 'credentials',
+          providerHint: 'generic',
+          signUpEnabled: false,
+          credentialsBasePath: '/auth',
+        },
+        features: { logout: true, organizations: false, refresh: false, sessionRevocation: false },
+      },
     });
   });
 
@@ -217,6 +232,203 @@ describe('buildAuthRoutes', () => {
   it('a bare provider still gets /auth/me', () => {
     const routes = buildAuthRoutes(fakeProvider());
     expect(routes.map(r => r.path)).toEqual(['/auth/me']);
+  });
+});
+
+/** The `/auth/me` body, as far as these tests read it. */
+interface AuthMeBody {
+  authenticated: boolean;
+  provider?: string;
+  /** Legacy negative field, kept for one release. U9 removes it. */
+  signUpDisabled?: boolean;
+  auth: {
+    signIn: {
+      kind: 'hosted' | 'credentials' | 'both' | 'none';
+      providerHint?: string;
+      /** Positive field from the kit's descriptor. */
+      signUpEnabled?: boolean;
+      credentialsBasePath?: string;
+    };
+    features: { logout: boolean; organizations: boolean; refresh: boolean; sessionRevocation: boolean };
+  };
+}
+
+/** Credentials capability mixin (makes `isCredentialsProvider` true). */
+function credentialsCapability(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return { signIn: vi.fn(), ...overrides };
+}
+
+/** Session capability mixin (makes `isSessionProvider` true). */
+function sessionCapability(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    createSession: vi.fn(),
+    validateSession: vi.fn(),
+    refreshSession: vi.fn(),
+    destroySession: vi.fn(),
+    ...overrides,
+  };
+}
+
+/**
+ * U1: `/auth/me` carries the kit's capability descriptor, so `/signin` can
+ * branch on what a provider can *do* rather than on its name.
+ *
+ * The sign-up block below is the part worth reading before changing any of
+ * this. For one release the payload states the same fact twice with opposite
+ * polarity — `auth.signIn.signUpEnabled` (positive, matching the provider's
+ * `isSignUpEnabled`) and the legacy `signUpDisabled` (negative, which is what
+ * `factory-ui`'s SignInPage reads today). A dropped `!` between them renders a
+ * sign-up link on a deployment that switched sign-up off, and that failure is
+ * invisible from the outside: no error, no log, just accounts that should not
+ * exist. So the polarity of both fields is asserted explicitly, in the same
+ * payload, rather than each being checked in a test of its own where they could
+ * agree by accident.
+ */
+describe('/auth/me capability descriptor', () => {
+  /** GET `/auth/me` against a provider and return the parsed body. */
+  async function authMe(provider: IMastraAuthProvider): Promise<AuthMeBody> {
+    const app = new Hono();
+    mountFactoryAuth(app, { provider });
+    const res = await app.request('/auth/me');
+    expect(res.status).toBe(200);
+    return (await res.json()) as AuthMeBody;
+  }
+
+  describe('a descriptor is present for every capability shape', () => {
+    it.each([
+      { shape: 'bare (token validator only)', overrides: {}, kind: 'none' },
+      { shape: 'hosted login', overrides: ssoCapability(), kind: 'hosted' },
+      { shape: 'credentials', overrides: credentialsCapability(), kind: 'credentials' },
+      {
+        shape: 'hosted login and credentials',
+        overrides: { ...ssoCapability(), ...credentialsCapability() },
+        kind: 'both',
+      },
+    ])('$shape reports kind "$kind"', async ({ overrides, kind }) => {
+      const body = await authMe(fakeProvider(overrides));
+      expect(body.auth.signIn.kind).toBe(kind);
+      // Never a vendor name: the hint is a rendering token the SPA maps to copy.
+      expect(body.auth.signIn.providerHint).toBe('generic');
+    });
+  });
+
+  it('reports the descriptor to a signed-out browser too', async () => {
+    // The payload that says "you are signed out" is the same one that has to
+    // tell the browser how to sign in, so `/signin` renders from one request.
+    const body = await authMe(fakeProvider({ authenticateToken: vi.fn(async () => null), ...ssoCapability() }));
+    expect(body.authenticated).toBe(false);
+    expect(body.auth.signIn.kind).toBe('hosted');
+    expect(body.auth.features.logout).toBe(true);
+  });
+
+  it('keeps the bare provider name alongside the descriptor for one release', async () => {
+    // U9 removes this; until then a browser on a cached bundle still branches
+    // on the name, so the descriptor is added beside it and not instead of it.
+    const body = await authMe(fakeProvider(ssoCapability()));
+    expect(body.provider).toBe('fake');
+    expect(body.auth).toBeDefined();
+  });
+
+  it('derives the account-menu features from the provider capabilities', async () => {
+    const body = await authMe(
+      fakeProvider({
+        ...ssoCapability(),
+        ...sessionCapability(),
+        ensureOrganization: vi.fn(async () => 'org_fake'),
+        isOrganizationAdmin: vi.fn(async () => false),
+      }),
+    );
+    expect(body.auth.features).toEqual({
+      logout: true,
+      organizations: true,
+      refresh: true,
+      sessionRevocation: true,
+    });
+  });
+
+  it('offers no session revocation when the provider only looks like a session provider', async () => {
+    // isSessionProvider narrows on createSession/validateSession alone, so a
+    // provider can pass the guard with no destroySession to call.
+    const body = await authMe(
+      fakeProvider({ ...sessionCapability({ refreshSession: undefined, destroySession: undefined }) }),
+    );
+    expect(body.auth.features.refresh).toBe(false);
+    expect(body.auth.features.sessionRevocation).toBe(false);
+    // Still worth a sign-out control: there is a server-side session to end.
+    expect(body.auth.features.logout).toBe(true);
+  });
+
+  describe('the two sign-up fields, in one payload, with opposite polarity', () => {
+    it.each([
+      {
+        label: 'a provider that allows sign-up',
+        overrides: credentialsCapability({ isSignUpEnabled: () => true }),
+        enabled: true,
+      },
+      {
+        label: 'a provider that omits isSignUpEnabled (contract default is on)',
+        overrides: credentialsCapability(),
+        enabled: true,
+      },
+      {
+        label: 'a provider that disables sign-up',
+        overrides: credentialsCapability({ isSignUpEnabled: () => false }),
+        enabled: false,
+      },
+    ])('$label', async ({ overrides, enabled }) => {
+      const body = await authMe(fakeProvider(overrides));
+
+      // Positive field: says what the provider's own method says.
+      expect(body.auth.signIn.signUpEnabled).toBe(enabled);
+
+      // Negative field: present only to say "off", absent otherwise. This is
+      // the shape SignInPage reads as `signUpDisabled === true`.
+      expect(body.signUpDisabled).toBe(enabled ? undefined : true);
+
+      // And the two disagree as booleans in exactly the way they should. This
+      // is the assertion that catches a dropped `!`: it fails if the fields are
+      // ever made to agree, in either direction.
+      expect(body.auth.signIn.signUpEnabled).toBe(!(body.signUpDisabled ?? false));
+    });
+
+    it('states neither field for a provider with no credentials sign-in', async () => {
+      // There is no sign-up to describe, so nothing is claimed either way — an
+      // absent positive field must not be read as "sign-up is off".
+      const body = await authMe(fakeProvider(ssoCapability()));
+      expect(body.auth.signIn.signUpEnabled).toBeUndefined();
+      expect(body.signUpDisabled).toBeUndefined();
+    });
+
+    it.each([
+      {
+        label: 'throws',
+        isSignUpEnabled: () => {
+          throw new Error('provider is down');
+        },
+      },
+      { label: 'is async, so returns a truthy Promise', isSignUpEnabled: async () => true },
+      { label: 'returns a non-boolean', isSignUpEnabled: () => 'yes' },
+    ])('fails closed when isSignUpEnabled $label', async ({ isSignUpEnabled }) => {
+      // Stricter than the expression this replaced, deliberately: hiding a
+      // sign-up link that should have shown is a support ticket, while showing
+      // one that should have been hidden creates accounts nobody authorized.
+      const body = await authMe(fakeProvider(credentialsCapability({ isSignUpEnabled })));
+      expect(body.auth.signIn.signUpEnabled).toBe(false);
+      expect(body.signUpDisabled).toBe(true);
+    });
+  });
+
+  it('points a credentials form at the path this host actually mounts', async () => {
+    // The kit's default happens to match where registerAuthRoutes mounts, so
+    // no override is passed. The provider's own endpoints hang below it at
+    // /auth/api/*, which is what the SPA posts to.
+    const body = await authMe(fakeProvider({ ...credentialsCapability(), ...httpHandlerCapability() }));
+    expect(body.auth.signIn.credentialsBasePath).toBe('/auth');
+
+    const app = new Hono();
+    mountFactoryAuth(app, { provider: fakeProvider({ ...credentialsCapability(), ...httpHandlerCapability() }) });
+    const posted = await app.request(`${body.auth.signIn.credentialsBasePath}/api/sign-in/email`, { method: 'POST' });
+    expect(posted.status).toBe(200);
   });
 });
 
