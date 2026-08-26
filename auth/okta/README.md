@@ -70,6 +70,25 @@ const mastra = new Mastra({
 });
 ```
 
+### Mounting under the Software Factory
+
+Okta has groups, not organizations, so `MastraAuthOkta` resolves no organization
+id on its own. Every organization-scoped surface in the Factory writes to a
+column that is not nullable, so wrap the provider once at the point you export
+it:
+
+```typescript
+import { MastraAuthOkta } from '@mastra/auth-okta';
+import { withSyntheticOrganizations } from '@mastra/factory-auth/organizations';
+
+export const auth = withSyntheticOrganizations(new MastraAuthOkta());
+```
+
+The wrapper keeps every capability the provider already had and adds
+`ensureOrganization`, which derives `user:${userId}` — a pure function of the
+user id, so separate processes agree without a shared store. `auth/okta`'s
+conformance suite runs against exactly this composition.
+
 ## Configuration
 
 ### Environment Variables
@@ -193,10 +212,19 @@ To link Auth0 users to Okta:
 
 ### MastraAuthOkta
 
-| Method                              | Description                 |
-| ----------------------------------- | --------------------------- |
-| `authenticateToken(token, request)` | Verify JWT and return user  |
-| `authorizeUser(user, request)`      | Check if user is authorized |
+| Method                               | Description                                       |
+| ------------------------------------ | ------------------------------------------------- |
+| `authenticateToken(token, request)`  | Verify the session cookie, then the JWT           |
+| `authorizeUser(user, request)`       | Check if user is authorized                       |
+| `getLoginUrl(redirectUri, state)`    | Okta authorization URL, echoing `state` unchanged |
+| `handleCallback(code, state)`        | Exchange the code and mint the session cookie     |
+| `getLogoutUrl(redirectUri, request)` | Okta logout URL, with `id_token_hint` when known  |
+
+`handleCallback` accepts either spelling of `state`: the raw `id|encodedReturnTo`
+value the Software Factory passes straight through from the query string, or the
+bare id half that `packages/server` splits out first. Both are keyed through
+`parseStateId` from `@mastra/factory-auth/oauth-state`, so the value stored at
+login and the value looked up on the callback always agree.
 
 ## Requirements
 
