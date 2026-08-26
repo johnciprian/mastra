@@ -13,20 +13,9 @@ import { buildAuthRoutes, mountFactoryAuth, factoryAuthTenant } from './auth.js'
  * packages' own tests.
  */
 
-// Mock @mastra/auth-workos so no real WorkOS client is constructed.
-vi.mock('@mastra/auth-workos', () => ({
-  MastraAuthWorkos: class {
-    name = 'workos';
-    authenticateToken = vi.fn(async () => null);
-    authorizeUser = async () => true;
-    getLoginUrl = vi.fn(() => 'https://workos.example/login');
-    handleCallback = vi.fn();
-  },
-}));
-
 const ORIGINAL_ENV = { ...process.env };
 
-/** Minimal custom provider standing in for a non-WorkOS `IMastraAuthProvider`. */
+/** Minimal provider standing in for any `IMastraAuthProvider`. */
 function fakeProvider(overrides: Record<string, unknown> = {}): IMastraAuthProvider {
   return {
     name: 'fake',
