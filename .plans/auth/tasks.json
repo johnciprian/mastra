@@ -1048,7 +1048,7 @@
     },
     {
       "id": "P1",
-      "status": "pending",
+      "status": "done",
       "title": "Put the mastracode test suites in the PR gate",
       "lane": "C",
       "size": "L",
