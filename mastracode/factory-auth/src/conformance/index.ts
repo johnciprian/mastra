@@ -63,6 +63,16 @@
  *   or its own auth routes. A pure bearer-token validator has no browser session
  *   to read a cookie for, and requiring one would be requiring it to invent a
  *   cookie nobody sets.
+ * - **`sso/pkce-round-trip` is gated on the WRITE half only.** A provider with
+ *   no `getLoginCookies` carries nothing across the round trip and skips. A
+ *   provider that has it and has no `setCallbackCookieHeader` is the defect the
+ *   check exists for, so gating on the read half would skip exactly the provider
+ *   being looked for - the same self-fulfilling gate obligation 4 avoids.
+ *   Between those two, a provider that declares `getLoginCookies` and hands back
+ *   none passes rather than skipping: the check applied and ran, and found no
+ *   cookie to hold anybody to. That is the truthful answer for a confidential
+ *   client authenticating with `client_secret`, which is the shape four
+ *   providers in this repository ship.
  *
  * A PROVIDER THAT DOES NOT CONFORM, AND SHIPS ANYWAY
  *
@@ -790,6 +800,109 @@ async function settle<T>(body: () => Promise<T> | T): Promise<Outcome<T>> {
 }
 
 /**
+ * The `state` this provider's own authorization URL carries, or `null`.
+ *
+ * Used by `sso/pkce-round-trip` to play the identity provider rather than the
+ * host. An identity provider echoes back the `state` it was *sent*, which is
+ * whatever `getLoginUrl` put in the query string - not necessarily what the host
+ * minted. For a provider that meets obligation 3 those are the same string, so
+ * this changes nothing; for one that re-encodes `state` it is the difference
+ * between asking about the cookie and re-asking obligation 3's question under a
+ * second name.
+ */
+function echoedState(loginUrl: unknown): string | null {
+  try {
+    return new URL(loginUrl as string).searchParams.get('state');
+  } catch {
+    // A login URL that does not parse is `obligation/stateCodec/login-url`'s
+    // finding, reported there. Here it just means there is no echo to read, and
+    // the caller falls back to the state the host minted.
+    return null;
+  }
+}
+
+/**
+ * The `Cookie` header a browser would send back, from the `Set-Cookie` values a
+ * provider handed out at login. `null` when none of them names a cookie.
+ *
+ * A browser keeps the `name=value` pair and drops the attributes, so that is
+ * what this keeps. What it deliberately does not model is a browser's storage
+ * rules - `Domain`, `Path`, `Secure`, and an already-elapsed `Max-Age` are all
+ * ignored, so a provider gets its own cookie back under the most favourable
+ * conditions available. Being generous here is the right direction: this check
+ * exists to catch a value that cannot survive the trip at all, and a red that
+ * depended on the suite's cookie-jar emulation would be a red about the suite.
+ */
+function toCookieHeader(setCookieValues: readonly string[]): string | null {
+  const pairs: string[] = [];
+  for (const value of setCookieValues) {
+    const pair = (value.split(';', 1)[0] ?? '').trim();
+    // `>0` rather than `>=0`: a leading `=` is a cookie with no name, which is
+    // not a pair a browser would send back.
+    if (pair.indexOf('=') > 0) pairs.push(pair);
+  }
+  return pairs.length === 0 ? null : pairs.join('; ');
+}
+
+/**
+ * Do what a browser does between login and callback: carry the cookies
+ * `getLoginCookies` set back to the provider through `setCallbackCookieHeader`.
+ *
+ * Best-effort, and silent about everything. It exists so that a check whose
+ * subject is NOT the cookie can still ask its own question of a provider that
+ * needs one. Before this, a correct PKCE provider - one that stashes a code
+ * verifier at login and requires it at the callback - failed
+ * `obligation/stateCodec/callback` and was told it had "rejected a state its own
+ * getLoginUrl was just handed", about a call that never reached the `state` at
+ * all. A false red that reads exactly like a true one is the outcome this
+ * package exists to prevent, and the suite was producing one the moment PKCE
+ * became implementable.
+ *
+ * Nothing here fails: a throw from either half, a return value that is not a
+ * list of cookies, a provider with no read side. All of those are
+ * `sso/pkce-round-trip`'s findings, reported there once, with a diagnosis. Here
+ * they are simply the absence of a cookie to hand back.
+ *
+ * @returns the `Cookie` header that was handed over, or `null` when there was
+ * none to hand or nowhere to hand it.
+ */
+async function handBackLoginCookies(
+  provider: IMastraAuthProvider,
+  redirectUri: string,
+  state: string,
+): Promise<string | null> {
+  const sso = provider as {
+    getLoginCookies?: (redirectUri: string, state: string) => unknown;
+    setCallbackCookieHeader?: (cookieHeader: string | null) => void;
+  };
+  if (typeof sso.getLoginCookies !== 'function' || typeof sso.setCallbackCookieHeader !== 'function') return null;
+
+  const written = await settle(() => sso.getLoginCookies?.(redirectUri, state));
+  if (!written.ok || !Array.isArray(written.value)) return null;
+  const values = written.value.filter((entry): entry is string => typeof entry === 'string');
+  const cookieHeader = toCookieHeader(values);
+  if (cookieHeader === null) return null;
+
+  const fed = await settle(() => sso.setCallbackCookieHeader?.(cookieHeader));
+  return fed.ok ? cookieHeader : null;
+}
+
+/**
+ * The OBSERVED line saying the browser's half of the trip was performed, when it
+ * was.
+ *
+ * Present so that a reader of an obligation-3 failure can see the suite did hand
+ * the login cookies back, and rule the cookie out before going looking for it.
+ */
+function loginCookiesNote(cookieHeader: string | null): string[] {
+  if (cookieHeader === null) return [];
+  return [
+    'The cookies getLoginCookies set were handed back through setCallbackCookieHeader first,',
+    `the way a browser would: Cookie: ${cookieHeader}`,
+  ];
+}
+
+/**
  * Authenticate with the configured token, or fail with a message about the
  * fixture rather than about the provider.
  *
@@ -1487,12 +1600,20 @@ function buildChecks(fixtures: Fixtures): readonly Omit<AuthConformanceCheck, 'k
         // callback is what keeps "it reached the token exchange" a claim about
         // the call this check is actually asking about.
         let callsDuringCallback = 0;
+        let handedBack: string | null = null;
         const outcome = await withoutNetwork(async calls => {
           // The login half runs first and inside the same stub, because a
           // provider that keeps a state store fills it here. Skipping it would
           // ask the callback about a state that was never minted, which every
           // correct provider is entitled to reject.
           await settle(() => provider.getLoginUrl(fixtures.redirectUri, state));
+          // And the browser's half of the same trip, for the same reason. A
+          // provider that stashed a PKCE verifier in a login cookie needs it
+          // back before it can get as far as looking at the `state`; without
+          // this it throws for the missing verifier and is told, wrongly, that
+          // it rejected the host's state. Whether the cookie loop itself works
+          // is `sso/pkce-round-trip`'s question, not this one's.
+          handedBack = await handBackLoginCookies(provider, fixtures.redirectUri, state);
           const before = calls.count;
           const settled = await settle(() => provider.handleCallback(fixtures.code, state));
           callsDuringCallback = calls.count - before;
@@ -1533,6 +1654,7 @@ function buildChecks(fixtures: Fixtures): readonly Omit<AuthConformanceCheck, 'k
             headline: 'handleCallback reached the token exchange and then threw an error that hides why.',
             observed: [
               `getLoginUrl(${show(fixtures.redirectUri)}, state) ran first, with state = ${show(state)}.`,
+              ...loginCookiesNote(handedBack),
               `handleCallback(${show(fixtures.code)}, state) called globalThis.fetch ${callsDuringCallback} time(s),`,
               'so it accepted the state and got as far as the token exchange. It then threw:',
               `  ${show(outcome.error)}`,
@@ -1572,12 +1694,21 @@ function buildChecks(fixtures: Fixtures): readonly Omit<AuthConformanceCheck, 'k
           headline: 'handleCallback rejected a state its own getLoginUrl was just handed.',
           observed: [
             `getLoginUrl(${show(fixtures.redirectUri)}, state) ran first, with state = ${show(state)}.`,
+            ...loginCookiesNote(handedBack),
             `handleCallback(${show(fixtures.code)}, state) then threw, before reaching the token exchange:`,
             `  ${show(outcome.error)}`,
             '',
             'The suite replaced globalThis.fetch for this call, and it was never called: handleCallback',
             'made no network attempt at all before throwing. So the provider stopped at the state rather',
             'than getting as far as the token exchange.',
+            ...(handedBack === null
+              ? []
+              : [
+                  '',
+                  'This provider also carries a cookie across the login round trip, and one that cannot read',
+                  'its own cookie back stops here too - before the state, with a message about the state.',
+                  '`sso/pkce-round-trip` in this same run reports that loop on its own terms. Read it first.',
+                ]),
           ],
           why:
             `${AUTH_OBLIGATION_GUIDANCE.stateCodec.why}\n` +
@@ -1784,6 +1915,290 @@ function buildChecks(fixtures: Fixtures): readonly Omit<AuthConformanceCheck, 'k
             how: 'Return an absolute URL, or `null` when the provider has no hosted logout for this session.',
           });
         }
+      },
+    },
+    {
+      id: 'sso/pkce-round-trip',
+      section: SECTION_SSO,
+      title: 'a cookie set at login comes back readable at the callback',
+      obligation: null,
+      failureCodes: [
+        'sso/pkce-round-trip#login-cookies-threw',
+        'sso/pkce-round-trip#not-cookie-headers',
+        'sso/pkce-round-trip#no-read-side',
+        'sso/pkce-round-trip#read-side-threw',
+        'sso/pkce-round-trip#cookie-not-read-back',
+      ],
+      skipReason: provider => {
+        const gate = requiresSSO(provider);
+        if (gate !== null) return gate;
+        return isSSOProvider(provider) && typeof provider.getLoginCookies === 'function'
+          ? null
+          : 'This provider sets no cookies at login (getLoginCookies is not implemented), so it carries ' +
+              'nothing across the hosted-login round trip and has nothing to read back. A confidential ' +
+              'client authenticating with `client_secret` is exactly that shape. Implement ' +
+              '`getLoginCookies` - which is what a PKCE provider does with its code verifier - and this ' +
+              'check applies.';
+      },
+      async run(provider) {
+        if (!isSSOProvider(provider) || provider.getLoginCookies === undefined) return;
+        const state = encodeState(CONFORMANCE_RETURN_TO, CONFORMANCE_STATE_ID);
+
+        // The whole round trip runs inside the stub. Two reasons, and the second
+        // is why the counter is read rather than only the error: a provider is
+        // entitled to dial out during `getLoginUrl` - fetching a discovery
+        // document is the ordinary case - and the header promises no network
+        // either way; and "did `handleCallback` get as far as the token
+        // exchange" is the one piece of first-hand evidence available about
+        // whether the cookie arrived.
+        await withoutNetwork(async calls => {
+          const login = await settle(() => provider.getLoginUrl(fixtures.redirectUri, state));
+          if (!login.ok) {
+            // `obligation/stateCodec/login-url#threw` owns that failure, and
+            // reporting it twice would make one defect look like two.
+            return;
+          }
+
+          const written = await settle(() => provider.getLoginCookies?.(fixtures.redirectUri, state));
+          if (!written.ok) {
+            fail(fixtures, {
+              code: 'sso/pkce-round-trip#login-cookies-threw',
+              headline: 'getLoginCookies threw.',
+              observed: [
+                `getLoginUrl(${show(fixtures.redirectUri)}, state) ran first, with state = ${show(state)}.`,
+                `getLoginCookies(${show(fixtures.redirectUri)}, state) then threw.`,
+                `  ${show(written.error)}`,
+              ],
+              why:
+                'The host calls this on the login redirect, immediately after `getLoginUrl`, and puts what\n' +
+                'comes back on the response as `Set-Cookie`. A throw there is a 500 on the route the sign-in\n' +
+                'button points at, so nobody can start a login at all.',
+              how:
+                'Return `undefined` when there is nothing to set, rather than throwing. Nothing that can fail\n' +
+                'belongs here: mint the verifier inside `getLoginUrl` and hand the finished cookie back from\n' +
+                'this method.',
+            });
+          }
+
+          // Read as `unknown` on purpose. The declared return type is
+          // `string[] | undefined`, and the point of the next few lines is the
+          // provider that does not honour it.
+          const returned: unknown = written.value;
+
+          // Nothing was written, so there is nothing to read back and the check
+          // is satisfied. This is a PASS rather than a skip, and the difference
+          // is the skip rule in this module's header: the provider declared the
+          // capability, so the check applies to it and did run. It simply found
+          // no cookie to hold anybody to - which is the truthful answer for a
+          // confidential client, and the shape four providers in this repository
+          // ship today.
+          if (returned === undefined || returned === null) return;
+
+          if (!Array.isArray(returned) || returned.some(entry => typeof entry !== 'string')) {
+            fail(fixtures, {
+              code: 'sso/pkce-round-trip#not-cookie-headers',
+              headline: 'getLoginCookies returned something that is not a list of Set-Cookie header values.',
+              observed: [`getLoginCookies(${show(fixtures.redirectUri)}, state) returned ${show(returned)}.`],
+              why:
+                'The host appends each entry to the login redirect as one `Set-Cookie` header, verbatim.\n' +
+                'Anything that is not a `name=value; attributes` string is either dropped by the browser or\n' +
+                'sets a cookie under a name nothing reads - and either way the value never comes back, which\n' +
+                'is a sign-in that fails at the callback for a reason the callback cannot see.',
+              how:
+                'Return an array of complete `Set-Cookie` header values:\n' +
+                '\n' +
+                '  return [`my_pkce_verifier=${verifier}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600`];\n' +
+                '\n' +
+                'Return `undefined` when this login sets no cookie.',
+            });
+          }
+          const setCookies = returned as readonly string[];
+          if (setCookies.length === 0) return;
+
+          const cookieHeader = toCookieHeader(setCookies);
+          if (cookieHeader === null) {
+            fail(fixtures, {
+              code: 'sso/pkce-round-trip#not-cookie-headers',
+              headline: 'getLoginCookies returned values that name no cookie.',
+              observed: [
+                `getLoginCookies(${show(fixtures.redirectUri)}, state) returned ${setCookies.length} value(s):`,
+                ...setCookies.map(value => `  ${show(value)}`),
+                'None of them starts with a `name=value` pair, so a browser would store nothing and send',
+                'nothing back on the callback.',
+              ],
+              why:
+                'A `Set-Cookie` header value is a `name=value` pair followed by attributes. A value made only\n' +
+                'of attributes sets no cookie, so whatever the provider meant to carry across the round trip\n' +
+                'is discarded by the browser before the callback happens.',
+              how:
+                'Put the pair first:\n' +
+                '\n' +
+                '  return [`my_pkce_verifier=${verifier}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600`];',
+            });
+          }
+
+          // The structural half of this check, and the one the doneWhen names.
+          //
+          // It is asked HERE rather than in the gate, and that placement is the
+          // whole design. Gating on `setCallbackCookieHeader` would skip this
+          // check for exactly the provider it exists to catch - the one that
+          // writes a verifier and declares no way to read it - which is the
+          // self-fulfilling gate obligation 4 avoids for the same reason. And it
+          // is asked only once a cookie has actually been written, so a
+          // confidential client that declares `getLoginCookies` and returns none
+          // is not asked for a read side it has nothing to read.
+          if (typeof provider.setCallbackCookieHeader !== 'function') {
+            fail(fixtures, {
+              code: 'sso/pkce-round-trip#no-read-side',
+              headline: 'This provider writes a cookie at login and declares no way to read one back.',
+              observed: [
+                `getLoginCookies(${show(fixtures.redirectUri)}, state) returned ${setCookies.length} value(s):`,
+                ...setCookies.map(value => `  ${show(value)}`),
+                `A browser would send them back as: Cookie: ${cookieHeader}`,
+                '',
+                `provider.setCallbackCookieHeader is ${show(provider.setCallbackCookieHeader)}.`,
+                '`handleCallback(code, state)` takes no request and no headers, so there is no other',
+                'channel by which the callback request’s cookies could reach this provider.',
+              ],
+              why:
+                '`getLoginCookies` and `setCallbackCookieHeader` are the two halves of one loop. A PKCE\n' +
+                'provider stashes its code verifier in a cookie at login and has to read it back to complete\n' +
+                'the token exchange, and `handleCallback` is handed only `code` and `state` - so the callback\n' +
+                'request’s `Cookie` header reaches the provider through the read half or not at all.\n' +
+                '\n' +
+                'With the write half alone, every sign-in gets as far as the callback and fails there for a\n' +
+                'missing verifier. The host bounces the browser back to the login route, which re-enters the\n' +
+                'identity provider: a redirect loop, and nothing in it says the cookie was written and never\n' +
+                'read.',
+              how:
+                'Declare the read half. It is one field and one method:\n' +
+                '\n' +
+                '  private callbackCookieHeader: string | null = null;\n' +
+                '\n' +
+                '  setCallbackCookieHeader(cookieHeader: string | null): void {\n' +
+                '    this.callbackCookieHeader = cookieHeader;\n' +
+                '  }\n' +
+                '\n' +
+                '  async handleCallback(code: string, state: string) {\n' +
+                '    const verifier = readMyVerifierCookie(this.callbackCookieHeader);\n' +
+                '    // ... exchange `code` with `verifier`\n' +
+                '  }\n' +
+                '\n' +
+                '`setCallbackCookieHeader` is optional on `ISSOProvider`, and hosts call it on every SSO\n' +
+                'callback before `handleCallback` when a provider implements it. The argument is `null` when\n' +
+                'the request carried no cookies at all.\n' +
+                '\n' +
+                'If this provider sets no cookie at login - a confidential client authenticating with\n' +
+                '`client_secret` has no verifier to stash - then `getLoginCookies` should not be returning\n' +
+                'one. `undefined` is what the method documents for that, and this check asks nothing further\n' +
+                'of a provider that answers it.',
+            });
+          }
+
+          const fed = await settle(() => provider.setCallbackCookieHeader?.(cookieHeader));
+          if (!fed.ok) {
+            fail(fixtures, {
+              code: 'sso/pkce-round-trip#read-side-threw',
+              headline: 'setCallbackCookieHeader threw for the callback request’s Cookie header.',
+              observed: [
+                `setCallbackCookieHeader(${show(cookieHeader)}) threw.`,
+                `  ${show(fed.error)}`,
+                'That header is what a browser would send back after the cookies getLoginCookies just set.',
+              ],
+              why:
+                'Hosts call this on every SSO callback, before `handleCallback`, and it is declared to return\n' +
+                '`void`. A throw ends the callback before the token exchange is attempted, so the sign-in\n' +
+                'fails at its last step and the error names cookie parsing rather than anything the person\n' +
+                'did.',
+              how:
+                'Store the header and return. Parse it in `handleCallback`, where a failure can be reported\n' +
+                'as a failed exchange:\n' +
+                '\n' +
+                '  setCallbackCookieHeader(cookieHeader: string | null): void {\n' +
+                '    this.callbackCookieHeader = cookieHeader;\n' +
+                '  }\n' +
+                '\n' +
+                'The argument is `null` when the request carried no cookies, so do not assume a string.',
+            });
+          }
+
+          // The identity provider echoes back the `state` it was SENT, which is
+          // whatever this provider put in its own authorization URL - not
+          // necessarily what the host minted. Playing the identity provider
+          // faithfully is what keeps this check about the cookie: a provider
+          // that re-encodes `state` already fails
+          // `obligation/stateCodec/login-url`, and handing it a state it never
+          // minted here would report that one defect a second time under a name
+          // that points at cookies. Obligation 3 owns the state; this owns the
+          // cookie. For a provider that meets obligation 3 the two values are
+          // the same string and the distinction costs nothing.
+          const callbackState = echoedState(login.value) ?? state;
+
+          const before = calls.count;
+          const settled = await settle(() => provider.handleCallback(fixtures.code, callbackState));
+          const callsDuringCallback = calls.count - before;
+
+          // Resolving is conforming: the provider completed a callback with no
+          // network at all, which a provider holding a local key set can do.
+          if (settled.ok) return;
+          // Reaching the token exchange is conforming too, and here - unlike in
+          // `obligation/stateCodec/callback` - it is conclusive rather than
+          // merely suggestive. That check has to keep asking whether the failure
+          // after the exchange was about `state`; this one does not care what
+          // happened after, because a provider that got as far as the network
+          // got past its own cookie parsing, which is the entire question.
+          if (callsDuringCallback > 0) return;
+          if (isTokenExchangeError(settled.error)) return;
+          if (fixtures.reachedTokenExchange?.(settled.error) === true) return;
+
+          fail(fixtures, {
+            code: 'sso/pkce-round-trip#cookie-not-read-back',
+            headline: 'handleCallback could not use the cookie this provider set at login.',
+            observed: [
+              `getLoginUrl(${show(fixtures.redirectUri)}, state) ran first, with state = ${show(state)}.`,
+              `getLoginCookies(${show(fixtures.redirectUri)}, state) returned ${setCookies.length} value(s).`,
+              `setCallbackCookieHeader was then called with what a browser would send back:`,
+              `  Cookie: ${cookieHeader}`,
+              `handleCallback(${show(fixtures.code)}, state) then threw, before reaching the token exchange:`,
+              `  ${show(settled.error)}`,
+              '',
+              'The suite replaced globalThis.fetch for this call and it was never called: handleCallback',
+              'made no network attempt at all before throwing.',
+              '',
+              `The state it was handed is ${show(callbackState)}, which is the value this provider’s own`,
+              'authorization URL carries - the suite echoed it back the way an identity provider does. So a',
+              'state this provider does not recognize is not what stopped it.',
+            ],
+            why:
+              '`getLoginCookies` and `setCallbackCookieHeader` are the two halves of one loop, and the value\n' +
+              'that travels between them is a PKCE code verifier. If it does not survive the trip, every\n' +
+              'sign-in reaches the callback and fails there; the host bounces the browser back to the login\n' +
+              'route, which re-enters the identity provider. The person sees a redirect loop and the logs\n' +
+              'say a verifier was missing, which points at the callback - where nothing is wrong.',
+            how:
+              'Read the cookie out of the header `setCallbackCookieHeader` was handed, under the same name\n' +
+              '`getLoginCookies` wrote it:\n' +
+              '\n' +
+              '  setCallbackCookieHeader(cookieHeader: string | null): void {\n' +
+              '    this.callbackCookieHeader = cookieHeader;\n' +
+              '  }\n' +
+              '\n' +
+              '  async handleCallback(code: string, state: string) {\n' +
+              "    const verifier = readCookie(this.callbackCookieHeader, 'my_pkce_verifier');\n" +
+              '    // ... exchange `code` with `verifier`\n' +
+              '  }\n' +
+              '\n' +
+              'Three causes account for most of these. The read half is declared and stores nothing, which\n' +
+              'is a no-op that satisfies every structural guard. The name written and the name read are not\n' +
+              'the same. Or the verifier is looked for on a `Request` object, which `handleCallback` never\n' +
+              'receives.\n' +
+              '\n' +
+              'If your token exchange does not go through global `fetch` - an SDK holding its own agent, or\n' +
+              '`node:https` - this check cannot see it reach the network and will report that as the cookie\n' +
+              'not arriving. Pass `sso.reachedTokenExchange` and answer `true` for what your transport\n' +
+              'throws when it cannot reach the issuer.',
+          });
+        });
       },
     },
     {

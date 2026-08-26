@@ -72,7 +72,7 @@ import {
   fakeViolating,
   fullyCapableFake,
 } from '../testing/index.js';
-import type { AuthObligation } from '../testing/index.js';
+import type { AuthObligation, FullyCapableFake } from '../testing/index.js';
 
 // ============================================================================
 // The harness
@@ -192,8 +192,27 @@ describe('the check list', () => {
 // ============================================================================
 
 describe('a fully-capable provider', () => {
+  /**
+   * Every capability the kit knows about, PKCE included.
+   *
+   * `fullyCapableFake()` alone is one short of that: `withSSO` installs
+   * `getLoginCookies` only when asked - a fake that always had it could not
+   * model the provider that does not - and it does not install
+   * `setCallbackCookieHeader` at all. So `sso/pkce-round-trip` would be skipped
+   * here, and a check skipped against the one provider that declares everything
+   * is a check nobody has ever run.
+   *
+   * {@link withPkceLoginCookie} adds both halves and makes the second one
+   * load-bearing: its `handleCallback` refuses without the verifier in the
+   * header it was handed, so this fake passes by completing the round trip
+   * rather than by owning two method names. Folding the pair into `withSSO`
+   * itself, behind a `loginCookies` option that also installs a read side, is
+   * the tidier home for it and is a change to the published testing surface.
+   */
+  const fullyCapable = () => withPkceLoginCookie('stores');
+
   it('passes every check', async () => {
-    const outcomes = await runChecks(optionsFor(() => fullyCapableFake()));
+    const outcomes = await runChecks(optionsFor(fullyCapable));
     expect(report(outcomes)).toBe('');
     expect(ids(outcomes, 'passed')).toHaveLength(outcomes.length);
   });
@@ -203,13 +222,13 @@ describe('a fully-capable provider', () => {
    * the one above.
    *
    * "Every check passed" is satisfied vacuously by a suite that skipped
-   * everything. The fully-capable fake declares all six optional capabilities and
+   * everything. The fully-capable fake declares every optional capability and
    * meets all four obligations, so there is no honest reason for any check to be
    * inapplicable to it - and if one is, that check has never run anywhere and
    * nobody would find out from a green suite.
    */
   it('skips nothing, so every check in the list has actually run', async () => {
-    const outcomes = await runChecks(optionsFor(() => fullyCapableFake()));
+    const outcomes = await runChecks(optionsFor(fullyCapable));
     expect(ids(outcomes, 'skipped')).toEqual([]);
   });
 });
@@ -539,6 +558,181 @@ describe('a provider that reaches the token exchange and rethrows without a caus
 });
 
 // ============================================================================
+// The PKCE cookie round trip
+// ============================================================================
+
+/** The cookie the fakes below stash a code verifier in. */
+const PKCE_COOKIE_NAME = 'fake_pkce_verifier';
+
+/** What is in it. A real provider mints one per login; a constant is enough here. */
+const PKCE_VERIFIER = 'fake-code-verifier';
+
+/** Which halves of the login-cookie loop a fake implements. */
+type PkceReadSide =
+  /** `getLoginCookies` and nothing else. The defect `sso/pkce-round-trip` exists for. */
+  | 'none'
+  /** Both halves declared, and the read half stores nothing. `auth/studio` ships exactly this. */
+  | 'noop'
+  /** Both halves, and the verifier survives the trip. */
+  | 'stores';
+
+/**
+ * A fully-capable provider that carries a PKCE verifier in a login cookie.
+ *
+ * The point of the fake is that its `handleCallback` genuinely *needs* the
+ * cookie: it refuses unless the verifier is in the header it was handed, the
+ * way a real PKCE provider refuses without a code verifier to send to the token
+ * endpoint. So `'stores'` passes `sso/pkce-round-trip` by completing the round
+ * trip, and `'noop'` fails it despite declaring both method names - which is the
+ * difference between the strong version of this check and the weak one.
+ *
+ * @param readSide which halves to install; see {@link PkceReadSide}
+ */
+function withPkceLoginCookie(readSide: PkceReadSide): FullyCapableFake {
+  const base = fullyCapableFake();
+  let received: string | null = null;
+
+  const provider: FullyCapableFake = {
+    ...base,
+    getLoginCookies(): string[] {
+      return [`${PKCE_COOKIE_NAME}=${PKCE_VERIFIER}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600`];
+    },
+    async handleCallback(code: string, state: string) {
+      if (received === null || !received.includes(`${PKCE_COOKIE_NAME}=${PKCE_VERIFIER}`)) {
+        throw new Error('missing code verifier: no PKCE cookie reached handleCallback');
+      }
+      return base.handleCallback(code, state);
+    },
+  };
+
+  if (readSide !== 'none') {
+    provider.setCallbackCookieHeader = (cookieHeader: string | null): void => {
+      if (readSide === 'stores') received = cookieHeader;
+    };
+  }
+  return provider;
+}
+
+function pkceOutcome(outcomes: readonly CheckOutcome[]): CheckOutcome {
+  return outcomes.find(outcome => outcome.check.id === 'sso/pkce-round-trip')!;
+}
+
+describe('a provider that carries a PKCE verifier in a login cookie', () => {
+  /**
+   * The direction the whole check exists for.
+   *
+   * `getLoginCookies` is declared and hands back a real cookie; nothing declares
+   * a way to read one. Before this check a provider in that shape passed all
+   * eighteen and was told it was done, and every sign-in through it failed at the
+   * callback for a verifier that was written and never read.
+   */
+  it('fails when the write half is declared and the read half is not', async () => {
+    const outcomes = await runChecks(optionsFor(() => withPkceLoginCookie('none')));
+    const outcome = pkceOutcome(outcomes);
+    expect(outcome.status).toBe('failed');
+    expect(outcome.status === 'failed' && outcome.code).toBe('sso/pkce-round-trip#no-read-side');
+    expect(outcome.status === 'failed' && outcome.message).toContain('provider.setCallbackCookieHeader is undefined');
+    expect(outcome.status === 'failed' && outcome.message).toContain(PKCE_COOKIE_NAME);
+  });
+
+  /**
+   * The other direction, and the reason the check is not "do both methods
+   * exist".
+   *
+   * This fake declares both halves. The read half is a no-op, which satisfies
+   * every structural guard there is and delivers nothing - the shape
+   * `auth/studio` ships today. A check that stopped at the method names would
+   * pass it.
+   */
+  it('fails when both halves are declared and the value does not survive the trip', async () => {
+    const outcomes = await runChecks(optionsFor(() => withPkceLoginCookie('noop')));
+    const outcome = pkceOutcome(outcomes);
+    expect(outcome.status).toBe('failed');
+    expect(outcome.status === 'failed' && outcome.code).toBe('sso/pkce-round-trip#cookie-not-read-back');
+    expect(outcome.status === 'failed' && outcome.message).toContain('missing code verifier');
+    expect(outcome.status === 'failed' && outcome.message).toContain('The read half is declared and stores nothing');
+  });
+
+  /** The green direction, which is what makes the two reds above mean anything. */
+  it('passes once the verifier written at login is readable at the callback', async () => {
+    const outcomes = await runChecks(optionsFor(() => withPkceLoginCookie('stores')));
+    expect(report(outcomes)).toBe('');
+    expect(pkceOutcome(outcomes).status).toBe('passed');
+  });
+
+  /**
+   * The skip, and why it is a skip rather than a red.
+   *
+   * A provider with no `getLoginCookies` carries nothing across the round trip.
+   * `auth/okta` is that provider on purpose - a confidential client
+   * authenticating with `client_secret` has no verifier to stash - and failing it
+   * for the absence of a read side it has nothing to read would be a false red.
+   */
+  it('skips for a hosted-login provider that sets no cookies at all', async () => {
+    const outcomes = await runChecks(optionsFor(() => fullyCapableFake()));
+    const outcome = pkceOutcome(outcomes);
+    expect(outcome.status).toBe('skipped');
+    expect(outcome.status === 'skipped' && outcome.reason).toContain('getLoginCookies is not implemented');
+  });
+
+  /**
+   * The middle case, which is a pass and not a skip, and the distinction is the
+   * skip rule.
+   *
+   * `getLoginCookies` is declared, so the check applies and runs. It hands back
+   * nothing, so there is no cookie to hold anybody to - which is the honest
+   * answer for the four providers in this repository that declare the method and
+   * return `[]`. Skipping here would say the check did not apply to a provider it
+   * did apply to.
+   */
+  it.each([
+    ['an empty list', (): string[] => []],
+    ['undefined', (): undefined => undefined],
+  ])('passes, rather than skipping, for a provider that declares the method and returns %s', async (_label, answer) => {
+    const noCookies = (): FullyCapableFake => ({ ...fullyCapableFake(), getLoginCookies: answer });
+    const outcomes = await runChecks(optionsFor(noCookies));
+    expect(pkceOutcome(outcomes).status).toBe('passed');
+    expect(report(outcomes)).toBe('');
+  });
+
+  /**
+   * The interaction that made this check worth landing with the obligation-3
+   * change beside it.
+   *
+   * A correct PKCE provider throws for a missing verifier before it ever looks
+   * at `state`, so `obligation/stateCodec/callback` used to report it as having
+   * "rejected a state its own getLoginUrl was just handed" - a sentence about a
+   * value that call never read. That check now performs the browser's half of the
+   * trip too, so its finding is about `state` again.
+   */
+  it('leaves the state-codec callback check able to ask its own question', async () => {
+    const outcomes = await runChecks(optionsFor(() => withPkceLoginCookie('stores')));
+    const stateCodec = outcomes.find(outcome => outcome.check.id === 'obligation/stateCodec/callback')!;
+    expect(stateCodec.status).toBe('passed');
+  });
+
+  /**
+   * And when the cookie loop is the thing that is broken, obligation 3 says so
+   * rather than sending the reader after a `state` nobody rejected.
+   */
+  it('points at the PKCE check from the state-codec failure when a cookie was handed back', async () => {
+    const outcomes = await runChecks(optionsFor(() => withPkceLoginCookie('noop')));
+    const stateCodec = outcomes.find(outcome => outcome.check.id === 'obligation/stateCodec/callback')!;
+    expect(stateCodec.status).toBe('failed');
+    expect(stateCodec.status === 'failed' && stateCodec.message).toContain(
+      'handed back through setCallbackCookieHeader',
+    );
+    expect(stateCodec.status === 'failed' && stateCodec.message).toContain('sso/pkce-round-trip');
+  });
+
+  it('leaves globalThis.fetch exactly as it found it', async () => {
+    const before = globalThis.fetch;
+    await runChecks(optionsFor(() => withPkceLoginCookie('none')));
+    expect(globalThis.fetch).toBe(before);
+  });
+});
+
+// ============================================================================
 // The skip rule
 // ============================================================================
 
@@ -559,6 +753,7 @@ describe('a bearer-token validator', () => {
         'sessions/round-trip',
         'sso/login-button',
         'sso/logout-url',
+        'sso/pkce-round-trip',
       ].sort(),
     );
   });
@@ -943,6 +1138,99 @@ const RED_CASES: readonly RedCase[] = [
       }),
     fails: ['sso/logout-url'],
     says: /getLogoutUrl threw/,
+  },
+  // ------------------------------------------------------------------
+  // The login-cookie loop, one broken step at a time
+  // ------------------------------------------------------------------
+  //
+  // Every row here declares BOTH halves, so the failure is about the step named
+  // in the label rather than about a read side that was never there - which the
+  // `sso/pkce-round-trip` describe block covers on its own. Declaring both also
+  // puts `obligation/stateCodec/callback` through the browser's half of the trip,
+  // and none of these rows may make that check red: a cookie loop that cannot
+  // start is not a `state` this provider rejected.
+  {
+    label: 'getLoginCookies throws, so the login redirect is a 500',
+    provider: () =>
+      brokenFake({
+        getLoginCookies: () => {
+          throw new Error('PKCE verifier could not be generated');
+        },
+        setCallbackCookieHeader: () => {},
+      }),
+    fails: ['sso/pkce-round-trip'],
+    says: /getLoginCookies threw/,
+  },
+  {
+    label: 'getLoginCookies returns one Set-Cookie value rather than a list of them',
+    provider: () =>
+      brokenFake({
+        getLoginCookies: () => 'fake_pkce=abc; Path=/',
+        setCallbackCookieHeader: () => {},
+      }),
+    fails: ['sso/pkce-round-trip'],
+    says: /not a list of Set-Cookie header values/,
+  },
+  {
+    label: 'getLoginCookies returns a list with something other than a string in it',
+    provider: () =>
+      brokenFake({
+        getLoginCookies: () => ['fake_pkce=abc; Path=/', 42],
+        setCallbackCookieHeader: () => {},
+      }),
+    fails: ['sso/pkce-round-trip'],
+    says: /not a list of Set-Cookie header values/,
+  },
+  {
+    label: 'getLoginCookies returns attributes with no name=value pair in front of them',
+    provider: () =>
+      brokenFake({
+        getLoginCookies: () => ['; Path=/; HttpOnly; Max-Age=600', '=no-name-at-all'],
+        setCallbackCookieHeader: () => {},
+      }),
+    fails: ['sso/pkce-round-trip'],
+    says: /returned values that name no cookie/,
+  },
+  {
+    label: 'setCallbackCookieHeader throws for the header a browser would send back',
+    provider: () =>
+      brokenFake({
+        getLoginCookies: () => ['fake_pkce=abc; Path=/; HttpOnly'],
+        setCallbackCookieHeader: () => {
+          throw new Error('cookie header could not be parsed');
+        },
+      }),
+    fails: ['sso/pkce-round-trip'],
+    says: /setCallbackCookieHeader threw/,
+  },
+  {
+    // The login half is what broke, and obligation 3 owns that. This check has
+    // no authorization URL to read a state out of and no login to carry a cookie
+    // from, so it must not report the same defect a second time.
+    label: 'getLoginUrl throws, which the PKCE check defers to obligation 3 about',
+    provider: () =>
+      brokenFake({
+        getLoginUrl: () => {
+          throw new Error('no issuer configured');
+        },
+        getLoginCookies: () => ['fake_pkce=abc; Path=/'],
+        setCallbackCookieHeader: () => {},
+      }),
+    fails: ['obligation/stateCodec/login-url'],
+    says: /getLoginUrl threw for a state in this package’s format/,
+  },
+  {
+    // Same division of labour, for the URL that parses as nothing. The PKCE
+    // check finds no `state` to echo, falls back to the host's, and carries on.
+    label: 'getLoginUrl answers a relative path, so there is no state to echo back',
+    provider: () =>
+      brokenFake({
+        getLoginUrl: () => '/authorize?state=ignored',
+        getLoginCookies: () => ['fake_pkce=abc; Path=/'],
+        setCallbackCookieHeader: () => {},
+      }),
+    fails: ['obligation/stateCodec/login-url'],
+    says: /did not return an absolute URL/,
   },
   {
     label: 'isSignUpEnabled answers a truthy string rather than a boolean',
