@@ -1080,7 +1080,7 @@
     },
     {
       "id": "P3",
-      "status": "pending",
+      "status": "done",
       "title": "Conformance suites for auth0, clerk, google and neon",
       "lane": "C",
       "size": "L",
@@ -1316,6 +1316,21 @@
       ],
       "detail": "C2's first run against the two providers that actually run the Factory found four real defects. All four are pinned as knownFailures - the suite goes green and says on every run that it is not the green of a clean provider - because each has a product or data consequence a test may not decide. They are still open at the re-grade. (1) auth/workos: ISessionProvider is a no-op facade; validateSession returns null unconditionally (auth-provider.ts:712) and all seven members are no-ops 'kept for interface compatibility', so the descriptor advertises sessionRevocation a UI cannot deliver. Remedies - a real session store, or dropping ISessionProvider from a published package - are both breaking. See P9, which makes the guard stop reporting the capability but does not give the provider one. (2) auth/studio: getLoginUrl drops `state`, forwarding only the returnTo half as post_login_redirect, so the id half a host compares for CSRF never returns. (3) auth/studio: ensureOrganization(userId) returns undefined unless a cookie was previously cached for that user, so bearer and CLI callers never get an org bootstrapped - and the interface hands it only a user id, so a correct implementation must work from one. (4) auth/studio: createSession(userId) with no metadata mints an id validateSession can never accept; the host always passes metadata.accessToken today, which is why nothing noticed, but metadata is optional in the declared contract. Each needs an owner and a decision. Delete each knownFailures entry as it is fixed - the kit fails the suite when a recorded failure starts passing, so the record cannot outlive the defect.",
       "doneWhen": "Each defect is fixed or explicitly accepted with an owner, and knownFailures shrinks to match."
+    },
+    {
+      "id": "P19",
+      "status": "pending",
+      "title": "Typecheck the conformance suites in auth/*",
+      "lane": "C",
+      "size": "S",
+      "deps": [
+        "P3"
+      ],
+      "files": [
+        "auth/*/tsconfig.json"
+      ],
+      "detail": "Every auth/* package excludes **/*.test.ts from its tsconfig, so no conformance suite is typechecked anywhere - vitest transpiles without checking. P3 found this by typechecking its four suites on a throwaway config and surfaced two genuine type errors: getLoginUrl and handleCallback do not exist on the provider class type in auth0/clerk/google, because ssoEnabled attaches them dynamically at construction. P3 fixed its own four by narrowing through the kit isSSOProvider guard, which also asserts the attachment happened. The seven pre-existing suites have never been typechecked either. Changing the tsconfig exclude is a shape change across eleven packages and was deliberately not made unasked.",
+      "doneWhen": "A type error in any auth/*/src/conformance.test.ts fails CI. Verified by introducing one and observing the failure, then reverting."
     }
   ],
   "criticalPath": [
