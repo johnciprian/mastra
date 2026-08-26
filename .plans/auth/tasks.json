@@ -17,6 +17,7 @@
   "tasks": [
     {
       "id": "K1",
+      "status": "done",
       "title": "Scaffold mastracode/factory-auth package",
       "lane": "K",
       "size": "S",
@@ -30,6 +31,7 @@
     },
     {
       "id": "K2",
+      "status": "done",
       "title": "Register the package in the workspace",
       "lane": "K",
       "size": "S",
@@ -44,6 +46,7 @@
     },
     {
       "id": "K3",
+      "status": "done",
       "title": "Toolchain config mirroring sibling packages",
       "lane": "K",
       "size": "S",
@@ -63,6 +66,7 @@
     },
     {
       "id": "K4",
+      "status": "done",
       "title": "ESLint rule banning EE import paths",
       "lane": "K",
       "size": "S",
@@ -77,6 +81,7 @@
     },
     {
       "id": "K5",
+      "status": "done",
       "title": "CI module-graph test proving zero EE in the resolved graph",
       "lane": "K",
       "size": "L",
@@ -92,6 +97,7 @@
     },
     {
       "id": "K6",
+      "status": "done",
       "title": "Negative-prove the boundary",
       "lane": "K",
       "size": "S",
@@ -108,6 +114,7 @@
     },
     {
       "id": "K7",
+      "status": "done",
       "title": "contract.ts - the single import site",
       "lane": "K",
       "size": "S",
@@ -122,6 +129,7 @@
     },
     {
       "id": "K8",
+      "status": "done",
       "title": "identity.ts - AuthIdentity type",
       "lane": "K",
       "size": "S",
@@ -136,6 +144,7 @@
     },
     {
       "id": "K9",
+      "status": "done",
       "title": "identity.ts - toAuthIdentity normalizer",
       "lane": "K",
       "size": "M",
@@ -150,6 +159,7 @@
     },
     {
       "id": "K10",
+      "status": "done",
       "title": "identity.ts - IIdentityProvider escape hatch",
       "lane": "K",
       "size": "S",
@@ -164,6 +174,7 @@
     },
     {
       "id": "K11",
+      "status": "done",
       "title": "state.ts - one OAuth state codec",
       "lane": "K",
       "size": "S",
@@ -178,6 +189,7 @@
     },
     {
       "id": "K12",
+      "status": "done",
       "title": "session.ts - host-owned signed cookie",
       "lane": "K",
       "size": "M",
@@ -192,6 +204,7 @@
     },
     {
       "id": "K13",
+      "status": "done",
       "title": "capabilities.ts - AuthDescriptor type",
       "lane": "K",
       "size": "S",
@@ -206,6 +219,7 @@
     },
     {
       "id": "K14",
+      "status": "done",
       "title": "capabilities.ts - describeAuth() derivation",
       "lane": "K",
       "size": "M",
@@ -220,6 +234,7 @@
     },
     {
       "id": "K15",
+      "status": "done",
       "title": "organizations.ts - withSyntheticOrganizations",
       "lane": "K",
       "size": "M",
@@ -234,6 +249,7 @@
     },
     {
       "id": "K16",
+      "status": "done",
       "title": "organizations.ts - resolveTenant host helper",
       "lane": "K",
       "size": "S",
@@ -248,6 +264,7 @@
     },
     {
       "id": "K17",
+      "status": "done",
       "title": "testing/ - composable fake providers",
       "lane": "K",
       "size": "M",
@@ -263,6 +280,7 @@
     },
     {
       "id": "K18",
+      "status": "done",
       "title": "conformance/ - describeAuthProvider suite",
       "lane": "K",
       "size": "L",
@@ -279,6 +297,7 @@
     },
     {
       "id": "K19",
+      "status": "done",
       "title": "Kit unit test sweep",
       "lane": "K",
       "size": "M",
@@ -297,6 +316,7 @@
     },
     {
       "id": "K20",
+      "status": "done",
       "title": "Kit README and stability policy",
       "lane": "K",
       "size": "S",
@@ -311,6 +331,7 @@
     },
     {
       "id": "K21",
+      "status": "done",
       "title": "Packaging into mastracode/web's separate pnpm project",
       "lane": "K",
       "size": "M",
@@ -327,6 +348,7 @@
     },
     {
       "id": "B1",
+      "status": "done",
       "title": "Add the kit to @mastra/factory and extend its lint",
       "lane": "B",
       "size": "S",
@@ -342,6 +364,7 @@
     },
     {
       "id": "B2",
+      "status": "pending",
       "title": "Compat flag for the identity change",
       "lane": "B",
       "size": "S",
@@ -356,6 +379,7 @@
     },
     {
       "id": "B3",
+      "status": "pending",
       "title": "Route identity through the kit",
       "lane": "B",
       "size": "M",
@@ -371,6 +395,7 @@
     },
     {
       "id": "B4",
+      "status": "pending",
       "title": "Drop workosId from the neutral user shapes",
       "lane": "B",
       "size": "S",
@@ -386,6 +411,7 @@
     },
     {
       "id": "B5",
+      "status": "pending",
       "title": "Delete the WorkOS type-test helpers",
       "lane": "B",
       "size": "S",
@@ -400,6 +426,7 @@
     },
     {
       "id": "B6",
+      "status": "pending",
       "title": "Delete the WORKOS_* env fallback provider",
       "lane": "B",
       "size": "M",
@@ -414,6 +441,7 @@
     },
     {
       "id": "B7",
+      "status": "pending",
       "title": "Remove @mastra/auth-workos from the Factory",
       "lane": "B",
       "size": "S",
@@ -430,6 +458,7 @@
     },
     {
       "id": "B8",
+      "status": "pending",
       "title": "Adopt the kit state codec on login and callback",
       "lane": "B",
       "size": "M",
@@ -445,6 +474,7 @@
     },
     {
       "id": "B9",
+      "status": "pending",
       "title": "Session cookie minting and clearing via the kit",
       "lane": "B",
       "size": "M",
@@ -460,6 +490,7 @@
     },
     {
       "id": "B10",
+      "status": "pending",
       "title": "Logout revokes, and moves to POST",
       "lane": "B",
       "size": "M",
@@ -474,6 +505,7 @@
     },
     {
       "id": "B11",
+      "status": "pending",
       "title": "Session refresh parity with packages/server",
       "lane": "B",
       "size": "M",
@@ -488,6 +520,7 @@
     },
     {
       "id": "B12",
+      "status": "pending",
       "title": "resolveTenant wired into the RouteAuth seam",
       "lane": "B",
       "size": "M",
@@ -504,6 +537,7 @@
     },
     {
       "id": "B13",
+      "status": "pending",
       "title": "Remove the org-required throw in the workspace layer",
       "lane": "B",
       "size": "S",
@@ -518,6 +552,7 @@
     },
     {
       "id": "B14",
+      "status": "pending",
       "title": "Migrate workspace.ts onto RouteAuth",
       "lane": "B",
       "size": "M",
@@ -532,6 +567,7 @@
     },
     {
       "id": "B15",
+      "status": "pending",
       "title": "Migrate rules/binding-context.ts onto RouteAuth",
       "lane": "B",
       "size": "S",
@@ -546,6 +582,7 @@
     },
     {
       "id": "B16",
+      "status": "pending",
       "title": "Migrate github/session-subscriptions.ts onto RouteAuth",
       "lane": "B",
       "size": "S",
@@ -560,6 +597,7 @@
     },
     {
       "id": "B17",
+      "status": "pending",
       "title": "Backend exit-gate tests",
       "lane": "B",
       "size": "L",
@@ -583,6 +621,7 @@
     },
     {
       "id": "B18",
+      "status": "pending",
       "title": "Flip the compat flag on by default and soak",
       "lane": "B",
       "size": "S",
@@ -598,6 +637,7 @@
     },
     {
       "id": "B19",
+      "status": "pending",
       "title": "Delete the flag and the legacy sniffer",
       "lane": "B",
       "size": "S",
@@ -612,6 +652,7 @@
     },
     {
       "id": "U1",
+      "status": "pending",
       "title": "/auth/me emits the capability descriptor",
       "lane": "U",
       "size": "M",
@@ -627,6 +668,7 @@
     },
     {
       "id": "U2",
+      "status": "pending",
       "title": "Server-side descriptor tests",
       "lane": "U",
       "size": "S",
@@ -641,6 +683,7 @@
     },
     {
       "id": "U3",
+      "status": "pending",
       "title": "SPA reads the descriptor",
       "lane": "U",
       "size": "S",
@@ -655,6 +698,7 @@
     },
     {
       "id": "U4",
+      "status": "pending",
       "title": "SignInPage branches on capability",
       "lane": "U",
       "size": "M",
@@ -669,6 +713,7 @@
     },
     {
       "id": "U5",
+      "status": "pending",
       "title": "Credentials endpoint comes from the descriptor",
       "lane": "U",
       "size": "M",
@@ -683,6 +728,7 @@
     },
     {
       "id": "U6",
+      "status": "pending",
       "title": "Remaining provider-name reads in the SPA",
       "lane": "U",
       "size": "S",
@@ -697,6 +743,7 @@
     },
     {
       "id": "U7",
+      "status": "pending",
       "title": "MSW tests for every sign-in kind",
       "lane": "U",
       "size": "M",
@@ -712,6 +759,7 @@
     },
     {
       "id": "U8",
+      "status": "pending",
       "title": "CI test banning provider-name literals in the SPA",
       "lane": "U",
       "size": "S",
@@ -727,6 +775,7 @@
     },
     {
       "id": "U9",
+      "status": "pending",
       "title": "Remove the legacy name fallback",
       "lane": "U",
       "size": "S",
@@ -743,6 +792,7 @@
     },
     {
       "id": "C1",
+      "status": "done",
       "title": "Conformance baseline: better-auth",
       "lane": "C",
       "size": "S",
@@ -757,6 +807,7 @@
     },
     {
       "id": "C2",
+      "status": "pending",
       "title": "Conformance baseline: workos and studio",
       "lane": "C",
       "size": "M",
@@ -772,6 +823,7 @@
     },
     {
       "id": "C3",
+      "status": "pending",
       "title": "Conformance on okta - expect red",
       "lane": "C",
       "size": "S",
@@ -786,6 +838,7 @@
     },
     {
       "id": "C4",
+      "status": "pending",
       "title": "Fix the okta state contract",
       "lane": "C",
       "size": "M",
@@ -802,6 +855,7 @@
     },
     {
       "id": "C5",
+      "status": "pending",
       "title": "Conformance on supabase and firebase - decide and act",
       "lane": "C",
       "size": "L",
@@ -818,6 +872,7 @@
     },
     {
       "id": "C6",
+      "status": "pending",
       "title": "Retire the 60-second boot tests",
       "lane": "C",
       "size": "M",
@@ -832,6 +887,7 @@
     },
     {
       "id": "C7",
+      "status": "pending",
       "title": "Conformance wired into CI for every shipped provider",
       "lane": "C",
       "size": "S",
@@ -849,6 +905,7 @@
     },
     {
       "id": "D1",
+      "status": "pending",
       "title": "Capability reference table",
       "lane": "D",
       "size": "M",
@@ -864,6 +921,7 @@
     },
     {
       "id": "D2",
+      "status": "pending",
       "title": "The four obligations, promoted to documented contract",
       "lane": "D",
       "size": "M",
@@ -880,6 +938,7 @@
     },
     {
       "id": "D3",
+      "status": "pending",
       "title": "Write-a-provider guide, end to end",
       "lane": "D",
       "size": "L",
@@ -895,6 +954,7 @@
     },
     {
       "id": "D4",
+      "status": "pending",
       "title": "CI type-checks every doc example",
       "lane": "D",
       "size": "M",
@@ -910,6 +970,7 @@
     },
     {
       "id": "D5",
+      "status": "pending",
       "title": "Validate the guide on a real reader",
       "lane": "D",
       "size": "M",
@@ -923,6 +984,7 @@
     },
     {
       "id": "D6",
+      "status": "pending",
       "title": "Update the mastracode READMEs",
       "lane": "D",
       "size": "S",
@@ -939,6 +1001,7 @@
     },
     {
       "id": "R1",
+      "status": "pending",
       "title": "Changesets",
       "lane": "R",
       "size": "S",
@@ -955,6 +1018,7 @@
     },
     {
       "id": "R2",
+      "status": "pending",
       "title": "Re-grade against the five exit-criteria sets",
       "lane": "R",
       "size": "M",
@@ -970,6 +1034,7 @@
     },
     {
       "id": "R3",
+      "status": "pending",
       "title": "Deferred cleanup release",
       "lane": "R",
       "size": "S",
@@ -1004,5 +1069,10 @@
     "B18, B19, U9 and R3 are deliberately deferred by one release; they are not on the path to A-.",
     "Two engineers parallelize cleanly after K7: one takes the K8-K10/K15-K18 identity+conformance spine, the other takes K11-K14 (state, session, capabilities). They rejoin at K17.",
     "Lane U cannot start before U1, which needs K14. Lane C cannot start before K18. Lane D trails both."
-  ]
+  ],
+  "statusLegend": {
+    "done": "merged and pushed on claude/k1-k6-agent-team-tqgv8e",
+    "pending": "not started, or in flight",
+    "note": "Update this field when a task merges. Nothing else records progress."
+  }
 }
