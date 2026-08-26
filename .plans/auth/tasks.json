@@ -1171,16 +1171,24 @@
     },
     {
       "id": "P9",
-      "status": "pending",
+      "status": "done",
       "title": "Guards narrow on the members their interfaces require",
       "lane": "K",
       "size": "M",
       "deps": [],
       "files": [
         "packages/_internals/auth/src/provider/index.ts",
+        "packages/_internals/auth/src/provider/capability-guards.test.ts",
+        "packages/_internals/auth/vitest.config.ts",
+        "packages/_internals/auth/tsconfig.conformance.json",
+        "vitest.config.ts",
+        "mastracode/factory-auth/src/capabilities.ts",
+        "mastracode/factory-auth/src/conformance/index.ts",
+        "auth/firebase/src/index.ts",
+        "auth/supabase/src/index.ts",
         "docs/src/content/en/reference/auth/capability-interfaces.mdx"
       ],
-      "detail": "BREAKING - a provider that today passes a guard may stop passing it, which is the point. Measured at HEAD against the interface declarations: isSessionProvider checks 2 of 7 required members (provider/index.ts:132 vs ISessionProvider in session/index.ts:20, all seven required); isSSOProvider checks 2 of 3 required (5 total); isUserProvider checks 1 of 2 required (4 total); isCredentialsProvider checks 1 of 2 required (5 total). Only isOrganizationsProvider, isAuthHttpHandler and hasAuthInit check everything required. The consequence is not theoretical: auth/workos declares ISessionProvider with all seven members as no-ops, validateSession returns null unconditionally (auth/workos/src/auth-provider.ts:712), the guard reports true on the strength of two of them existing, and toAuthDescriptor then advertises features.sessionRevocation: true - so a UI offers 'sign out everywhere' against a provider that cannot. Narrow each guard to the interface's required members. The docs already state the gap honestly at capability-interfaces.mdx:159-179; update that table when the numbers change.",
+      "detail": "DONE at 367cacda. Measured before changing anything, with a TypeScript AST scan over every provider class under auth/*: narrowing changes ZERO verdicts in this repository. Every provider declares its capability interfaces with `implements`, so tsc already forced the required members to exist, and the kit's own `with*` fakes each supply their full required set. The guards are now sound rather than newly strict - the value is for providers that only ever matched structurally, and for the type assertion itself, which licensed a call to a member nobody had checked for. CORRECTION to the original detail: this does NOT stop auth/workos advertising `sessionRevocation`. WorkOS carries all seven `ISessionProvider` members as no-ops, so it passed the loose guard and passes the tight one; only P18 can fix that, and P18's cross-reference to this task was wrong on the same point. Guard member lists are now pinned to their interfaces at compile time by packages/_internals/auth/src/provider/capability-guards.test.ts, proved to bite in three directions: an interface growing a required member fails the typecheck project (exit 1), a guard reverting to the loose form fails five runtime assertions, and a list naming a member the interface does not require fails with `notRequiredByInterface`. Two consequences handled here. `toAuthDescriptor` stopped gating `features.refresh` and `features.sessionRevocation` on `isSessionProvider` - with a seven-member guard that gate makes both fields exactly equal to the guard, and reports no session features at all for a provider carrying six of the seven. And the conformance user section now gates on carrying EITHER required member, so half an interface fails rather than skipping; `users/current-user#not-declared` was added to mirror `users/get-user#not-declared`. A generalized partial-capability check was written up and rejected: it would flag @mastra/auth-better-auth for implementing `getClearSessionHeaders` alone, which is the pattern P11 exists to bless. Filed as P23. Two things found while measuring, both fixed here. `packages/_internals/*/vitest.config.ts` matched no glob in the root PROJECT_GLOBS, so @internal/auth and @internal/voice never ran on a pull request - the same gap P1 found under mastracode/. And auth/firebase and auth/supabase both implement `ensureOrganization` and `isOrganizationAdmin` and both passed `isOrganizationsProvider`, without declaring the interface, so nothing held them to it.",
       "doneWhen": "Each guard checks every required member of the interface it narrows to, and the documented checked/required/total table matches the code."
     },
     {
@@ -1290,7 +1298,7 @@
     },
     {
       "id": "P17",
-      "status": "pending",
+      "status": "done",
       "title": "auth/better-auth: one shape for 'auth isn't ready'",
       "lane": "C",
       "size": "S",
@@ -1298,7 +1306,7 @@
       "files": [
         "auth/better-auth/src/index.ts"
       ],
-      "detail": "handleAuthRequest answers two different ways to the same condition, on a public route. auth/better-auth/src/index.ts:349 wraps #ensureDbReady in a try and returns a clean 503 `{ error: 'auth_unavailable' }` when migrations fail. But #ensureDbReady returns early when the instance is not owned, and the next line - `return this.auth.handler(request)` - reads the `auth` getter at index.ts:231, which THROWS 'MastraAuthBetterAuth is not initialized' when #auth is unset. That throw is outside the try, so a never-initialized instance produces an uncaught error and a 500 where the sibling condition produces a 503. Same operator-visible situation, two outcomes, one of them a stack trace on an unauthenticated endpoint. Answer 503 for both.",
+      "detail": "handleAuthRequest answers two different ways to the same condition, on a public route. auth/better-auth/src/index.ts:349 wraps #ensureDbReady in a try and returns a clean 503 `{ error: 'auth_unavailable' }` when migrations fail. But #ensureDbReady returns early when the instance is not owned, and the next line - `return this.auth.handler(request)` - reads the `auth` getter at index.ts:231, which THROWS 'MastraAuthBetterAuth is not initialized' when #auth is unset. That throw is outside the try, so a never-initialized instance produces an uncaught error and a 500 where the sibling condition produces a 503. Same operator-visible situation, two outcomes, one of them a stack trace on an unauthenticated endpoint. Answer 503 for both. DONE at 07430f9b. Both conditions return 503 { error: \"auth_unavailable\" } from one helper. The not-initialized warning is latched, because the route is unauthenticated and the misconfiguration persistent.",
       "doneWhen": "Both 'not ready' conditions return the same 503 shape and neither throws out of handleAuthRequest."
     },
     {
@@ -1334,7 +1342,7 @@
     },
     {
       "id": "P20",
-      "status": "pending",
+      "status": "done",
       "title": "Widen MastraAuthBetterAuthOptions.auth so the documented usage typechecks",
       "lane": "C",
       "size": "S",
@@ -1344,7 +1352,7 @@
       "files": [
         "auth/better-auth/src/index.ts"
       ],
-      "detail": "P19 found that `new MastraAuthBetterAuth({ auth: betterAuth({...}) })` does not typecheck for anyone. betterAuth() is generic over its exact options object and Auth<T> is invariant in T (DBAdapter<T> appears in both a covariant and a contravariant position), so the inferred Auth<{...}> is not assignable to the bare Auth the option declares. That call is exactly what auth/better-auth/README.md:19, docs integrations/auth/better-auth.mdx:51, docs reference/auth/better-auth.mdx:20 and the class JSDoc all tell users to write. index.ts:298 already documents the defect and widens to BetterAuthOptions for the instance it builds itself; nobody applied the same widening to the public option. Changes a published API, so it was not done inside a test task.",
+      "detail": "P19 found that `new MastraAuthBetterAuth({ auth: betterAuth({...}) })` does not typecheck for anyone. betterAuth() is generic over its exact options object and Auth<T> is invariant in T (DBAdapter<T> appears in both a covariant and a contravariant position), so the inferred Auth<{...}> is not assignable to the bare Auth the option declares. That call is exactly what auth/better-auth/README.md:19, docs integrations/auth/better-auth.mdx:51, docs reference/auth/better-auth.mdx:20 and the class JSDoc all tell users to write. index.ts:298 already documents the defect and widens to BetterAuthOptions for the instance it builds itself; nobody applied the same widening to the public option. Changes a published API, so it was not done inside a test task. DONE at 07430f9b. TWO CORRECTIONS to this text, both measured. (1) The suggested Auth<BetterAuthOptions> is a no-op: better-auth declares type Auth<Options extends BetterAuthOptions = BetterAuthOptions>, so the bare Auth already IS Auth<BetterAuthOptions>, and an explicit probe fails identically. The fix is a TAuthOptions parameter on the class, inferred at the call site. (2) The invariance comes from createSchema(options: T), transaction's callback and AuthContext<T>.checkPassword, not from DBAdapter<T> being covariant and contravariant in general - which matters, because the members this provider calls all take model: string and are identical for every T. Also: the docs path given here, docs/src/content/en/docs/integrations/auth/better-auth.mdx, does not exist; the page is at docs/src/content/en/integrations/auth/better-auth.mdx, and that whole directory is outside the docs typechecker's SCOPES. Verified against built output, not source: the documented snippet fails TS2322 on the pre-change dist and compiles clean after. Fixed examples/agent/src/mastra/auth/better-auth.ts by the same widening.",
       "doneWhen": "The documented snippet typechecks verbatim in a fresh consumer project, and the docs examples are covered by the docs typechecker."
     },
     {
@@ -1376,6 +1384,37 @@
       ],
       "detail": "Measured by P19 on the baseline as well as on its own branch: running all auth unit projects fails roughly 1 run in 10, in a different package each time (neon on baseline, okta on the branch). Cause is isolate:false plus nine index.test.ts files calling vi.mock('jose') and similar, whose module registry bleeds into the same package's real-jose conformance.test.ts when worker scheduling puts index first. Fixing means editing index.test.ts or flipping isolate; both were outside P19's remit. A 10% flake on a suite that now gates merges will erode trust in the gate.",
       "doneWhen": "The auth unit projects pass 20 consecutive full runs."
+    },
+    {
+      "id": "P23",
+      "status": "pending",
+      "title": "A blessed partial capability, and a check that finds the unblessed ones",
+      "lane": "K",
+      "size": "M",
+      "deps": [
+        "P11"
+      ],
+      "files": [
+        "mastracode/factory-auth/src/conformance/index.ts",
+        "packages/_internals/auth/src/session/index.ts"
+      ],
+      "detail": "P9 made every guard test its interface’s full required set, which turns a provider carrying SOME of a set from \"passes the guard\" into \"has no capability at all\" - silent, where it used to be a run-time throw. P9 restored the reporting for `IUserProvider` only, by gating that section on carrying either member. The general check - fail any provider holding some but not all of an interface’s required members - was written up and rejected, because @mastra/auth-better-auth implements `getClearSessionHeaders` alone and that is a legitimate pattern the Factory already honours through a structural `Partial<ISessionProvider>` read. It cannot be told from a half-finished interface until P11 declares it as its own member with its own guard. Once P11 lands, the general check becomes writable and should replace the ad-hoc user-section gate.",
+      "doneWhen": "A provider holding part of a capability interface either satisfies a declared narrower interface, or fails conformance naming the members it is missing."
+    },
+    {
+      "id": "P24",
+      "status": "pending",
+      "title": "Decide whether the guard tightening deserves a major on @mastra/core",
+      "lane": "C",
+      "size": "S",
+      "deps": [
+        "P9"
+      ],
+      "files": [
+        ".changeset/"
+      ],
+      "detail": "P9 shipped with `@mastra/core: minor`, matching the precedent set by the earlier auth interface changeset in this series. That is a judgement call and it should be a maintainer's. Semver-wise the change is breaking for a consumer whose third-party provider satisfied a guard structurally with a subset of the required members: the guard now reports false, and a surface branching on it stops offering the capability. No provider in this repository is affected - measured with an AST scan - so the blast radius is external only, and a major on @mastra/core forces a whole-repo major release. The changeset body states the breaking consequence in full with a before/after either way, so the changelog is honest at both bump levels; only the version number is open.",
+      "doneWhen": "A maintainer has confirmed minor, or the changeset is reissued as major."
     }
   ],
   "criticalPath": [
