@@ -215,7 +215,7 @@ Beyond the interfaces, a provider owes a host four requirements that no interfac
 
 The names are stable string literals, exported in order as `AUTH_OBLIGATIONS` from `@mastra/factory-auth/testing`.
 
-Two of the four apply to every provider. `flatId` and `organizationId` are never skipped, and `organizationId` in particular is deliberately not gated on `isOrganizationsProvider`, because gating it there would skip the only check that notices a provider with no organizations. `cookieAuth` applies once a browser can hold a session for the provider, which is `toAuthDescriptor(provider).features.logout`. `stateCodec` applies once `isSSOProvider` is true.
+[Provider obligations](/docs/auth/provider-obligations) states each one as a contract. It covers the host behavior that creates the requirement, what a person using the app sees when a provider misses it, how to satisfy it, and when the conformance suite enforces it.
 
 ## Provider capability matrix
 
@@ -269,6 +269,7 @@ For setup, fixtures, and the failure messages the suite emits, see the [`@mastra
 
 ## Related
 
+- [Provider obligations](/docs/auth/provider-obligations): What a provider owes a host beyond the interfaces.
 - [Custom auth provider](/docs/auth/custom-auth-provider): Build a provider on the base contract.
 - [Auth](/docs/auth/overview): Pick an auth strategy and configure it.
 - [Composite auth](/docs/auth/composite-auth): Combine several providers behind one contract.
