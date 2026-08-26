@@ -124,6 +124,11 @@ function mastracodeProjects(): string[] {
 // Directories to scan for vitest configs
 const PROJECT_GLOBS = [
   'packages/*/vitest.config.ts',
+  // `packages/_internals/*` sits one level deeper than the glob above reaches,
+  // so its suites ran only from their own package and never on a pull request.
+  // `@internal/auth` owns the capability interfaces and guards every auth
+  // provider narrows with, which is not a thing to leave outside the gate.
+  'packages/_internals/*/vitest.config.ts',
   'stores/*/vitest.config.ts',
   'deployers/*/vitest.config.ts',
   'voice/*/vitest.config.ts',

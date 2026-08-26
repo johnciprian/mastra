@@ -35,6 +35,7 @@ import {
   isSessionProvider,
   isSSOProvider,
   type IMastraAuthProvider,
+  type ISessionProvider,
 } from './contract.js';
 
 /**
@@ -292,15 +293,22 @@ export interface AuthDescriptorOverrides {
  * `features.logout` asks whether anything exists to sign out of, so it takes a
  * third guard as well: `isAuthHttpHandler` means the provider mounts its own
  * auth routes and therefore has a sign-out of its own, even where the kind is
- * `none`. `features.organizations` is `isOrganizationsProvider` directly.
+ * `none`. A provider with `destroySession` can end a session too, and counts
+ * here whether or not it satisfies the whole session interface.
+ * `features.organizations` is `isOrganizationsProvider` directly.
  *
- * `features.refresh` and `features.sessionRevocation` are checked as methods
- * rather than both being read off `isSessionProvider`, and that is not
- * belt-and-braces. `ISessionProvider` declares seven members, but the guard
- * tests two of them (`createSession`, `validateSession`). The narrowing is
- * therefore optimistic: a structurally-satisfying provider can pass the guard
- * with no `destroySession` at all, and a UI that offered "sign out everywhere"
- * on the strength of the guard alone would call a method that is not there.
+ * `features.refresh` and `features.sessionRevocation` are read off the two
+ * methods directly and are NOT gated on `isSessionProvider`. Each names a
+ * button a UI renders and then a method that button calls, so the honest test
+ * is for the method that will be called.
+ *
+ * Gating them on the guard would also make them redundant: `isSessionProvider`
+ * now tests all seven members `ISessionProvider` requires, `refreshSession` and
+ * `destroySession` among them, so `guard && hasMethod` is just `guard` and all
+ * three fields would move together. Worse, a provider carrying six of the seven
+ * would report no session features at all, including the ones it does have.
+ * Ungated, the two fields stay independent of each other and of the guard,
+ * which is what a UI branching on them needs.
  *
  * @param provider A provider. There is no descriptor for "auth is disabled" -
  * that state has no provider, and the host reports it separately.
@@ -325,18 +333,15 @@ export function toAuthDescriptor(
     signIn.credentialsBasePath = overrides.credentialsBasePath ?? DEFAULT_CREDENTIALS_BASE_PATH;
   }
 
-  let refresh = false;
-  let sessionRevocation = false;
+  const withMembers = provider as Partial<ISessionProvider>;
+  const refresh = typeof withMembers.refreshSession === 'function';
+  const sessionRevocation = typeof withMembers.destroySession === 'function';
   const session = isSessionProvider(provider);
-  if (session) {
-    refresh = typeof provider.refreshSession === 'function';
-    sessionRevocation = typeof provider.destroySession === 'function';
-  }
 
   return {
     signIn,
     features: {
-      logout: kind !== 'none' || session || isAuthHttpHandler(provider),
+      logout: kind !== 'none' || session || sessionRevocation || isAuthHttpHandler(provider),
       organizations: isOrganizationsProvider(provider),
       refresh,
       sessionRevocation,

@@ -1,3 +1,4 @@
+import type { IOrganizationsProvider } from '@internal/auth';
 import type { MastraAuthProviderOptions } from '@internal/auth/provider';
 import { MastraAuthProvider } from '@internal/auth/provider';
 
@@ -119,7 +120,7 @@ interface MastraAuthSupabaseOptions extends MastraAuthProviderOptions<User> {
   requireAdminRow?: boolean;
 }
 
-export class MastraAuthSupabase extends MastraAuthProvider<User> {
+export class MastraAuthSupabase extends MastraAuthProvider<User> implements IOrganizationsProvider {
   /** See {@link FACTORY_BROWSER_SIGN_IN}. Readable from a provider instance. */
   readonly factoryBrowserSignIn = FACTORY_BROWSER_SIGN_IN;
 

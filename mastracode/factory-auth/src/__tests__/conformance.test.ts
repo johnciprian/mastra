@@ -734,44 +734,42 @@ describe('a provider that carries a PKCE verifier in a login cookie', () => {
 });
 
 // ============================================================================
-// The guard that narrows on half an interface
+// Half an interface
 // ============================================================================
 
 function usersOutcome(outcomes: readonly CheckOutcome[], id: string): CheckOutcome {
   return outcomes.find(outcome => outcome.check.id === id)!;
 }
 
-describe('a provider that satisfies isUserProvider with half of IUserProvider', () => {
+describe('a provider that implements half of IUserProvider', () => {
   /**
-   * `getCurrentUser` and no `getUser`, which every structural guard calls a
-   * complete `IUserProvider`.
+   * `getCurrentUser` and no `getUser`.
    *
-   * This is the shape the check exists for and the reason the missing member is
-   * asked about in the check body rather than in the gate. `isUserProvider`
-   * reads `getCurrentUser` and stops, while `IUserProvider` requires both - so
-   * the guard hands a host a narrowed type that promises a method that is not
-   * there, and `auth.getUser(id)` compiles and throws at run time. A gate can
-   * only ask the guard, so gating on `getUser` would skip exactly this provider.
+   * `isUserProvider` tests both members `IUserProvider` requires, so this
+   * provider fails the guard - and a host branching on the guard therefore
+   * treats it as having no user directory at all, silently losing the half it
+   * did implement. That is the defect, and it is why the gate for this section
+   * asks whether EITHER member is present rather than asking the guard. Gating
+   * on the guard would skip exactly the provider these checks exist to find.
    */
   const halfAUserProvider = () => brokenFake({ getUser: undefined });
 
-  it('is still a user provider as far as the guard is concerned', () => {
-    expect(isUserProvider(halfAUserProvider())).toBe(true);
+  it('does not satisfy the guard, because the guard requires both members', () => {
+    expect(isUserProvider(halfAUserProvider())).toBe(false);
   });
 
-  it('fails rather than skipping, because it declared the capability and did not deliver it', async () => {
+  it('fails rather than skipping, because half an interface is a defect and not a smaller capability', async () => {
     const outcomes = await runChecks(optionsFor(halfAUserProvider));
     const outcome = usersOutcome(outcomes, 'users/get-user');
     expect(outcome.status).toBe('failed');
     expect(outcome.status === 'failed' && outcome.code).toBe('users/get-user#not-declared');
   });
 
-  it('names the guard, and says why a passing guard was not enough', async () => {
+  it('names both members and what the guard makes of them', async () => {
     const outcomes = await runChecks(optionsFor(halfAUserProvider));
     const outcome = usersOutcome(outcomes, 'users/get-user');
-    expect(outcome.status === 'failed' && outcome.message).toContain('isUserProvider(provider) is true');
+    expect(outcome.status === 'failed' && outcome.message).toContain('isUserProvider(provider) is false');
     expect(outcome.status === 'failed' && outcome.message).toContain('provider.getUser        is undefined');
-    expect(outcome.status === 'failed' && outcome.message).toContain('auth.getUser is not a function');
   });
 
   /** One defect, one failure: the other half of the section still runs. */
@@ -780,20 +778,30 @@ describe('a provider that satisfies isUserProvider with half of IUserProvider', 
     expect(usersOutcome(outcomes, 'users/current-user').status).toBe('passed');
   });
 
+  /** The mirror: `getUser` and no `getCurrentUser` is the same defect, reported by the other check. */
+  it('fails the other way round too', async () => {
+    const outcomes = await runChecks(optionsFor(() => brokenFake({ getCurrentUser: undefined })));
+    const outcome = usersOutcome(outcomes, 'users/current-user');
+    expect(outcome.status).toBe('failed');
+    expect(outcome.status === 'failed' && outcome.code).toBe('users/current-user#not-declared');
+    expect(usersOutcome(outcomes, 'users/get-user').status).toBe('passed');
+  });
+
   /**
    * The skip, and why it is a skip rather than a red.
    *
-   * A provider with no `getCurrentUser` declares no user directory at all, and
+   * A provider with neither member declares no user directory at all, and
    * nothing in a host asks it who is signed in. `supabase` and `firebase` are
    * that shape today. Failing them for a capability they never claimed is the
-   * false red the skip rule exists to prevent.
+   * false red the skip rule exists to prevent. Neither member is a decision;
+   * one of the two is a half-finished job, which is why that fails instead.
    */
   it('skips both checks for a provider that declares no user directory', async () => {
     const outcomes = await runChecks(optionsFor(() => withSyntheticOrganizations(fakeProvider())));
     for (const id of ['users/current-user', 'users/get-user']) {
       const outcome = usersOutcome(outcomes, id);
       expect(outcome.status, id).toBe('skipped');
-      expect(outcome.status === 'skipped' && outcome.reason).toContain('isUserProvider is false');
+      expect(outcome.status === 'skipped' && outcome.reason).toContain('neither getCurrentUser nor getUser');
     }
   });
 
@@ -951,12 +959,18 @@ describe('a bearer-token validator', () => {
     );
   });
 
-  it('explains every skip in terms of a guard the provider does not satisfy', async () => {
+  /**
+   * Most gates ask a guard and say which one is false. The user section asks
+   * instead whether either required member is present, so that half an
+   * interface fails rather than skipping - so its reason names the members.
+   * Either way a skip has to say what the provider does not have.
+   */
+  it('explains every skip in terms of something the provider does not have', async () => {
     const outcomes = await runChecks(optionsFor(bearerOnly));
     for (const outcome of outcomes) {
       if (outcome.status !== 'skipped') continue;
       expect(outcome.reason.length, `${outcome.check.id} skipped with an empty reason`).toBeGreaterThan(0);
-      expect(outcome.reason).toMatch(/is false|does not implement|cannot put a session in a browser/);
+      expect(outcome.reason).toMatch(/is false|has neither|does not implement|cannot put a session in a browser/);
     }
   });
 

@@ -113,7 +113,7 @@ import {
   isSSOProvider,
   isUserProvider,
 } from '../contract.js';
-import type { IMastraAuthProvider } from '../contract.js';
+import type { IMastraAuthProvider, IUserProvider } from '../contract.js';
 import { toAuthIdentity } from '../identity.js';
 import type { AuthIdentity } from '../identity.js';
 import { decodeState, encodeState, parseStateId } from '../oauth-state.js';
@@ -1083,12 +1083,25 @@ function requiresSessions(provider: IMastraAuthProvider): string | null {
     : 'This provider declares no server-side sessions (isSessionProvider is false).';
 }
 
+/**
+ * Gates the user section on carrying EITHER required member, not on the guard.
+ *
+ * `isUserProvider` tests both members `IUserProvider` requires, so gating on it
+ * would skip a provider carrying one of them - which is the exact provider this
+ * section exists to find. Half an interface is a defect, and a defect that
+ * skips is a defect nobody hears about. So the gate asks the weaker question,
+ * and each check below reports on its own member.
+ *
+ * A provider with neither member is not making a claim at all, and skips.
+ */
 function requiresUsers(provider: IMastraAuthProvider): string | null {
-  return isUserProvider(provider)
+  const members = provider as Partial<IUserProvider>;
+  const carries = typeof members.getCurrentUser === 'function' || typeof members.getUser === 'function';
+  return carries
     ? null
-    : 'This provider offers no user directory (isUserProvider is false), so nothing asks it who is ' +
-        'signed in and nothing looks a user up by id. Implement IUserProvider - `getCurrentUser` and ' +
-        '`getUser` - and these checks apply.';
+    : 'This provider offers no user directory (it has neither getCurrentUser nor getUser), so nothing ' +
+        'asks it who is signed in and nothing looks a user up by id. Implement IUserProvider - both ' +
+        '`getCurrentUser` and `getUser` - and these checks apply.';
 }
 
 function requiresOrganizations(provider: IMastraAuthProvider): string | null {
@@ -2309,6 +2322,7 @@ function buildChecks(fixtures: Fixtures): readonly Omit<AuthConformanceCheck, 'k
       title: 'getCurrentUser answers for the same person authenticateToken does, and for nobody else',
       obligation: null,
       failureCodes: [
+        'users/current-user#not-declared',
         'users/current-user#threw',
         'users/current-user#no-id-in-user',
         'users/current-user#different-user',
@@ -2316,7 +2330,34 @@ function buildChecks(fixtures: Fixtures): readonly Omit<AuthConformanceCheck, 'k
       ],
       skipReason: requiresUsers,
       async run(provider) {
-        if (!isUserProvider(provider)) return;
+        // The structural half, asked HERE rather than in the gate. The gate
+        // admits a provider carrying either required member, so that half an
+        // interface is reported rather than skipped, and each check then owns
+        // the member it is about. This is the mirror of `users/get-user`.
+        const members = provider as Partial<IUserProvider>;
+        if (typeof members.getCurrentUser !== 'function') {
+          fail(fixtures, {
+            code: 'users/current-user#not-declared',
+            headline: 'This provider looks users up by id and cannot say who is signed in.',
+            observed: [
+              `provider.getUser        is ${show(members.getUser)}`,
+              `provider.getCurrentUser is ${show(members.getCurrentUser)}`,
+              'isUserProvider(provider) is false, because it requires both.',
+            ],
+            why:
+              '`IUserProvider` requires both members, and having one of them is a half-finished\n' +
+              'interface rather than a smaller capability. A host that sees `getUser` has no way to\n' +
+              'resolve the current request to a user, so an account menu has nobody to name. The guard\n' +
+              'reports false, so this provider silently loses the whole capability, including the half\n' +
+              'it implemented.',
+            how:
+              'Implement `getCurrentUser(request)`: read the credential off the request, resolve it, and\n' +
+              'return the user or `null`. If the provider genuinely cannot answer per request, remove\n' +
+              '`getUser` too and let the capability be absent rather than half-present.',
+          });
+          return;
+        }
+        const userProvider = members as IUserProvider;
 
         // Every credential the suite holds, on one request. `getCurrentUser`
         // takes a `Request` and nothing else, and providers differ about which
@@ -2326,7 +2367,7 @@ function buildChecks(fixtures: Fixtures): readonly Omit<AuthConformanceCheck, 'k
         const headers: Record<string, string> = { authorization: `Bearer ${fixtures.token}` };
         if (fixtures.cookieHeader !== undefined) headers.cookie = fixtures.cookieHeader;
 
-        const outcome = await settle(() => provider.getCurrentUser(requestWith(fixtures, headers)));
+        const outcome = await settle(() => userProvider.getCurrentUser(requestWith(fixtures, headers)));
         if (!outcome.ok) {
           fail(fixtures, {
             code: 'users/current-user#threw',
@@ -2421,7 +2462,7 @@ function buildChecks(fixtures: Fixtures): readonly Omit<AuthConformanceCheck, 'k
         // request`. `getCurrentUser` is not the enforcement path, but a host
         // that trusts it - and the "who am I" route does - hands out a session
         // to a request that presented nothing.
-        const anonymous = await settle(() => provider.getCurrentUser(requestWith(fixtures)));
+        const anonymous = await settle(() => userProvider.getCurrentUser(requestWith(fixtures)));
         if (anonymous.ok && anonymous.value !== null && anonymous.value !== undefined) {
           fail(fixtures, {
             code: 'users/current-user#authenticated-anonymous-request',
@@ -2453,34 +2494,34 @@ function buildChecks(fixtures: Fixtures): readonly Omit<AuthConformanceCheck, 'k
       failureCodes: ['users/get-user#not-declared', 'users/get-user#threw', 'users/get-user#different-user'],
       skipReason: requiresUsers,
       async run(provider) {
-        if (!isUserProvider(provider)) return;
-
         // The structural half, asked HERE rather than in the gate, for the
-        // reason the module header gives: `isUserProvider` reads one of the two
-        // members `IUserProvider` requires, so the gate cannot tell a provider
-        // that has `getUser` from one that does not. Gating on it would skip
-        // exactly the provider this half exists to find.
-        if (typeof provider.getUser !== 'function') {
+        // reason the module header gives: `isUserProvider` requires both
+        // members, so gating on it would skip exactly the provider this half
+        // exists to find - the one that implemented `getCurrentUser` and
+        // stopped. The gate admits either member and this reports on `getUser`.
+        const members = provider as Partial<IUserProvider>;
+        if (typeof members.getUser !== 'function') {
           fail(fixtures, {
             code: 'users/get-user#not-declared',
-            headline: 'This provider satisfies isUserProvider and has no getUser.',
+            headline: 'This provider says who is signed in and cannot look a user up by id.',
             observed: [
-              'isUserProvider(provider) is true, which is the guard hosts branch on.',
-              `  provider.getCurrentUser is ${show(provider.getCurrentUser)}`,
-              `  provider.getUser        is ${show((provider as { getUser?: unknown }).getUser)}`,
+              `provider.getCurrentUser is ${show(members.getCurrentUser)}`,
+              `provider.getUser        is ${show(members.getUser)}`,
+              'isUserProvider(provider) is false, because it requires both.',
               '',
-              '`IUserProvider` requires both. The guard reads only `getCurrentUser`, so it narrows this',
-              'provider to a type that promises a `getUser` it does not have.',
+              '`IUserProvider` requires both. Having one of them is a half-finished interface rather',
+              'than a smaller capability, so the guard reports false and the provider loses the whole',
+              'capability - including the half it implemented.',
             ],
             why:
-              '`isUserProvider` is a structural guard and it is optimistic: it tests `getCurrentUser` and\n' +
-              'stops. A host that writes `if (isUserProvider(auth)) auth.getUser(id)` therefore compiles,\n' +
-              'because the guard narrowed to an interface that declares the method, and throws\n' +
-              '`auth.getUser is not a function` at run time - inside the host, on a request, with a stack\n' +
-              'that points at the host rather than at the provider that is missing the member.\n' +
+              'A host branches on `isUserProvider` to decide whether it has a user directory at all. With\n' +
+              'one of the two members that branch is not taken, so `getCurrentUser` is never called even\n' +
+              'though it works: an account menu shows nobody, and nothing anywhere reports why.\n' +
               '\n' +
-              'This is the reason a passing guard is not evidence that a capability is complete, and it is\n' +
-              'why this suite asks about members the guard never reads.',
+              'Being half an interface is the failure. The guard used to read `getCurrentUser` and stop,\n' +
+              'which turned this into a run-time `auth.getUser is not a function` inside the host instead;\n' +
+              'it now tests both, so the cost moved from a throw to a silently absent capability. Neither\n' +
+              'is something a provider should ship, and this check is where either one is named.',
             how:
               'Implement it. It is declared to resolve to a user or to `null`, and `null` is a legitimate\n' +
               'answer for the whole method:\n' +
@@ -2493,10 +2534,12 @@ function buildChecks(fixtures: Fixtures): readonly Omit<AuthConformanceCheck, 'k
               'A provider that has no directory to search should say so by resolving `null`, not by\n' +
               'leaving the method off - the absence is what the host cannot see coming.',
           });
+          return;
         }
+        const userProvider = members as IUserProvider;
 
         const userId = await userIdOf(provider, fixtures);
-        const outcome = await settle(() => provider.getUser(userId));
+        const outcome = await settle(() => userProvider.getUser(userId));
         if (!outcome.ok) {
           fail(fixtures, {
             code: 'users/get-user#threw',

@@ -1,3 +1,4 @@
+import type { IOrganizationsProvider } from '@internal/auth';
 import type { MastraAuthProviderOptions } from '@internal/auth/provider';
 import { MastraAuthProvider } from '@internal/auth/provider';
 
@@ -124,7 +125,7 @@ interface MastraAuthFirebaseOptions extends MastraAuthProviderOptions<FirebaseUs
   requireUserAccessDocument?: boolean;
 }
 
-export class MastraAuthFirebase extends MastraAuthProvider<FirebaseUser> {
+export class MastraAuthFirebase extends MastraAuthProvider<FirebaseUser> implements IOrganizationsProvider {
   /** See {@link FACTORY_BROWSER_SIGN_IN}. Readable from a provider instance. */
   readonly factoryBrowserSignIn = FACTORY_BROWSER_SIGN_IN;
 

@@ -13,7 +13,7 @@ import {
   toAuthDescriptor,
   type AuthDescriptor,
 } from '../capabilities.js';
-import type { IMastraAuthProvider } from '../contract.js';
+import { isSessionProvider, type IMastraAuthProvider } from '../contract.js';
 
 /** The base contract, and nothing else: a bearer-token validator. */
 const bearerOnly = {
@@ -26,13 +26,14 @@ function provider(...capabilities: object[]): IMastraAuthProvider {
   return Object.assign({}, bearerOnly, ...capabilities) as IMastraAuthProvider;
 }
 
-/** `isSSOProvider` tests for these two. */
+/** The three members `ISSOProvider` requires, which is what `isSSOProvider` tests. */
 const sso = {
   getLoginUrl: () => 'https://idp.test/authorize',
   handleCallback: async () => ({ user: {} }),
+  getLoginButtonConfig: () => ({ label: 'Sign in' }),
 };
 
-/** `isCredentialsProvider` tests for `signIn` alone. */
+/** The two members `ICredentialsProvider` requires. */
 const credentials = {
   signIn: async () => ({ user: {} }),
   signUp: async () => ({ user: {} }),
@@ -45,9 +46,14 @@ const organizations = {
 };
 
 /**
- * `isSessionProvider` tests for `createSession` and `validateSession` only,
- * which is why this mixin deliberately stops there. `ISessionProvider` declares
- * five more members, and a provider can satisfy the guard without them.
+ * Some of `ISessionProvider`, deliberately not all of it.
+ *
+ * `isSessionProvider` tests all seven required members, so this composition
+ * does NOT satisfy the guard - and that is the point. `features.refresh` and
+ * `features.sessionRevocation` are read off their own methods rather than off
+ * the guard, so a provider assembled this way still reports the two features it
+ * actually has. Compose with {@link revocable} and {@link refreshable} to vary
+ * them one at a time; add {@link sessionRemainder} to satisfy the guard.
  */
 const partialSession = {
   createSession: async () => ({}),
@@ -56,6 +62,16 @@ const partialSession = {
 
 const revocable = { destroySession: async () => {} };
 const refreshable = { refreshSession: async () => null };
+
+/** The rest of `ISessionProvider`, so `partialSession` plus these satisfies the guard. */
+const sessionRemainder = {
+  getSessionIdFromRequest: () => null,
+  getSessionHeaders: () => ({}),
+  getClearSessionHeaders: () => ({}),
+};
+
+/** All seven members `ISessionProvider` requires. */
+const fullSession = { ...partialSession, ...revocable, ...refreshable, ...sessionRemainder };
 
 /** `isAuthHttpHandler` tests for this one. */
 const httpHandler = { handleAuthRequest: async () => new Response() };
@@ -218,13 +234,32 @@ describe('features.refresh and features.sessionRevocation', () => {
   });
 
   it('are both true for a full session provider', () => {
-    const { features } = toAuthDescriptor(provider(partialSession, refreshable, revocable));
+    const { features } = toAuthDescriptor(provider(fullSession));
     expect(features.refresh).toBe(true);
     expect(features.sessionRevocation).toBe(true);
   });
 
-  it('ignore session methods on a provider that does not satisfy the session guard', () => {
-    expect(toAuthDescriptor(provider(revocable, refreshable)).features).toMatchObject({
+  /**
+   * Read off the methods, not off `isSessionProvider`.
+   *
+   * The guard requires all seven members, so gating these two on it would make
+   * both exactly equal to the guard - and would report no session features at
+   * all for a provider carrying six of the seven, including the ones it has.
+   * A UI branches on each of these to draw a button, so each answers for the
+   * method that button calls.
+   */
+  it('are read off the methods rather than off the session guard', () => {
+    const halfway = provider(revocable, refreshable);
+
+    expect(isSessionProvider(halfway)).toBe(false);
+    expect(toAuthDescriptor(halfway).features).toMatchObject({
+      refresh: true,
+      sessionRevocation: true,
+    });
+  });
+
+  it('are false when the methods are absent, guard or no guard', () => {
+    expect(toAuthDescriptor(provider(partialSession)).features).toMatchObject({
       refresh: false,
       sessionRevocation: false,
     });
@@ -239,7 +274,8 @@ describe('features.logout', () => {
   it.each([
     ['a hosted sign-in', sso],
     ['a credentials sign-in', credentials],
-    ['a server-side session', partialSession],
+    ['a server-side session', fullSession],
+    ['destroySession alone, without the rest of the session interface', revocable],
     ['auth routes the provider serves itself', httpHandler],
   ])('is true given %s', (_label, capability) => {
     expect(toAuthDescriptor(provider(capability)).features.logout).toBe(true);
@@ -311,9 +347,15 @@ describe('the descriptor as a whole', () => {
         handleCallback: () => {
           throw new Error('called');
         },
+        getLoginButtonConfig: () => {
+          throw new Error('called');
+        },
       },
       {
         signIn: () => {
+          throw new Error('called');
+        },
+        signUp: () => {
           throw new Error('called');
         },
       },
@@ -330,6 +372,15 @@ describe('the descriptor as a whole', () => {
           throw new Error('called');
         },
         validateSession: () => {
+          throw new Error('called');
+        },
+        getSessionIdFromRequest: () => {
+          throw new Error('called');
+        },
+        getSessionHeaders: () => {
+          throw new Error('called');
+        },
+        getClearSessionHeaders: () => {
           throw new Error('called');
         },
       },
@@ -363,10 +414,11 @@ describe('signUpEnabled fails closed', () => {
   // to anyone. `isSignUpEnabled` is declared synchronous, but nothing stops a
   // provider writing `async isSignUpEnabled()`, and an async method returns a
   // Promise - which is truthy.
-  const credentialsProvider = (isSignUpEnabled: unknown) => ({ signIn: () => {}, isSignUpEnabled }) as never;
+  const credentialsProvider = (isSignUpEnabled: unknown) =>
+    ({ signIn: () => {}, signUp: () => {}, isSignUpEnabled }) as never;
 
   it('is true when the method is absent, which is the documented default', () => {
-    expect(toAuthDescriptor({ signIn: () => {} } as never).signIn.signUpEnabled).toBe(true);
+    expect(toAuthDescriptor({ signIn: () => {}, signUp: () => {} } as never).signIn.signUpEnabled).toBe(true);
   });
 
   it('is true only for a literal true', () => {
