@@ -73,17 +73,31 @@
  *   cookie to hold anybody to. That is the truthful answer for a confidential
  *   client authenticating with `client_secret`, which is the shape four
  *   providers in this repository ship.
- * - **A guard passing is not the same as the method being there**, and
- *   `users/get-user` is the check that has to say so out loud. `isUserProvider`
- *   tests `getCurrentUser` alone, while `IUserProvider` requires `getUser` too -
- *   so the guard narrows a provider with one of two required members to a type
- *   that promises both, `provider.getUser(id)` typechecks in the host, and it is
- *   `undefined` at run time. The gate can only ask the guard, so the missing
- *   member is a FAIL inside the check body rather than a skip: the provider
- *   declared `IUserProvider` and did not deliver it, which is the second half of
- *   the rule above. `isOrganizationsProvider` reads both of its interface's
- *   members and has no such gap, which is why `organizations/is-admin` can gate
- *   on it and stop there.
+ * - **A guard answering false is not the same as the capability being absent.**
+ *   Every guard tests every member its interface requires - it has to, because
+ *   it hands the caller a type that promises all of them - so a provider
+ *   carrying some of them fails the guard rather than passing it, and a host
+ *   branching on the guard sees no capability at all, including the half that
+ *   was implemented. That is the one defect this suite could not see: every
+ *   section is gated on a guard, so half an interface skipped its own section
+ *   and reported nothing anywhere. `contract/whole-capabilities` is the check
+ *   that reports it, over the whole roster in {@link CAPABILITY_INTERFACES},
+ *   and it is not gated: gating it on a guard would skip it for exactly the
+ *   provider it exists to find, which is the self-fulfilling gate obligation 4
+ *   avoids.
+ *
+ *   Two things it deliberately does not do. It exempts a member set that is a
+ *   whole *declared* interface of its own - `ISessionProvider extends
+ *   ISessionClearer`, and `@mastra/auth-better-auth` implements
+ *   `getClearSessionHeaders` and nothing else - because that is a smaller
+ *   capability rather than an unfinished larger one. Before `ISessionClearer`
+ *   was declared, that shape was a convention hosts read structurally and no
+ *   interface described, and it could not be told apart from a half-finished
+ *   job; the exemption is by rule, not by name. And it leaves `IUserProvider`
+ *   to `users/current-user` and `users/get-user`, which own one member each and
+ *   can say what the absent one costs, and which leave the working half able to
+ *   pass its own check. The roster records that, so the two are one mechanism
+ *   rather than two rules.
  *
  * A PROVIDER THAT DOES NOT CONFORM, AND SHIPS ANYWAY
  *
@@ -105,6 +119,7 @@
 import { describe, expect, it } from 'vitest';
 import { toAuthDescriptor } from '../capabilities.js';
 import {
+  canClearSession,
   hasAuthInit,
   isAuthHttpHandler,
   isCredentialsProvider,
@@ -1018,6 +1033,305 @@ async function userIdOf(provider: IMastraAuthProvider, fixtures: Fixtures): Prom
 }
 
 // ============================================================================
+// Internals: the sections
+// ============================================================================
+
+const SECTION_CONTRACT = 'the base contract';
+const SECTION_SSO = 'hosted login (ISSOProvider)';
+const SECTION_CREDENTIALS = 'credentials (ICredentialsProvider)';
+const SECTION_USERS = 'users (IUserProvider)';
+const SECTION_ORGANIZATIONS = 'organizations (IOrganizationsProvider)';
+const SECTION_SESSIONS = 'server-side sessions (ISessionProvider)';
+const SECTION_ROUTES = 'auth routes (IAuthHttpHandler)';
+const SECTION_INIT = 'initialization (IAuthInit)';
+
+// ============================================================================
+// Internals: the capability roster
+// ============================================================================
+
+/**
+ * One optional capability interface, its guard, and every member it requires.
+ *
+ * WHY THIS EXISTS AS DATA
+ *
+ * Two things in this file need the same answer to "what does `IUserProvider`
+ * require", and before this roster both of them wrote it out by hand: the gate
+ * for the user section, and the two checks that report a half-finished one.
+ * `contract/whole-capabilities` needs it for every interface rather than for
+ * one, and a check that walked a hand-written list per interface would be eight
+ * copies of the same mistake waiting to be made.
+ *
+ * The list is not derived from the guards, and cannot be: a guard is a function
+ * that answers a boolean, so nothing can ask it *which* members it tested.
+ * `src/__tests__/conformance.test.ts` holds the two in step instead - it builds
+ * a provider carrying each roster member and asserts the guard flips, and
+ * asserts every guard `./contract` re-exports has an entry here.
+ */
+interface CapabilityInterface {
+  /** The interface, as `@mastra/core/server` spells it. */
+  readonly name: string;
+
+  /** The guard that narrows to it, as `./contract` spells it. */
+  readonly guardName: string;
+
+  /** That guard. Structural, and tests every member below. */
+  readonly guard: (provider: unknown) => boolean;
+
+  /**
+   * Every member the interface requires, in declaration order.
+   *
+   * Required only. An interface's optional half is what a caller
+   * feature-detects for itself, and a provider that leaves it out is using the
+   * interface as written rather than half-implementing it.
+   */
+  readonly required: readonly string[];
+
+  /**
+   * Smaller interfaces whose whole required set is a subset of this one's.
+   *
+   * A provider carrying exactly one of these is not half of this interface: it
+   * is the whole of a smaller declared one, which is a supported shape with a
+   * guard of its own. `ISessionProvider extends ISessionClearer`, and
+   * `@mastra/auth-better-auth` implements `getClearSessionHeaders` and nothing
+   * else because it owns the cookie it set and creates no session a host can
+   * address by id.
+   *
+   * This is the only reason a proper subset is ever legitimate, and it is why
+   * the general check below could not be written until `ISessionClearer` was
+   * declared: an undeclared convention cannot be told apart from an unfinished
+   * job.
+   */
+  readonly wholeSubsets: readonly CapabilityInterface[];
+
+  /**
+   * The slug `contract/whole-capabilities` fails under for this interface, or
+   * `null` when it never does.
+   *
+   * `null` in two cases. A one-member interface cannot be carried in part, so
+   * there is nothing to name. And `IUserProvider` is reported member by member
+   * by {@link reportedBy}, which says more than a general message can, so the
+   * general check leaves it alone rather than reporting one defect twice.
+   */
+  readonly slug: string | null;
+
+  /**
+   * The checks that report this interface being half-implemented, when they are
+   * not the general one.
+   *
+   * Named in the general check's own message. A reader looking at a provider
+   * that is visibly half an `IUserProvider` and finding no mention of it there
+   * would reasonably conclude nothing had noticed; this says which check did.
+   */
+  readonly reportedBy: readonly string[];
+
+  /** The `describe` block whose checks are all skipped when the guard is false. */
+  readonly section: string | null;
+
+  /** What a host stops doing when the guard answers false. One sentence, present tense. */
+  readonly lost: string;
+
+  /** Anything else worth saying in HOW TO FIX for this interface in particular. */
+  readonly instead?: string;
+}
+
+/**
+ * The smallest capability in the contract, and the one that makes the general
+ * check safe to write.
+ *
+ * Declared first so `ISessionProvider` can name it as a legitimate whole
+ * subset. See {@link CapabilityInterface.wholeSubsets}.
+ */
+const ISESSION_CLEARER: CapabilityInterface = {
+  name: 'ISessionClearer',
+  guardName: 'canClearSession',
+  guard: canClearSession,
+  required: ['getClearSessionHeaders'],
+  wholeSubsets: [],
+  slug: null,
+  reportedBy: [],
+  section: null,
+  lost: 'a sign-out leaves the cookie this provider set in the browser, so the next page load is signed in again',
+};
+
+/**
+ * The user directory, and the one interface whose partiality is reported
+ * somewhere better than here.
+ *
+ * Named as a value because {@link requiresUsers} reads its member list rather
+ * than writing one out, which is what makes that gate a case of this roster
+ * instead of a rule beside it.
+ */
+const IUSER_PROVIDER: CapabilityInterface = {
+  name: 'IUserProvider',
+  guardName: 'isUserProvider',
+  guard: isUserProvider,
+  required: ['getCurrentUser', 'getUser'],
+  wholeSubsets: [],
+  // Not `partial-users`, and the omission is the design. `users/current-user`
+  // and `users/get-user` each own one member and each say what the *absent* one
+  // costs - an account menu with nobody in it, a run nobody can put a name
+  // against - which is more than a message about `IUserProvider` in general can
+  // say. They also leave the half that works able to pass its own check, which
+  // a single general failure cannot do. So the roster records where this
+  // interface is reported rather than reporting it a second time.
+  slug: null,
+  reportedBy: ['users/current-user', 'users/get-user'],
+  section: SECTION_USERS,
+  lost: 'nothing asks who is signed in and nothing turns a user id into a name',
+};
+
+/**
+ * Every optional capability interface in the contract, and what each requires.
+ *
+ * All eight, including the three that have one member and therefore cannot be
+ * carried in part. They are here so that the roster is the contract's roster
+ * rather than a list of the interesting cases, and so the test that holds it in
+ * step with `./contract` has something to compare against.
+ */
+const CAPABILITY_INTERFACES: readonly CapabilityInterface[] = [
+  {
+    name: 'ISSOProvider',
+    guardName: 'isSSOProvider',
+    guard: isSSOProvider,
+    required: ['getLoginUrl', 'handleCallback', 'getLoginButtonConfig'],
+    wholeSubsets: [],
+    slug: 'partial-sso',
+    reportedBy: [],
+    section: SECTION_SSO,
+    lost: 'the sign-in screen draws no button, and no authorization URL is ever built',
+  },
+  {
+    name: 'ISessionProvider',
+    guardName: 'isSessionProvider',
+    guard: isSessionProvider,
+    required: [
+      'createSession',
+      'validateSession',
+      'destroySession',
+      'refreshSession',
+      'getSessionIdFromRequest',
+      'getSessionHeaders',
+      'getClearSessionHeaders',
+    ],
+    wholeSubsets: [ISESSION_CLEARER],
+    slug: 'partial-sessions',
+    reportedBy: [],
+    section: SECTION_SESSIONS,
+    lost: 'the host mints no session on sign-in and validates none on the requests after it',
+    instead:
+      'If the only session thing this provider owns is the cookie it set on the way in, there is a\n' +
+      'declared interface for exactly that. `ISessionClearer` requires `getClearSessionHeaders` and\n' +
+      'nothing else, `canClearSession` reports it, and `ISessionProvider` extends it - so implementing\n' +
+      'that one member and no other is a whole capability rather than a seventh of a bigger one. It is\n' +
+      'the shape a provider that mints its own cookie on callback and creates no addressable session\n' +
+      'wants, and this check passes it.',
+  },
+  ISESSION_CLEARER,
+  IUSER_PROVIDER,
+  {
+    name: 'ICredentialsProvider',
+    guardName: 'isCredentialsProvider',
+    guard: isCredentialsProvider,
+    required: ['signIn', 'signUp'],
+    wholeSubsets: [],
+    slug: 'partial-credentials',
+    reportedBy: [],
+    section: SECTION_CREDENTIALS,
+    lost: 'the sign-in screen offers no email-and-password form at all',
+  },
+  {
+    name: 'IOrganizationsProvider',
+    guardName: 'isOrganizationsProvider',
+    guard: isOrganizationsProvider,
+    required: ['ensureOrganization', 'isOrganizationAdmin'],
+    wholeSubsets: [],
+    slug: 'partial-organizations',
+    reportedBy: [],
+    section: SECTION_ORGANIZATIONS,
+    lost:
+      'no organization is bootstrapped for anybody, which is obligation ' +
+      `${AUTH_OBLIGATION_GUIDANCE.organizationId.ordinal} failing as well`,
+  },
+  {
+    name: 'IAuthHttpHandler',
+    guardName: 'isAuthHttpHandler',
+    guard: isAuthHttpHandler,
+    required: ['handleAuthRequest'],
+    wholeSubsets: [],
+    slug: null,
+    reportedBy: [],
+    section: SECTION_ROUTES,
+    lost: 'the host mounts none of this provider’s own routes',
+  },
+  {
+    name: 'IAuthInit',
+    guardName: 'hasAuthInit',
+    guard: hasAuthInit,
+    required: ['init'],
+    wholeSubsets: [],
+    slug: null,
+    reportedBy: [],
+    section: SECTION_INIT,
+    lost: 'the host never hands this provider its database handle or its public URL',
+  },
+];
+
+/**
+ * The id of the check that reports a half-implemented interface.
+ *
+ * Every {@link CapabilityInterface.slug} is namespaced under it, which is the
+ * format `failureCodes` is held to: a check id, a `#`, and a slug.
+ */
+const WHOLE_CAPABILITIES_CHECK_ID = 'contract/whole-capabilities';
+
+/**
+ * Which of `members` this provider carries as functions.
+ *
+ * Deliberately not guarded against a property read that throws. A gate calling
+ * this is wrapped by {@link authConformanceChecks}, which turns the throw into
+ * a skip that points at `contract/descriptor`; swallowing it here would turn a
+ * provider with a side-effecting getter into one that quietly declares no
+ * capability, which is the opposite of what this roster is for.
+ */
+function carriedMembers(provider: IMastraAuthProvider, members: readonly string[]): string[] {
+  const record = provider as unknown as Record<string, unknown>;
+  return members.filter(member => typeof record[member] === 'function');
+}
+
+/** One interface this provider carries some, but not all, of. */
+interface PartialCapability {
+  readonly capability: CapabilityInterface;
+  readonly carried: readonly string[];
+  readonly missing: readonly string[];
+}
+
+/**
+ * Every interface this provider holds a proper, non-empty subset of - minus the
+ * subsets that are whole declared interfaces in their own right.
+ *
+ * The empty set is not a finding: a provider that implements none of an
+ * interface is not claiming it. The full set is not a finding either. What is
+ * left is the shape no guard can report and no host can act on.
+ */
+function partialCapabilities(provider: IMastraAuthProvider): PartialCapability[] {
+  const findings: PartialCapability[] = [];
+  for (const capability of CAPABILITY_INTERFACES) {
+    const carried = carriedMembers(provider, capability.required);
+    if (carried.length === 0 || carried.length === capability.required.length) continue;
+    const whole = capability.wholeSubsets.some(
+      subset => subset.required.length === carried.length && subset.required.every(member => carried.includes(member)),
+    );
+    if (whole) continue;
+    findings.push({
+      capability,
+      carried,
+      missing: capability.required.filter(member => !carried.includes(member)),
+    });
+  }
+  return findings;
+}
+
+// ============================================================================
 // Internals: the gates
 // ============================================================================
 
@@ -1084,7 +1398,7 @@ function requiresSessions(provider: IMastraAuthProvider): string | null {
 }
 
 /**
- * Gates the user section on carrying EITHER required member, not on the guard.
+ * Gates the user section on carrying ANY required member, not on the guard.
  *
  * `isUserProvider` tests both members `IUserProvider` requires, so gating on it
  * would skip a provider carrying one of them - which is the exact provider this
@@ -1092,12 +1406,17 @@ function requiresSessions(provider: IMastraAuthProvider): string | null {
  * skips is a defect nobody hears about. So the gate asks the weaker question,
  * and each check below reports on its own member.
  *
+ * The member list is read off {@link IUSER_PROVIDER} rather than written out
+ * here, which is what makes this a case of the roster
+ * `contract/whole-capabilities` reads rather than a second rule beside it. The
+ * gate is the same shape every interface would get; what `IUserProvider` has
+ * that the others do not is a pair of checks that each own one member and can
+ * therefore say what its absence costs.
+ *
  * A provider with neither member is not making a claim at all, and skips.
  */
 function requiresUsers(provider: IMastraAuthProvider): string | null {
-  const members = provider as Partial<IUserProvider>;
-  const carries = typeof members.getCurrentUser === 'function' || typeof members.getUser === 'function';
-  return carries
+  return carriedMembers(provider, IUSER_PROVIDER.required).length > 0
     ? null
     : 'This provider offers no user directory (it has neither getCurrentUser nor getUser), so nothing ' +
         'asks it who is signed in and nothing looks a user up by id. Implement IUserProvider - both ' +
@@ -1126,15 +1445,6 @@ function requiresInit(provider: IMastraAuthProvider): string | null {
 // ============================================================================
 // The checks
 // ============================================================================
-
-const SECTION_CONTRACT = 'the base contract';
-const SECTION_SSO = 'hosted login (ISSOProvider)';
-const SECTION_CREDENTIALS = 'credentials (ICredentialsProvider)';
-const SECTION_USERS = 'users (IUserProvider)';
-const SECTION_ORGANIZATIONS = 'organizations (IOrganizationsProvider)';
-const SECTION_SESSIONS = 'server-side sessions (ISessionProvider)';
-const SECTION_ROUTES = 'auth routes (IAuthHttpHandler)';
-const SECTION_INIT = 'initialization (IAuthInit)';
 
 /** `obligation 2 of 4 - cookieAuth`, from the one source that numbers them. */
 function obligationSection(obligation: AuthObligation): string {
@@ -1220,6 +1530,118 @@ function buildChecks(fixtures: Fixtures): readonly Omit<AuthConformanceCheck, 'k
             '`authenticateToken(token, request)` and `authorizeUser(user, request)`. A plain object with\n' +
             'those two methods is also a provider - the contract is structural - but the base class\n' +
             'carries the option plumbing hosts expect.',
+        });
+      },
+    },
+    {
+      id: WHOLE_CAPABILITIES_CHECK_ID,
+      section: SECTION_CONTRACT,
+      title: 'implements every capability interface it touches whole, or not at all',
+      obligation: null,
+      // Derived rather than typed out, so an interface added to the roster
+      // arrives with its code already declared. The slugs themselves are
+      // literals in the roster: a code is a value downstream suites hold in a
+      // `knownFailures` entry, so it may not move because a member list was
+      // reordered.
+      failureCodes: CAPABILITY_INTERFACES.filter(capability => capability.slug !== null).map(
+        capability => `${WHOLE_CAPABILITIES_CHECK_ID}#${capability.slug}`,
+      ),
+      // ALWAYS, and it has to be. Every gate available here asks a guard, and a
+      // guard is false for exactly the provider this check exists to find - so
+      // gating it would skip it precisely when it applies. That is the
+      // self-fulfilling gate obligation 4 avoids, and the reason `users/get-
+      // user` asks its structural question in the body rather than in its gate.
+      skipReason: ALWAYS,
+      async run(provider) {
+        let findings: PartialCapability[];
+        try {
+          findings = partialCapabilities(provider);
+        } catch {
+          // A property read with side effects. `contract/descriptor` in this
+          // same run reports that properly and says what to do about it, so
+          // this check says nothing rather than reporting one defect twice
+          // under a name that points at capabilities.
+          return;
+        }
+        // Reported here, or reported better somewhere else. `IUserProvider` is
+        // the only entry in the second group today; see its roster comment.
+        const mine = findings.filter(finding => finding.capability.slug !== null);
+        const first = mine[0];
+        if (first === undefined) return;
+
+        const { capability, carried, missing } = first;
+        const width = Math.max(...capability.required.map(member => member.length));
+        const elsewhere = findings.filter(finding => finding.capability.slug === null);
+        const alsoHere = mine.slice(1);
+
+        fail(fixtures, {
+          code: `${WHOLE_CAPABILITIES_CHECK_ID}#${capability.slug}`,
+          headline: `This provider implements part of ${capability.name}, so a host sees none of it.`,
+          observed: [
+            `${capability.name} requires ${capability.required.length} members, and this provider carries ` +
+              `${carried.length} of them:`,
+            ...capability.required.map(member => {
+              const value = show((provider as unknown as Record<string, unknown>)[member]);
+              return `  provider.${member.padEnd(width)} is ${value}${carried.includes(member) ? '' : '   <- missing'}`;
+            }),
+            '',
+            `${capability.guardName}(provider) is false: the guard tests every member the interface requires.`,
+            ...(capability.section === null
+              ? []
+              : [
+                  'Every check in this section of the run was skipped for that reason, so nothing here',
+                  'has looked at the half that is implemented:',
+                  `  ${capability.section}`,
+                ]),
+            ...(alsoHere.length === 0
+              ? []
+              : [
+                  '',
+                  alsoHere.length === 1
+                    ? 'One other interface is half-implemented too, and a check stops at its first'
+                    : `${alsoHere.length} other interfaces are half-implemented too, and a check stops at its first`,
+                  `failure, so fixing this one surfaces: ${alsoHere.map(f => f.capability.name).join(', ')}.`,
+                ]),
+            ...(elsewhere.length === 0
+              ? []
+              : [
+                  '',
+                  ...elsewhere.map(
+                    finding =>
+                      `${finding.capability.name} is also half-implemented. That one is reported by ` +
+                      `${finding.capability.reportedBy.join(' and ')} in this same run, member by member.`,
+                  ),
+                ]),
+          ],
+          why:
+            'A capability guard is all-or-nothing, and a host branches on it before it calls anything. The\n' +
+            'guard tests every member the interface requires - it has to, because it hands the caller a\n' +
+            'type that promises all of them - so a provider carrying some of them reports false, and the\n' +
+            'host takes the branch it takes for a provider that has none of it at all. The members that\n' +
+            'were written are never called, and nothing anywhere reports that they exist.\n' +
+            '\n' +
+            'What that costs here:\n' +
+            `  ${capability.lost}.\n` +
+            '\n' +
+            'Half an interface is a defect in either era. Before the guards were narrowed to test every\n' +
+            'required member, this shape passed the guard and cost a run-time "is not a function" inside\n' +
+            'the host at the first call of the absent one. It now costs a capability that disappears in\n' +
+            'silence instead, which is quieter and no better - and quiet is why it is checked here rather\n' +
+            'than left to be discovered.',
+          how:
+            'Implement what is missing, or remove what is there. Both are honest, and which one is right\n' +
+            'depends on whether this provider really has the capability:\n' +
+            '\n' +
+            `  ${capability.name} still needs:\n` +
+            `${missing.map(member => `    ${member}\n`).join('')}` +
+            '\n' +
+            'What is not honest is shipping half, because the guard cannot report half and so a host\n' +
+            'cannot act on half.\n' +
+            '\n' +
+            'A member that cannot be answered offline still has an answer. Most of these interfaces\n' +
+            'document `null` for "not found" or "cannot tell", so a member implemented as a lookup that\n' +
+            'resolves `null` is a real implementation and passes this suite - several providers in this\n' +
+            `repository ship exactly that.${capability.instead === undefined ? '' : `\n\n${capability.instead}`}`,
         });
       },
     },
