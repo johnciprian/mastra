@@ -1097,7 +1097,7 @@
     },
     {
       "id": "P4",
-      "status": "pending",
+      "status": "done",
       "title": "Conformance exercises IUserProvider and isOrganizationAdmin",
       "lane": "K",
       "size": "M",
