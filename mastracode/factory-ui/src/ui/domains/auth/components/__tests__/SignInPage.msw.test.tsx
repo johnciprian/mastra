@@ -236,6 +236,75 @@ describe('SignInPage', () => {
         expect(screen.getByText('Account creation is managed by your administrator.')).toBeInTheDocument();
       });
 
+      it('posts to the auth mount the descriptor reports, not a hardcoded one', async () => {
+        // The whole point of `credentialsBasePath`: a provider serving its own
+        // auth routes somewhere else works without the SPA knowing which
+        // provider it is. No handler is registered on `/auth/api/*`, so a
+        // regression to the hardcoded path trips MSW's unhandled-request error.
+        stubDescriptor({ kind: 'credentials', signUpEnabled: true, credentialsBasePath: '/identity' });
+        const posted = vi.fn();
+        server.use(
+          http.post(`${TEST_BASE_URL}/identity/api/sign-in/email`, async ({ request }) => {
+            posted(await request.json());
+            return HttpResponse.json({ user: { id: 'user_9' } });
+          }),
+        );
+        renderSignIn('/signin?returnTo=%2Ffactory%2Fboard');
+
+        await userEvent.type(await screen.findByLabelText('Email'), 'ada@example.com');
+        await userEvent.type(screen.getByLabelText('Password'), 'hunter22!');
+        await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+
+        await waitFor(() => expect(navigateAfterSignIn).toHaveBeenCalledWith('/factory/board'));
+        expect(posted).toHaveBeenCalledWith({ email: 'ada@example.com', password: 'hunter22!' });
+      });
+
+      it('signs up against the reported mount too', async () => {
+        stubDescriptor({ kind: 'credentials', signUpEnabled: true, credentialsBasePath: '/identity' });
+        const posted = vi.fn();
+        server.use(
+          http.post(`${TEST_BASE_URL}/identity/api/sign-up/email`, async ({ request }) => {
+            posted(await request.json());
+            return HttpResponse.json({ user: { id: 'user_10' } });
+          }),
+        );
+        renderSignIn();
+
+        await userEvent.click(await screen.findByRole('button', { name: 'New here? Sign up' }));
+        await userEvent.type(screen.getByLabelText('Name'), 'Ada Lovelace');
+        await userEvent.type(screen.getByLabelText('Email'), 'ada@example.com');
+        await userEvent.type(screen.getByLabelText('Password'), 'hunter22!');
+        await userEvent.click(screen.getByRole('button', { name: 'Create account' }));
+
+        await waitFor(() => expect(navigateAfterSignIn).toHaveBeenCalledWith('/'));
+        expect(posted).toHaveBeenCalledWith({
+          name: 'Ada Lovelace',
+          email: 'ada@example.com',
+          password: 'hunter22!',
+        });
+      });
+
+      it('ignores a mount that would post the password off-origin', async () => {
+        // Served same-origin the SPA has an empty `baseUrl`, so `//evil.example`
+        // would become a protocol-relative URL and send the password there. The
+        // guard falls back to `/auth`, which is where the handler below sits.
+        stubDescriptor({ kind: 'credentials', signUpEnabled: true, credentialsBasePath: '//evil.example' });
+        const posted = vi.fn();
+        server.use(
+          http.post(`${TEST_BASE_URL}/auth/api/sign-in/email`, async ({ request }) => {
+            posted(await request.json());
+            return HttpResponse.json({ user: { id: 'user_11' } });
+          }),
+        );
+        renderSignIn();
+
+        await userEvent.type(await screen.findByLabelText('Email'), 'ada@example.com');
+        await userEvent.type(screen.getByLabelText('Password'), 'hunter22!');
+        await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+
+        await waitFor(() => expect(posted).toHaveBeenCalled());
+      });
+
       it('lets the positive descriptor field win over a legacy field that contradicts it', async () => {
         // Both polarities on one response, disagreeing. The descriptor is
         // authoritative, so the sign-up affordance stays — a wrong `!` here would
