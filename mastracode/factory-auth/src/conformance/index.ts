@@ -73,6 +73,17 @@
  *   cookie to hold anybody to. That is the truthful answer for a confidential
  *   client authenticating with `client_secret`, which is the shape four
  *   providers in this repository ship.
+ * - **A guard passing is not the same as the method being there**, and
+ *   `users/get-user` is the check that has to say so out loud. `isUserProvider`
+ *   tests `getCurrentUser` alone, while `IUserProvider` requires `getUser` too -
+ *   so the guard narrows a provider with one of two required members to a type
+ *   that promises both, `provider.getUser(id)` typechecks in the host, and it is
+ *   `undefined` at run time. The gate can only ask the guard, so the missing
+ *   member is a FAIL inside the check body rather than a skip: the provider
+ *   declared `IUserProvider` and did not deliver it, which is the second half of
+ *   the rule above. `isOrganizationsProvider` reads both of its interface's
+ *   members and has no such gap, which is why `organizations/is-admin` can gate
+ *   on it and stop there.
  *
  * A PROVIDER THAT DOES NOT CONFORM, AND SHIPS ANYWAY
  *
@@ -100,6 +111,7 @@ import {
   isOrganizationsProvider,
   isSessionProvider,
   isSSOProvider,
+  isUserProvider,
 } from '../contract.js';
 import type { IMastraAuthProvider } from '../contract.js';
 import { toAuthIdentity } from '../identity.js';
@@ -499,6 +511,18 @@ const CONFORMANCE_STATE_ID = 'conformance-state-id';
 
 /** The destination every hosted-login check round trips. Chosen to survive percent-encoding. */
 const CONFORMANCE_RETURN_TO = '/agents/42';
+
+/**
+ * An organization id no provider bootstrapped, for the one question in this
+ * suite whose wrong answer is a grant of rights over somebody else's data.
+ *
+ * A literal rather than something derived, so the failure quotes a constant and
+ * a reader can see at a glance that the suite did not invent a plausible id and
+ * catch a provider out on a near miss. It names itself, it is not in any
+ * provider's id format, and no `ensureOrganization` in this repository or
+ * outside it can return it.
+ */
+const CONFORMANCE_UNOWNED_ORGANIZATION = 'conformance-organization-nobody-created';
 
 function readFixtures(options: AuthProviderConformanceOptions): Fixtures {
   if (typeof options.name !== 'string' || options.name.trim() === '') {
@@ -1059,6 +1083,23 @@ function requiresSessions(provider: IMastraAuthProvider): string | null {
     : 'This provider declares no server-side sessions (isSessionProvider is false).';
 }
 
+function requiresUsers(provider: IMastraAuthProvider): string | null {
+  return isUserProvider(provider)
+    ? null
+    : 'This provider offers no user directory (isUserProvider is false), so nothing asks it who is ' +
+        'signed in and nothing looks a user up by id. Implement IUserProvider - `getCurrentUser` and ' +
+        '`getUser` - and these checks apply.';
+}
+
+function requiresOrganizations(provider: IMastraAuthProvider): string | null {
+  return isOrganizationsProvider(provider)
+    ? null
+    : 'This provider resolves no organizations (isOrganizationsProvider is false), so it has no ' +
+        'administrator question to answer. `obligation/organizationId/declared` in this same run is ' +
+        'where that absence is reported; it is deliberately not skipped, and this check is not the ' +
+        'place to report it a second time.';
+}
+
 function requiresHttpHandler(provider: IMastraAuthProvider): string | null {
   return isAuthHttpHandler(provider)
     ? null
@@ -1076,6 +1117,8 @@ function requiresInit(provider: IMastraAuthProvider): string | null {
 const SECTION_CONTRACT = 'the base contract';
 const SECTION_SSO = 'hosted login (ISSOProvider)';
 const SECTION_CREDENTIALS = 'credentials (ICredentialsProvider)';
+const SECTION_USERS = 'users (IUserProvider)';
+const SECTION_ORGANIZATIONS = 'organizations (IOrganizationsProvider)';
 const SECTION_SESSIONS = 'server-side sessions (ISessionProvider)';
 const SECTION_ROUTES = 'auth routes (IAuthHttpHandler)';
 const SECTION_INIT = 'initialization (IAuthInit)';
@@ -2257,6 +2300,402 @@ function buildChecks(fixtures: Fixtures): readonly Omit<AuthConformanceCheck, 'k
           how:
             'Make the method synchronous and return `true` or `false`. If the answer needs a lookup, cache\n' +
             'it at construction time. Leave the method off entirely to mean "sign-up is on".',
+        });
+      },
+    },
+    {
+      id: 'users/current-user',
+      section: SECTION_USERS,
+      title: 'getCurrentUser answers for the same person authenticateToken does, and for nobody else',
+      obligation: null,
+      failureCodes: [
+        'users/current-user#threw',
+        'users/current-user#no-id-in-user',
+        'users/current-user#different-user',
+        'users/current-user#authenticated-anonymous-request',
+      ],
+      skipReason: requiresUsers,
+      async run(provider) {
+        if (!isUserProvider(provider)) return;
+
+        // Every credential the suite holds, on one request. `getCurrentUser`
+        // takes a `Request` and nothing else, and providers differ about which
+        // header they read: some parse the bearer, some read only a session
+        // cookie. Sending both means a `null` answer below is a fact about the
+        // provider rather than about which header this suite guessed.
+        const headers: Record<string, string> = { authorization: `Bearer ${fixtures.token}` };
+        if (fixtures.cookieHeader !== undefined) headers.cookie = fixtures.cookieHeader;
+
+        const outcome = await settle(() => provider.getCurrentUser(requestWith(fixtures, headers)));
+        if (!outcome.ok) {
+          fail(fixtures, {
+            code: 'users/current-user#threw',
+            headline: 'getCurrentUser threw instead of answering a user or null.',
+            observed: [
+              'getCurrentUser(request) threw.',
+              `  ${show(outcome.error)}`,
+              `  request: GET ${fixtures.requestUrl}`,
+              `    authorization: Bearer ${fixtures.token}`,
+              ...(fixtures.cookieHeader === undefined ? [] : [`    cookie: ${fixtures.cookieHeader}`]),
+            ],
+            why:
+              '`IUserProvider.getCurrentUser` is declared to resolve to a user or to `null`, and hosts call\n' +
+              'it on the "who am I" route every signed-in page loads. A throw there is a 500 on a route that\n' +
+              'has no failure state of its own, so a signed-out browser and an identity provider that is\n' +
+              'down look identical, and the page breaks rather than showing a sign-in button.',
+            how:
+              'Return `null` for a request you cannot resolve, rather than throwing. Rejection is the\n' +
+              'ordinary outcome here: this method runs on requests that legitimately carry no session.',
+          });
+        }
+
+        const current = outcome.value;
+
+        // Nothing resolved, and this check asks nothing further. A provider
+        // whose user lookup needs a live vendor cannot answer offline, and
+        // `okta`'s session store, `clerk`'s Users API and `studio`'s cached
+        // cookie are all in that shape. What this check is for is the provider
+        // that answers, and answers about somebody else.
+        if (current === null || current === undefined) return;
+
+        const identity = toAuthIdentity(current, provider);
+        if (identity === null) {
+          fail(fixtures, {
+            code: 'users/current-user#no-id-in-user',
+            headline: 'getCurrentUser answered with something that names nobody.',
+            observed: [
+              'getCurrentUser(request) resolved to:',
+              `  ${show(current)}`,
+              'toAuthIdentity found no id in it. It looks for `id`, then `uid`, then `sub`, at the top',
+              'level - and inside `user` for a `{ session, user }` pair. A blank or whitespace-only value',
+              'counts as absent.',
+            ],
+            why:
+              'This is the same rule obligation 1 holds `authenticateToken` to, applied to the other path\n' +
+              'that produces a user. A host reads an id off whichever of the two answered it, and a user\n' +
+              'object with no resolvable id is one the host has to either drop or key under `undefined`.\n' +
+              'Dropping it signs the person out on a page that just told them they were signed in.',
+            how:
+              'Return the id at the top level, under `id`, `uid` or `sub`. If it genuinely lives elsewhere,\n' +
+              'implement `toIdentity` on the provider and say so explicitly - the same escape hatch\n' +
+              'obligation 1 documents, and the same one this check reads through.',
+          });
+        }
+
+        // Through `userIdOf`, so the `userId` option is preferred over reading
+        // an id back out of `authenticateToken`. A provider whose
+        // `authenticateToken` is broken has one defect and should report it
+        // once: without this, every check that needs an id to compare against
+        // reports the same root cause under its own name.
+        const expected = await userIdOf(provider, fixtures);
+        if (identity.id !== expected) {
+          fail(fixtures, {
+            code: 'users/current-user#different-user',
+            headline: 'getCurrentUser and authenticateToken name two different people for one credential.',
+            observed: [
+              `getCurrentUser(request) resolved the id ${show(identity.id)}.`,
+              fixtures.userId === undefined
+                ? `authenticateToken(${show(fixtures.token)}, request) resolved the id ${show(expected)}.`
+                : `The \`userId\` option says this credential belongs to ${show(expected)}.`,
+              'The request carried:',
+              `  authorization: Bearer ${fixtures.token}`,
+              ...(fixtures.cookieHeader === undefined ? [] : [`  cookie: ${fixtures.cookieHeader}`]),
+              'getCurrentUser resolved to:',
+              `  ${show(current)}`,
+            ],
+            why:
+              'These are two views of one signed-in person, and hosts use both: the enforcement path goes\n' +
+              'through `authenticateToken`, and `getCurrentUser` supplies the profile shown on screen.\n' +
+              'When they disagree, the person is shown one identity and their work is stored under\n' +
+              'another - a request that succeeds, and data that lands under a key that is not theirs. It\n' +
+              'is the same defect obligation 1 exists for, arriving through the second door.',
+            how:
+              'Resolve both paths from the same field of the same token. The usual cause is a\n' +
+              '`{ session, user }` payload read at the top level on one path and inside `user` on the\n' +
+              'other, so one of them answers a session id. If your provider genuinely has two id spaces,\n' +
+              'map to the one `authenticateToken` returns; that is the one the host keys storage on.',
+          });
+        }
+
+        // The security half, and the mirror of `contract/rejects-anonymous-
+        // request`. `getCurrentUser` is not the enforcement path, but a host
+        // that trusts it - and the "who am I" route does - hands out a session
+        // to a request that presented nothing.
+        const anonymous = await settle(() => provider.getCurrentUser(requestWith(fixtures)));
+        if (anonymous.ok && anonymous.value !== null && anonymous.value !== undefined) {
+          fail(fixtures, {
+            code: 'users/current-user#authenticated-anonymous-request',
+            headline: 'getCurrentUser answered with a user for a request carrying no credentials at all.',
+            observed: [
+              `getCurrentUser(request) resolved to ${show(anonymous.value)}.`,
+              `  request: GET ${fixtures.requestUrl}, no headers at all`,
+              'No Authorization header, no Cookie header, no session of any kind.',
+            ],
+            why:
+              'A host asks this to draw the signed-in state of a page, and answering it for an anonymous\n' +
+              'request tells the browser somebody is signed in when nobody is. Whoever that user is, they\n' +
+              'are the same user for every visitor, so a shared deployment shows one person’s name, email\n' +
+              'and organization to everybody who loads the page.',
+            how:
+              'Read the credential off the request rather than off the provider. A `currentUser` field\n' +
+              'cached on the instance is the usual cause: the provider is long-lived and shared across\n' +
+              'requests, so the last person to sign in becomes everybody. Resolve per request, and return\n' +
+              '`null` when the request carries nothing.',
+          });
+        }
+      },
+    },
+    {
+      id: 'users/get-user',
+      section: SECTION_USERS,
+      title: 'getUser is there, and looks up this provider’s own user by id',
+      obligation: null,
+      failureCodes: ['users/get-user#not-declared', 'users/get-user#threw', 'users/get-user#different-user'],
+      skipReason: requiresUsers,
+      async run(provider) {
+        if (!isUserProvider(provider)) return;
+
+        // The structural half, asked HERE rather than in the gate, for the
+        // reason the module header gives: `isUserProvider` reads one of the two
+        // members `IUserProvider` requires, so the gate cannot tell a provider
+        // that has `getUser` from one that does not. Gating on it would skip
+        // exactly the provider this half exists to find.
+        if (typeof provider.getUser !== 'function') {
+          fail(fixtures, {
+            code: 'users/get-user#not-declared',
+            headline: 'This provider satisfies isUserProvider and has no getUser.',
+            observed: [
+              'isUserProvider(provider) is true, which is the guard hosts branch on.',
+              `  provider.getCurrentUser is ${show(provider.getCurrentUser)}`,
+              `  provider.getUser        is ${show((provider as { getUser?: unknown }).getUser)}`,
+              '',
+              '`IUserProvider` requires both. The guard reads only `getCurrentUser`, so it narrows this',
+              'provider to a type that promises a `getUser` it does not have.',
+            ],
+            why:
+              '`isUserProvider` is a structural guard and it is optimistic: it tests `getCurrentUser` and\n' +
+              'stops. A host that writes `if (isUserProvider(auth)) auth.getUser(id)` therefore compiles,\n' +
+              'because the guard narrowed to an interface that declares the method, and throws\n' +
+              '`auth.getUser is not a function` at run time - inside the host, on a request, with a stack\n' +
+              'that points at the host rather than at the provider that is missing the member.\n' +
+              '\n' +
+              'This is the reason a passing guard is not evidence that a capability is complete, and it is\n' +
+              'why this suite asks about members the guard never reads.',
+            how:
+              'Implement it. It is declared to resolve to a user or to `null`, and `null` is a legitimate\n' +
+              'answer for the whole method:\n' +
+              '\n' +
+              '  async getUser(userId: string): Promise<MyUser | null> {\n' +
+              '    // Look the id up, or return null when this provider cannot.\n' +
+              '    return null;\n' +
+              '  }\n' +
+              '\n' +
+              'A provider that has no directory to search should say so by resolving `null`, not by\n' +
+              'leaving the method off - the absence is what the host cannot see coming.',
+          });
+        }
+
+        const userId = await userIdOf(provider, fixtures);
+        const outcome = await settle(() => provider.getUser(userId));
+        if (!outcome.ok) {
+          fail(fixtures, {
+            code: 'users/get-user#threw',
+            headline: 'getUser threw for this provider’s own user id.',
+            observed: [
+              `getUser(${show(userId)}) threw.`,
+              `  ${show(outcome.error)}`,
+              'That is the id this suite was told the token belongs to, so it is not an id the provider',
+              'has never seen.',
+            ],
+            why:
+              'Hosts call this to put a name and an avatar next to work somebody else did - a run, a\n' +
+              'thread, an audit row. It is declared to resolve to a user or to `null`, and a throw turns\n' +
+              'every one of those surfaces into an error for a piece of decoration, rather than rendering\n' +
+              'the id and moving on.',
+            how:
+              'Resolve `null` for an id you cannot find or cannot look up, rather than throwing. If the\n' +
+              'lookup needs a vendor call that can fail, catch it and answer `null`: the caller has an id\n' +
+              'to fall back on and no way to handle your exception.',
+          });
+        }
+
+        const found = outcome.value;
+        // `null` is what the interface documents for a user who is not found,
+        // and it is the honest answer for a provider with no directory to
+        // search - four in this repository return it unconditionally. This
+        // check does not demand a user; it demands that a user it does hand
+        // back is the one that was asked for.
+        if (found === null || found === undefined) return;
+
+        const identity = toAuthIdentity(found, provider);
+        if (identity !== null && identity.id === userId) return;
+
+        fail(fixtures, {
+          code: 'users/get-user#different-user',
+          headline: 'getUser answered with a different user than the id it was asked about.',
+          observed: [
+            `getUser(${show(userId)}) resolved to:`,
+            `  ${show(found)}`,
+            identity === null
+              ? 'toAuthIdentity found no id in it, so there is nothing to match against the id requested.'
+              : `toAuthIdentity resolved the id ${show(identity.id)}, and ${show(userId)} was asked for.`,
+          ],
+          why:
+            'This is a lookup by primary key, and the caller already holds the id - it is calling to turn\n' +
+            'that id into a name. Answering with somebody else labels one person’s work with another\n' +
+            "person's name and email, on every surface that renders it, with nothing anywhere reporting\n" +
+            'an error. An answer that names nobody is the same defect one step earlier: the host has no\n' +
+            'way to tell it apart from the user it asked for.',
+          how:
+            'Return the record for the id you were handed, or `null` when there is none. Two causes\n' +
+            'account for most of these: the method ignores its argument and returns whoever is currently\n' +
+            'signed in, or it resolves a user whose id lives somewhere `toAuthIdentity` does not look -\n' +
+            'it reads `id`, then `uid`, then `sub`, at the top level.',
+        });
+      },
+    },
+    {
+      id: 'organizations/is-admin',
+      section: SECTION_ORGANIZATIONS,
+      title: 'isOrganizationAdmin answers a boolean, and never yes for an organization it never created',
+      obligation: null,
+      failureCodes: [
+        'organizations/is-admin#threw',
+        'organizations/is-admin#not-a-boolean',
+        'organizations/is-admin#threw-for-an-unknown-organization',
+        'organizations/is-admin#admin-of-an-unknown-organization',
+      ],
+      skipReason: requiresOrganizations,
+      async run(provider) {
+        if (!isOrganizationsProvider(provider)) return;
+        const userId = await userIdOf(provider, fixtures);
+
+        // The organization this provider itself bootstrapped, so the question is
+        // about a real one. `obligation/organizationId/deterministic` owns every
+        // way `ensureOrganization` can be wrong, so a failure there is not
+        // repeated here: this check takes whatever it got and asks the admin
+        // question about it, or skips that half when there was nothing to ask
+        // about.
+        const bootstrapped = await settle(() => provider.ensureOrganization(userId));
+        const organizationId = bootstrapped.ok && typeof bootstrapped.value === 'string' ? bootstrapped.value : null;
+
+        if (organizationId !== null) {
+          const own = await settle(() => provider.isOrganizationAdmin(organizationId, userId));
+          if (!own.ok) {
+            fail(fixtures, {
+              code: 'organizations/is-admin#threw',
+              headline: 'isOrganizationAdmin threw for this provider’s own organization.',
+              observed: [
+                `ensureOrganization(${show(userId)}) resolved ${show(organizationId)}.`,
+                `isOrganizationAdmin(${show(organizationId)}, ${show(userId)}) then threw.`,
+                `  ${show(own.error)}`,
+              ],
+              why:
+                '`IOrganizationsProvider` says in as many words that provider errors here should resolve to\n' +
+                '`false` rather than throw, and the reason is what the answer is used for. Every host that\n' +
+                'gates an administrative action calls this, so a throw either takes down the route or is\n' +
+                'caught by a caller that has to guess - and a caller guessing about an authorization answer\n' +
+                'guesses wrong in one of two directions, one of which is fail-open.',
+              how:
+                'Catch and answer `false`. Deciding it here is the point: this method is the only place that\n' +
+                'knows a lookup failed, and `false` is the safe reading of "cannot tell".\n' +
+                '\n' +
+                '  async isOrganizationAdmin(organizationId: string, userId: string): Promise<boolean> {\n' +
+                '    try {\n' +
+                '      return (await this.roleOf(organizationId, userId)) === "admin";\n' +
+                '    } catch {\n' +
+                '      return false;\n' +
+                '    }\n' +
+                '  }',
+            });
+          }
+          if (typeof own.value !== 'boolean') {
+            fail(fixtures, {
+              code: 'organizations/is-admin#not-a-boolean',
+              headline: 'isOrganizationAdmin answered with something that is not a boolean.',
+              observed: [
+                `isOrganizationAdmin(${show(organizationId)}, ${show(userId)}) resolved to ${show(own.value)}.`,
+                'The contract declares `Promise<boolean>`, and this value was read after awaiting it.',
+              ],
+              why:
+                'Callers write `if (await auth.isOrganizationAdmin(org, user))`, so the answer is read for\n' +
+                'truthiness. A role string - `"member"`, `"viewer"` - is truthy, and so is an object, and so\n' +
+                'is a Promise that was never awaited. Every one of those reads as "yes, an administrator" at\n' +
+                'the call site, which is a fail-open answer to the one question in this interface where\n' +
+                'fail-open means one user acting on another user’s data.\n' +
+                '\n' +
+                'This check does not ask for `true`. Answering `false` for your own organization is fine -\n' +
+                'a provider that cannot reach its role store yet is right to say no. What is not fine is an\n' +
+                'answer a caller cannot read as no.',
+              how:
+                'Compare, and return the comparison:\n' +
+                '\n' +
+                '  return role === "admin" || role === "owner";\n' +
+                '\n' +
+                'Not the role itself, and not the result of a bare `await`-less call to something else.',
+            });
+          }
+        }
+
+        // The half that is a security answer.
+        //
+        // A provider is asked about an organization nothing bootstrapped, under
+        // a user id it does know. `false` is the only correct answer, and it has
+        // to be reached without a throw: a host gating on this catches nothing.
+        const stranger = await settle(() => provider.isOrganizationAdmin(CONFORMANCE_UNOWNED_ORGANIZATION, userId));
+        if (!stranger.ok) {
+          fail(fixtures, {
+            code: 'organizations/is-admin#threw-for-an-unknown-organization',
+            headline: 'isOrganizationAdmin threw for an organization id it does not recognize.',
+            observed: [
+              `isOrganizationAdmin(${show(CONFORMANCE_UNOWNED_ORGANIZATION)}, ${show(userId)}) threw.`,
+              `  ${show(stranger.error)}`,
+              'That id belongs to no organization. A provider is asked about ids it has never seen',
+              'whenever one arrives from a URL, a stale bookmark, or another tenant.',
+            ],
+            why:
+              'An unknown organization id is not an exceptional condition, it is the ordinary shape of a\n' +
+              'request that should be refused. Throwing for it leaves a host unable to tell two answers\n' +
+              'apart - "not an administrator" and "this provider broke" - and they want opposite handling:\n' +
+              'one is a 403 and the other is a retry.',
+            how:
+              'Answer `false` for an id you do not recognize. The lookup that finds nothing and the lookup\n' +
+              'that fails have the same safe answer here, so both can end at `return false`.',
+          });
+        }
+        if (stranger.value !== true) return;
+
+        fail(fixtures, {
+          code: 'organizations/is-admin#admin-of-an-unknown-organization',
+          headline: 'isOrganizationAdmin answered true for an organization this provider never created.',
+          observed: [
+            `isOrganizationAdmin(${show(CONFORMANCE_UNOWNED_ORGANIZATION)}, ${show(userId)}) resolved true.`,
+            `ensureOrganization(${show(userId)}) resolved ${show(organizationId)}, which is a different id.`,
+            'No organization has that id. The suite made it up, and it is not in any provider’s format.',
+          ],
+          why:
+            'This is the one answer in the interface whose wrong value hands somebody rights over another\n' +
+            'user’s data. A host gates administrative actions on it - renaming an organization, removing a\n' +
+            'member, reading everything scoped to it - and the id comes from the request, which means it\n' +
+            'comes from whoever made the request. A provider that answers `true` for ids it does not\n' +
+            'recognize turns "guess an organization id" into an administrator role in it.\n' +
+            '\n' +
+            'The usual shape is not a decision to fail open. It is a lookup that finds no membership row\n' +
+            'and falls through to a default of `true`, or a check that asks "is this user an admin\n' +
+            'anywhere" and ignores the organization it was handed.',
+          how:
+            'Refuse by default and grant on evidence:\n' +
+            '\n' +
+            '  async isOrganizationAdmin(organizationId: string, userId: string): Promise<boolean> {\n' +
+            '    const membership = await this.membership(organizationId, userId);\n' +
+            '    if (membership === undefined) return false;\n' +
+            '    return membership.role === "admin" || membership.role === "owner";\n' +
+            '  }\n' +
+            '\n' +
+            'The organization id has to appear in the lookup. If this provider has no organizations of\n' +
+            'its own and the members came from a wrapper, use `withSyntheticOrganizations` from\n' +
+            `'${KIT_PACKAGE_NAME}/organizations' - it answers this question itself for ids in its own\n` +
+            'namespace, in both directions, and never delegates them.',
         });
       },
     },

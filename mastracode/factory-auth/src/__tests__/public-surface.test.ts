@@ -179,6 +179,7 @@ const TESTING: Omit<Surface, 'module'> = {
     'withOrganizations',
     'withSSO',
     'withSession',
+    'withUser',
   ],
   types: [
     'AuthObligation',
@@ -206,6 +207,8 @@ const TESTING: Omit<Surface, 'module'> = {
     'FakeSessionCapability',
     'FakeSessionOptions',
     'FakeUser',
+    'FakeUserCapability',
+    'FakeUserOptions',
     'FullyCapableFake',
     'FullyCapableFakeOptions',
   ],
@@ -279,7 +282,7 @@ const SURFACE: Readonly<Record<string, Surface>> = {
  * A single number, so that "one export appeared and another vanished" cannot net
  * out to a green run across nine separate list comparisons.
  */
-const TOTAL_DISTINCT_EXPORTS = 125;
+const TOTAL_DISTINCT_EXPORTS = 128;
 
 // ============================================================================
 // Reading the built declarations

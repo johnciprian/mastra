@@ -51,6 +51,7 @@ import {
   withOrganizations,
   withSession,
   withSSO,
+  withUser,
 } from '../testing/index.js';
 import type { AuthObligation, FakeProvider, FullyCapableFake } from '../testing/index.js';
 
@@ -557,6 +558,59 @@ describe('withHttpHandler', () => {
   });
 });
 
+describe('withUser', () => {
+  /**
+   * The guard reads one member and the interface requires two, so a mixin that
+   * installed only what the guard reads would let a host pass a test it should
+   * fail - `withSession` documents the same reasoning for `isSessionProvider`.
+   */
+  it('installs both required members, not just the one the guard reads', () => {
+    const provider = withUser(fakeProvider());
+
+    expect(isUserProvider(provider)).toBe(true);
+    expect(typeof provider.getCurrentUser).toBe('function');
+    expect(typeof provider.getUser).toBe('function');
+  });
+
+  it('answers getCurrentUser for the bearer token and for the session cookie', async () => {
+    const provider = withUser(fakeProvider());
+
+    await expect(provider.getCurrentUser(request({ authorization: `Bearer ${FAKE_TOKEN}` }))).resolves.toBe(
+      provider.user,
+    );
+    await expect(provider.getCurrentUser(withCookie(FAKE_TOKEN))).resolves.toBe(provider.user);
+    expect(provider.calls.count('getCurrentUser')).toBe(2);
+  });
+
+  it('answers null for a request carrying no credentials, and for a token it does not accept', async () => {
+    const provider = withUser(fakeProvider());
+
+    await expect(provider.getCurrentUser(request())).resolves.toBeNull();
+    await expect(provider.getCurrentUser(request({ authorization: 'Bearer nope' }))).resolves.toBeNull();
+  });
+
+  /** Same rule the base fake follows: a double should not turn an odd fixture into a stack trace. */
+  it('treats a request it cannot read as carrying no credentials', async () => {
+    const hostile = {
+      header() {
+        throw new Error('this fixture explodes when read');
+      },
+    } as unknown as Request;
+
+    await expect(withUser(fakeProvider()).getCurrentUser(hostile)).resolves.toBeNull();
+  });
+
+  it('looks getUser up by id rather than answering whoever is signed in', async () => {
+    const other = { id: 'u-2', email: 'other@example.test' };
+    const provider = withUser(fakeProvider(), { directory: [other] });
+
+    await expect(provider.getUser('fake-user')).resolves.toBe(provider.user);
+    await expect(provider.getUser('u-2')).resolves.toBe(other);
+    await expect(provider.getUser('nobody')).resolves.toBeNull();
+    expect(provider.calls.argsFor('getUser')).toEqual([['fake-user'], ['u-2'], ['nobody']]);
+  });
+});
+
 describe('withOrganizations', () => {
   it('is deterministic across calls', async () => {
     const provider = withOrganizations(fakeProvider({ user: { organizationId: undefined } }));
@@ -577,8 +631,27 @@ describe('withOrganizations', () => {
     expect(await provider.ensureOrganization('u-1')).toBe('org-9');
   });
 
-  it('answers isOrganizationAdmin from a boolean or a predicate', async () => {
-    await expect(withOrganizations(fakeProvider()).isOrganizationAdmin('org-1', 'u-1')).resolves.toBe(true);
+  /**
+   * The default is not `true`, and the difference is the point of the fake.
+   *
+   * A fake that answered `true` for any id at all would model a provider handing
+   * out administrator rights over an organization it has never heard of - which
+   * is what `organizations/is-admin` exists to find, so the fake the check has to
+   * be green against must not be that provider.
+   */
+  it('is an administrator of the organization it bootstraps, and of nothing else', async () => {
+    const provider = withOrganizations(fakeProvider());
+    const own = await provider.ensureOrganization('u-1');
+
+    await expect(provider.isOrganizationAdmin(own!, 'u-1')).resolves.toBe(true);
+    await expect(provider.isOrganizationAdmin('some-other-org', 'u-1')).resolves.toBe(false);
+  });
+
+  it('answers isOrganizationAdmin from an explicit boolean or a predicate', async () => {
+    // `true` for every id, which is the fail-open provider, built on purpose.
+    await expect(withOrganizations(fakeProvider(), { admin: true }).isOrganizationAdmin('org-1', 'u-1')).resolves.toBe(
+      true,
+    );
 
     const provider = withOrganizations(fakeProvider(), { admin: (_org, userId) => userId === 'u-1' });
     await expect(provider.isOrganizationAdmin('org-1', 'u-1')).resolves.toBe(true);
