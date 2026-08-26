@@ -227,20 +227,20 @@ Which guards each published provider satisfies. `Yes` means the guard returns `t
 | `@mastra/auth-better-auth` | No | No | Yes | Yes | Yes | Yes | Yes |
 | `@mastra/auth-clerk` | Optional | Optional | Yes | No | No | No | No |
 | `@mastra/auth-cloud` | Yes | Yes | Yes | No | No | No | No |
-| `@mastra/auth-firebase` | No | No | No | No | No | No | No |
+| `@mastra/auth-firebase` | No | No | No | No | Yes | No | No |
 | `@mastra/auth-google` | Optional | Optional | Yes | No | No | No | No |
 | `@mastra/auth-neon` | No | Yes | Yes | Yes | No | No | No |
 | `@mastra/auth-okta` | Yes | Yes | Yes | No | No | No | No |
 | `@mastra/auth-studio` | Yes | Yes | Yes | No | Yes | No | No |
-| `@mastra/auth-supabase` | No | No | No | No | No | No | No |
+| `@mastra/auth-supabase` | No | No | No | No | Yes | No | No |
 | `@mastra/auth-workos` | Yes | Yes | Yes | No | Yes | No | Yes |
 
 Notes on the rows that need one:
 
 - **`Optional` in Auth0, Clerk, and Google.** Each attaches its hosted-login and session methods to the instance in its constructor, and only when OAuth credentials are configured. Auth0 and Clerk gate on a client id and a client secret together. Google gates on a client secret. Without those, the guards return `false` and the provider validates bearer tokens only.
 - **Better Auth has no session capability.** It defines `getClearSessionHeaders` but neither `createSession` nor `validateSession`, so `isSessionProvider` returns `false`. It's the only published provider that serves its own auth routes, and the only one that runs the conformance suite in its own package.
-- **Firebase and Supabase implement the base contract only.** Both satisfy zero guards, so `toAuthDescriptor` reports `signIn.kind: 'none'` and `features.logout: false` for each.
-- **Organizations are rare.** Only Better Auth, Studio, and WorkOS satisfy `isOrganizationsProvider`. Wrap any of the others in `withSyntheticOrganizations` from `@mastra/factory-auth/organizations` to meet the `organizationId` obligation.
+- **Firebase and Supabase validate bearer tokens and resolve an organization.** Neither satisfies any sign-in guard, so `toAuthDescriptor` reports `signIn.kind: 'none'` and `features.logout: false` for each. Both packages declare that shape in the open, as a `FACTORY_BROWSER_SIGN_IN` export carrying the reason and the alternative. See [Providers that can't sign a browser in](/docs/auth/write-a-provider#providers-that-cant-sign-a-browser-in).
+- **Okta reaches organizations through the wrapper rather than on its own.** Okta has groups instead of organizations, so the package documents `withSyntheticOrganizations` as the way to mount it, and its conformance suite runs against that composition. Any provider in the No column can do the same.
 
 ## Checking your own provider
 
@@ -269,6 +269,7 @@ For setup, fixtures, and the failure messages the suite emits, see the [`@mastra
 
 ## Related
 
+- [Write an auth provider](/docs/auth/write-a-provider): Build a provider end to end, from an empty file to a green conformance suite.
 - [Provider obligations](/docs/auth/provider-obligations): What a provider owes a host beyond the interfaces.
 - [Custom auth provider](/docs/auth/custom-auth-provider): Build a provider on the base contract.
 - [Auth](/docs/auth/overview): Pick an auth strategy and configure it.
