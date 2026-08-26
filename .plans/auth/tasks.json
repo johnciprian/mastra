@@ -1065,7 +1065,7 @@
     },
     {
       "id": "P2",
-      "status": "pending",
+      "status": "done",
       "title": "auth/cloud: name the vitest project, then add conformance",
       "lane": "C",
       "size": "M",
