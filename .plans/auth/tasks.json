@@ -1418,7 +1418,7 @@
     },
     {
       "id": "P25",
-      "status": "pending",
+      "status": "done",
       "title": "auth/clerk index.test.ts has a test that depends on an earlier test",
       "lane": "C",
       "size": "S",
@@ -1426,12 +1426,12 @@
       "files": [
         "auth/clerk/src/index.test.ts"
       ],
-      "detail": "Found while building a reproduction harness for P22, and unrelated to it. Running `vitest --sequence.shuffle --sequence.seed=2` against auth/clerk/src/index.test.ts ALONE fails: 'should produce signed state that round-trips through handleCallback' expects `clerk|user` and gets `user_123`, because it relies on a mock an earlier test in the same file configured. Declaration order hides it, so it is latent rather than failing today. Worth measuring across the other auth suites with the same seed sweep before fixing one instance - shuffle found this in the first package tried, which suggests it is not the only one.",
+      "detail": "Found while building a reproduction harness for P22, and unrelated to it. Running `vitest --sequence.shuffle --sequence.seed=2` against auth/clerk/src/index.test.ts ALONE fails: 'should produce signed state that round-trips through handleCallback' expects `clerk|user` and gets `user_123`, because it relies on a mock an earlier test in the same file configured. Declaration order hides it, so it is latent rather than failing today. Worth measuring across the other auth suites with the same seed sweep before fixing one instance - shuffle found this in the first package tried, which suggests it is not the only one. DONE at fc90cb56, and the cause was neither of the two this text guessed at. auth/studio: its last describe replaces `globalThis.fetch` by ASSIGNMENT rather than through `vi.spyOn`, and `vi.restoreAllMocks()` cannot undo an assignment. The replacement outlived the block, so shuffled runs put it first and every `vi.spyOn(globalThis, 'fetch')` above it then spied on the leftover `vi.fn()` and inherited its call history - which is how a test making no requests came to see seven. Three hypotheses were ruled out by measurement first (fake timers not restored, a module-level cache, a background bootstrap race); the tell was that a zero-call test saw seven, which is neither a race nor a cache. Studio was pre-existing, not introduced by P18 - it reproduces at the same seeds on the pre-P18 source. auth/clerk: `vi.clearAllMocks()` drops call history and keeps implementations, so a `mockResolvedValue` set by one test answered every later test that set none - tests inherited each other's identities. `vi.resetAllMocks()` instead. A third finding, fixed with it: studio's fetch spy had no default implementation, and `vi.spyOn` without one calls through to the real `fetch` - two requests to /v1/auth/orgs were leaving the process on every run of a unit suite. Proved with a standalone probe, then made to throw and name the URL. All 135 studio and 63 clerk tests still pass, so nothing relied on it. Measured across all eleven packages at six seeds: before, clerk 2/6 and studio 2/6 red; after, 0/6 everywhere.",
       "doneWhen": "The auth unit projects pass under --sequence.shuffle across a range of seeds, or each remaining order-dependent test is recorded with a reason."
     },
     {
       "id": "P26",
-      "status": "pending",
+      "status": "done",
       "title": "Six API defects the docs typechecker exposed",
       "lane": "C",
       "size": "M",
@@ -1444,7 +1444,7 @@
         "auth/okta/src",
         "auth/google/src"
       ],
-      "detail": "P16 turned the checker on for 17 more pages and the examples stopped compiling in places where the docs were right and the types were wrong. (1) THE SHARPEST: `packages/core/src/server/request-types.ts` declares its own `HonoRequestLike`/`MastraAuthRequest` (`header()` required, `headers?: Headers`) while the type `MastraAuthProvider` and `MastraAuthProviderOptions.authorizeUser` actually use is `packages/_internals/auth/src/types/index.ts` (`header?()` optional, `headers` also allowing a plain object). The internal one is not assignable to core's, so `getWebRequest(request)` - imported from `@mastra/core/server` - fails on the request your own `authorizeUser` callback is handed. Core's copy of `getRequestHeader` also calls `request.header(name)` unguarded and throws on an Express-style plain-object `headers`, which the internal copy explicitly guards. The docs carry an explicit parameter annotation as a workaround and say so. (2) `@mastra/auth`'s `getTokenIssuer` is declared `(decoded: jwt.JwtPayload | null)` but its body reads `decoded.payload`, so it wants the `jwt.Jwt` that `decodeToken` returns; it only compiles because `JwtPayload` has an `[key: string]: any` index signature. (3) `MastraRBACOktaOptions.getUserId`, `MastraRBACGoogleOptions.getUserKey` and `StoredResourceScopeConfig.resolve` all take `(user: unknown)`, and each package's own JSDoc example does not compile under strict. A generic parameter is the real fix.",
+      "detail": "P16 turned the checker on for 17 more pages and the examples stopped compiling in places where the docs were right and the types were wrong. (1) THE SHARPEST: `packages/core/src/server/request-types.ts` declares its own `HonoRequestLike`/`MastraAuthRequest` (`header()` required, `headers?: Headers`) while the type `MastraAuthProvider` and `MastraAuthProviderOptions.authorizeUser` actually use is `packages/_internals/auth/src/types/index.ts` (`header?()` optional, `headers` also allowing a plain object). The internal one is not assignable to core's, so `getWebRequest(request)` - imported from `@mastra/core/server` - fails on the request your own `authorizeUser` callback is handed. Core's copy of `getRequestHeader` also calls `request.header(name)` unguarded and throws on an Express-style plain-object `headers`, which the internal copy explicitly guards. The docs carry an explicit parameter annotation as a workaround and say so. (2) `@mastra/auth`'s `getTokenIssuer` is declared `(decoded: jwt.JwtPayload | null)` but its body reads `decoded.payload`, so it wants the `jwt.Jwt` that `decodeToken` returns; it only compiles because `JwtPayload` has an `[key: string]: any` index signature. (3) `MastraRBACOktaOptions.getUserId`, `MastraRBACGoogleOptions.getUserKey` and `StoredResourceScopeConfig.resolve` all take `(user: unknown)`, and each package's own JSDoc example does not compile under strict. A generic parameter is the real fix. DONE at e2c002f2. Three fixed, two verified already correct at source (WorkOS has `organizationId` not `teamId`; `BetterAuthUser.session` does carry `activeOrganizationId` - only the docs had been wrong, and P16 already corrected them), one worse than filed. CORRECTION: defect (1) did NOT need `packages/_internals/auth`. The fix is a re-export from `@internal/auth/types` entirely inside core, and `server/types.ts` already imported from there, so there was precedent in the same directory. WORSE THAN FILED: `StoredResourceScopeConfig` was not merely typed `unknown` - it was never exported from any published subpath, so no consumer could name the type at all. BEYOND THE BRIEF: auth/okta's shipped JSDoc example does not compile even with the parameter typed, because `EEUser.metadata` is `Record<string, unknown>`; typing the callback was necessary and not sufficient. Verified against the built package rather than source: all three request shapes now read a header (the Express-style plain-object one used to throw `request.headers?.get is not a function`), and a provider that hands its own `authorizeUser` request to `getWebRequest` compiles.",
       "doneWhen": "Each defect is fixed or recorded with an owner, and the workarounds the doc examples carry are removed where the fix lands."
     },
     {
@@ -1477,6 +1477,19 @@
       ],
       "detail": "The one conformance record left in the repository that names a live defect, and the only one P18 could not close. `auth/workos` declares `ISessionProvider` with all seven members as no-ops, so every guard reports the capability and `toAuthDescriptor` advertises `sessionRevocation`. Measured in P18: the members are unreachable on every host path here, the descriptor is carried into factory-ui but no component reads it yet, and no implementation can make `createSession(userId)` mint something `validateSession` accepts, because a WorkOS session comes from an authenticated token exchange. Two remedies, both written up in the provider header. (a) Drop the seven members: the descriptor becomes truthful and the in-repo runtime blast radius is zero, but it is a major bump for a published package. (b) Back the four readable members with AuthKit - `getSessionIdFromRequest` returns the sealed cookie, `validateSession` unseals through `AuthService.withAuth`, `destroySession` reads the `sid` claim as `getLogoutUrl` already does and calls `revokeSession`: non-breaking, and `sessionRevocation` becomes true in fact rather than in name. (b) does not clear the record, because `createSession` stays unmintable. This is a maintainer decision about a published package, not a test change.",
       "doneWhen": "auth/workos either stops declaring ISessionProvider, or implements the members it can, and the remaining knownFailures entry matches whichever was chosen."
+    },
+    {
+      "id": "P29",
+      "status": "pending",
+      "title": "packages/core turbo outputs overlap, and a cache hit can leave dist with no declarations",
+      "lane": "C",
+      "size": "S",
+      "deps": [],
+      "files": [
+        "packages/core/turbo.json"
+      ],
+      "detail": "Found twice during this work, from opposite directions, and it wastes real time both times. `packages/core/turbo.json` gives `build:lib` outputs `[\"dist/**\"]` and `build:patch-commonjs` outputs `[\"./**/*.d.ts\"]`, which overlap. A cache-restored build can leave `packages/core/dist` with ZERO `.d.ts` files while reporting success, and the symptom is indistinguishable from having broken the types: every consumer fails with \"has no exported member\", and `@mastra/core/server` appears to have lost exports it still declares in source. `pnpm turbo build --filter ./packages/core --force` restores all of them. Both P11 and P26 lost cycles to this, P11 while also blaming a concurrent agent. Narrow the globs so the two tasks do not claim the same files.",
+      "doneWhen": "The two build tasks declare disjoint outputs, and a cache-restored core build always leaves a complete dist."
     }
   ],
   "criticalPath": [
