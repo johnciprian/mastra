@@ -1254,7 +1254,7 @@
     },
     {
       "id": "P14",
-      "status": "pending",
+      "status": "done",
       "title": "Take @mastra/auth-workos out of the Factory's dependencies",
       "lane": "B",
       "size": "M",
@@ -1264,12 +1264,12 @@
         "mastracode/factory/src/integrations/workos/integration.ts",
         "mastracode/factory/eslint.config.js"
       ],
-      "detail": "The backend A- criterion names this explicitly - '@mastra/auth-workos leaves the dependency list' - and it is still at mastracode/factory/package.json:58. B7 did the real work (the neutral auth module no longer imports it, and the instanceof and WORKOS_* reach-throughs are gone; only comments mention them now), but the dependency cannot be dropped because src/integrations/workos/integration.ts imports WorkOSAdminPortal at top level and it ships - dist/integrations/workos/integration.js carries the runtime import, reachable through the './*' exports map. Dropping the dependency would leave an unresolvable import in published output. Nothing in the repo imports WorkOSAuditIntegration, so it may be dead code, but deleting a shipped feature is a product decision and that is the decision this task needs. Once it is gone, the vendor-auth lint ban at eslint.config.js:176 can widen from `src/auth.ts` alone toward the package - though note factory.ts:21 imports MastraAuthStudio as the default provider, so a package-wide `@mastra/auth-*` ban stays unavailable until that is addressed too.",
+      "detail": "The backend A- criterion names this explicitly - '@mastra/auth-workos leaves the dependency list' - and it is still at mastracode/factory/package.json:58. B7 did the real work (the neutral auth module no longer imports it, and the instanceof and WORKOS_* reach-throughs are gone; only comments mention them now), but the dependency cannot be dropped because src/integrations/workos/integration.ts imports WorkOSAdminPortal at top level and it ships - dist/integrations/workos/integration.js carries the runtime import, reachable through the './*' exports map. Dropping the dependency would leave an unresolvable import in published output. Nothing in the repo imports WorkOSAuditIntegration, so it may be dead code, but deleting a shipped feature is a product decision and that is the decision this task needs. Once it is gone, the vendor-auth lint ban at eslint.config.js:176 can widen from `src/auth.ts` alone toward the package - though note factory.ts:21 imports MastraAuthStudio as the default provider, so a package-wide `@mastra/auth-*` ban stays unavailable until that is addressed too. DONE at 8599b6cf. THE BLOCKER IN THIS TEXT WAS FALSE. It treats the top-level `WorkOSAdminPortal` import as necessary, and frames the task as a product decision between deleting a shipped feature and peer-dependency gymnastics. Reading what the file uses dissolves that: the host already injects its own client, and the import bought a type alias plus one string constant (`GeneratePortalLinkIntent.AuditLogs === 'audit_logs'`). The integration now declares a structural interface for the two methods it calls and invokes `portal.generateLink` directly. Feature kept, dependency gone, no unresolvable import - checked by resolving all 45 bare specifiers `dist/` emits. A real `WorkOS` instance still satisfies the widened parameter, proved against the vendor typings with a negative control. The lint ban widened from `src/auth.ts` to package-wide with `src/factory.ts` exempt, which is as far as is true while it imports `MastraAuthStudio` as the default provider.",
       "doneWhen": "@mastra/auth-workos is absent from mastracode/factory/package.json and the published output has no unresolvable import."
     },
     {
       "id": "P15",
-      "status": "pending",
+      "status": "done",
       "title": "Close the last RouteAuth bypass: the audit actor profile",
       "lane": "B",
       "size": "M",
@@ -1278,12 +1278,12 @@
         "mastracode/factory/src/routes/route.ts",
         "mastracode/factory/src/storage/domains/audit/domain.ts"
       ],
-      "detail": "The backend A- criterion says RouteAuth becomes the ONLY identity path. B14, B15 and B16 closed the three bypasses the audit named. One remains, and it is structural rather than an oversight: mastracode/factory/src/storage/domains/audit/domain.ts:89 reads `context.get('factoryAuthUser')` straight off the Hono context to build an audit actor profile. It has to, because the port cannot answer the question - RouteAuth.tenant() returns only `{ orgId, userId }` (routes/route.ts:36) and there is no member that yields a display name, email or avatar. Either add a profile member to the port and migrate the domain onto it, or state that the audit trail's display fields are deliberately outside the port and say why. Whichever, add something that stops a fourth bypass appearing quietly: a grep test for `get('factoryAuthUser')` outside auth.ts and the test helpers would do it, in the style of factory-ui's no-provider-literals test.",
+      "detail": "The backend A- criterion says RouteAuth becomes the ONLY identity path. B14, B15 and B16 closed the three bypasses the audit named. One remains, and it is structural rather than an oversight: mastracode/factory/src/storage/domains/audit/domain.ts:89 reads `context.get('factoryAuthUser')` straight off the Hono context to build an audit actor profile. It has to, because the port cannot answer the question - RouteAuth.tenant() returns only `{ orgId, userId }` (routes/route.ts:36) and there is no member that yields a display name, email or avatar. Either add a profile member to the port and migrate the domain onto it, or state that the audit trail's display fields are deliberately outside the port and say why. Whichever, add something that stops a fourth bypass appearing quietly: a grep test for `get('factoryAuthUser')` outside auth.ts and the test helpers would do it, in the style of factory-ui's no-provider-literals test. DONE at 8599b6cf. Route (a): `RouteAuth` gained `profile()` and the audit domain reads display fields through the port. The bypass was structural rather than sloppy - `tenant()` answers `{ orgId, userId }` and no member could answer the question - so the port grew the member rather than the domain keeping an exception. The anti-regression test is `mastracode/factory/src/__tests__/route-auth-is-the-only-identity-path.test.ts`, proved red by adding a read and green by removing it.",
       "doneWhen": "No production module outside src/auth.ts reads factoryAuthUser off the context, or the exception is declared and enforced against growth."
     },
     {
       "id": "P16",
-      "status": "pending",
+      "status": "done",
       "title": "Shrink LEGACY_UNCHECKED so every auth doc example type-checks",
       "lane": "D",
       "size": "M",
@@ -1293,7 +1293,7 @@
         "docs/src/content/en/docs/auth/custom-auth-provider.mdx",
         "docs/src/content/en/docs/auth/composite-auth.mdx"
       ],
-      "detail": "D4's criterion is 'every doc example type-checks in CI'. Measured at HEAD: `pnpm typecheck:examples` reports 'Checked 19 TypeScript examples from 3 pages' and '17 pages in scope are not checked yet'. The three checked pages are the three D1-D3 wrote; the 17 excluded ones are listed in LEGACY_UNCHECKED at docs/scripts/typecheck-examples.ts:86-104 and include custom-auth-provider.mdx and composite-auth.mdx - both pages a provider author is sent to - plus ten provider reference pages. The exclusion list is well built: each line carries a reason, and a line naming a page that no longer exists fails the run, so it cannot rot quietly. The reasons split into two kinds and they need different work: 'class-member fragments predate docscheck=member' is an annotation job on two pages and is the place to start; 'examples reference packages the docs workspace does not install' needs those packages added to the docs workspace or the examples reworked. The script's own header says annotating one page and deleting its line is a self-contained change, so this is genuinely incremental.",
+      "detail": "D4's criterion is 'every doc example type-checks in CI'. Measured at HEAD: `pnpm typecheck:examples` reports 'Checked 19 TypeScript examples from 3 pages' and '17 pages in scope are not checked yet'. The three checked pages are the three D1-D3 wrote; the 17 excluded ones are listed in LEGACY_UNCHECKED at docs/scripts/typecheck-examples.ts:86-104 and include custom-auth-provider.mdx and composite-auth.mdx - both pages a provider author is sent to - plus ten provider reference pages. The exclusion list is well built: each line carries a reason, and a line naming a page that no longer exists fails the run, so it cannot rot quietly. The reasons split into two kinds and they need different work: 'class-member fragments predate docscheck=member' is an annotation job on two pages and is the place to start; 'examples reference packages the docs workspace does not install' needs those packages added to the docs workspace or the examples reworked. The script's own header says annotating one page and deleting its line is a self-contained change, so this is genuinely incremental. DONE at 43ea5f02. LEGACY_UNCHECKED is empty; 19 examples from 3 pages became 95 from 20. Every page taken off was proved red first with a deliberate unknown-type probe, then green. Two bugs in the checker made pages unpassable rather than merely unchecked: `tsx` fences were accepted but fixtures were always written `.ts`, and pages were keyed by base name so the two `jwt.mdx` and the two `fga.mdx` collided. Turning the check on surfaced six real API defects, filed as P26. NOT CLOSED BY THIS: `src/content/en/integrations/auth/` is outside the SCOPES array entirely - 8 pages, 58 examples, neither checked nor excluded, so the \"not checked yet\" count never counted them. Filed as P27.",
       "doneWhen": "LEGACY_UNCHECKED is empty, or every remaining line names a page with no TypeScript examples."
     },
     {
@@ -1373,7 +1373,7 @@
     },
     {
       "id": "P22",
-      "status": "pending",
+      "status": "done",
       "title": "Fix the ~10% flake in the auth unit suites",
       "lane": "C",
       "size": "M",
@@ -1382,7 +1382,7 @@
         "auth/*/src/*.test.ts",
         "auth/*/vitest.config.ts"
       ],
-      "detail": "Measured by P19 on the baseline as well as on its own branch: running all auth unit projects fails roughly 1 run in 10, in a different package each time (neon on baseline, okta on the branch). Cause is isolate:false plus nine index.test.ts files calling vi.mock('jose') and similar, whose module registry bleeds into the same package's real-jose conformance.test.ts when worker scheduling puts index first. Fixing means editing index.test.ts or flipping isolate; both were outside P19's remit. A 10% flake on a suite that now gates merges will erode trust in the gate.",
+      "detail": "Measured by P19 on the baseline as well as on its own branch: running all auth unit projects fails roughly 1 run in 10, in a different package each time (neon on baseline, okta on the branch). Cause is isolate:false plus nine index.test.ts files calling vi.mock('jose') and similar, whose module registry bleeds into the same package's real-jose conformance.test.ts when worker scheduling puts index first. Fixing means editing index.test.ts or flipping isolate; both were outside P19's remit. A 10% flake on a suite that now gates merges will erode trust in the gate. DONE at cc7ef6ed. THE DIAGNOSIS IN THIS TEXT WAS WRONG about the mechanism. `jose` is incidental: the leak is any module mocked in one test file and imported for real by a sibling under a shared registry. The captured case was auth/clerk's `vi.mock('@clerk/backend')` reaching its own conformance.test.ts, whose header states the Clerk SDK is real and unmocked - and it surfaced as `contract/rejects-unknown-token`, the suite's one security check, reporting a clean provider red. Reduced to a minimum outside the repo and it reproduces in BOTH directions, which is why the failing package differed every time. Fixed with `isolate: true` on all eleven unit projects; measured cost is nil (9.76s isolated against 9.70s shared, back to back on an idle machine), so the usual argument for `isolate: false` does not apply to suites this small. Acceptance met: 20 consecutive clean sweeps. The conformance gate now asserts the setting and rejects both reverting it and deleting the line.",
       "doneWhen": "The auth unit projects pass 20 consecutive full runs."
     },
     {
@@ -1415,6 +1415,53 @@
       ],
       "detail": "P9 shipped with `@mastra/core: minor`, matching the precedent set by the earlier auth interface changeset in this series. That is a judgement call and it should be a maintainer's. Semver-wise the change is breaking for a consumer whose third-party provider satisfied a guard structurally with a subset of the required members: the guard now reports false, and a surface branching on it stops offering the capability. No provider in this repository is affected - measured with an AST scan - so the blast radius is external only, and a major on @mastra/core forces a whole-repo major release. The changeset body states the breaking consequence in full with a before/after either way, so the changelog is honest at both bump levels; only the version number is open.",
       "doneWhen": "A maintainer has confirmed minor, or the changeset is reissued as major."
+    },
+    {
+      "id": "P25",
+      "status": "pending",
+      "title": "auth/clerk index.test.ts has a test that depends on an earlier test",
+      "lane": "C",
+      "size": "S",
+      "deps": [],
+      "files": [
+        "auth/clerk/src/index.test.ts"
+      ],
+      "detail": "Found while building a reproduction harness for P22, and unrelated to it. Running `vitest --sequence.shuffle --sequence.seed=2` against auth/clerk/src/index.test.ts ALONE fails: 'should produce signed state that round-trips through handleCallback' expects `clerk|user` and gets `user_123`, because it relies on a mock an earlier test in the same file configured. Declaration order hides it, so it is latent rather than failing today. Worth measuring across the other auth suites with the same seed sweep before fixing one instance - shuffle found this in the first package tried, which suggests it is not the only one.",
+      "doneWhen": "The auth unit projects pass under --sequence.shuffle across a range of seeds, or each remaining order-dependent test is recorded with a reason."
+    },
+    {
+      "id": "P26",
+      "status": "pending",
+      "title": "Six API defects the docs typechecker exposed",
+      "lane": "C",
+      "size": "M",
+      "deps": [
+        "P16"
+      ],
+      "files": [
+        "packages/core/src/server/request-types.ts",
+        "packages/auth/src",
+        "auth/okta/src",
+        "auth/google/src"
+      ],
+      "detail": "P16 turned the checker on for 17 more pages and the examples stopped compiling in places where the docs were right and the types were wrong. (1) THE SHARPEST: `packages/core/src/server/request-types.ts` declares its own `HonoRequestLike`/`MastraAuthRequest` (`header()` required, `headers?: Headers`) while the type `MastraAuthProvider` and `MastraAuthProviderOptions.authorizeUser` actually use is `packages/_internals/auth/src/types/index.ts` (`header?()` optional, `headers` also allowing a plain object). The internal one is not assignable to core's, so `getWebRequest(request)` - imported from `@mastra/core/server` - fails on the request your own `authorizeUser` callback is handed. Core's copy of `getRequestHeader` also calls `request.header(name)` unguarded and throws on an Express-style plain-object `headers`, which the internal copy explicitly guards. The docs carry an explicit parameter annotation as a workaround and say so. (2) `@mastra/auth`'s `getTokenIssuer` is declared `(decoded: jwt.JwtPayload | null)` but its body reads `decoded.payload`, so it wants the `jwt.Jwt` that `decodeToken` returns; it only compiles because `JwtPayload` has an `[key: string]: any` index signature. (3) `MastraRBACOktaOptions.getUserId`, `MastraRBACGoogleOptions.getUserKey` and `StoredResourceScopeConfig.resolve` all take `(user: unknown)`, and each package's own JSDoc example does not compile under strict. A generic parameter is the real fix.",
+      "doneWhen": "Each defect is fixed or recorded with an owner, and the workarounds the doc examples carry are removed where the fix lands."
+    },
+    {
+      "id": "P27",
+      "status": "pending",
+      "title": "integrations/auth/ is outside the docs typechecker entirely",
+      "lane": "D",
+      "size": "M",
+      "deps": [
+        "P16"
+      ],
+      "files": [
+        "docs/scripts/typecheck-examples.ts",
+        "docs/package.json"
+      ],
+      "detail": "P16 emptied LEGACY_UNCHECKED, but that list only ever covered pages inside SCOPES - `['src/content/en/docs/auth', 'src/content/en/reference/auth']`. `src/content/en/integrations/auth/` is in neither, so its 8 pages and 58 TypeScript examples are neither checked nor excluded, and the \"N pages in scope are not checked yet\" line never counted them. Note the path given in P16 and P20, `docs/src/content/en/docs/integrations/auth/better-auth.mdx`, does not exist. Widening SCOPES is not free: these are frontend integration guides whose examples import `@auth0/auth0-react`, `react`, `@clerk/nextjs`, `firebase/app`, `firebase/auth`, `react-firebase-hooks/auth`, `@supabase/supabase-js`, `@workos-inc/node` and `better-auth`, plus app-relative imports the pages never define (`@/lib/auth`, `./auth-client`, `./firebase`). Closing it means deciding whether browser-framework dependencies belong in the docs workspace.",
+      "doneWhen": "Every page under integrations/auth/ is checked, or SCOPES states why that directory is out of scope and something fails when a new page is added there."
     }
   ],
   "criticalPath": [
