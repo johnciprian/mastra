@@ -8,7 +8,7 @@
     },
     "build:patch-commonjs": {
       "dependsOn": ["build:lib"],
-      "outputs": ["./**/*.d.ts"],
+      "outputs": ["./**/*.d.ts", "!dist/**"],
       "inputs": ["src/**", "package.json", "!**/*.md"]
     },
     "build:lib": {
