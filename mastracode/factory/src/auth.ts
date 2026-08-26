@@ -8,6 +8,8 @@ import {
 import type { ApiRoute, IMastraAuthProvider, ISessionProvider } from '@mastra/core/server';
 import { toAuthDescriptor } from '@mastra/factory-auth/capabilities';
 import type { AuthDescriptor } from '@mastra/factory-auth/capabilities';
+import { clearSessionCookie, mintSessionCookie, readSessionCookie } from '@mastra/factory-auth/cookie';
+import type { SessionCookieSite } from '@mastra/factory-auth/cookie';
 import { toAuthIdentity } from '@mastra/factory-auth/identity';
 import type { AuthIdentity } from '@mastra/factory-auth/identity';
 import { decodeState, encodeState } from '@mastra/factory-auth/oauth-state';
@@ -164,6 +166,35 @@ export function getBearerToken(authorization: string | undefined): string {
 }
 
 /**
+ * The token to hand a provider's `authenticateToken` for this request.
+ *
+ * The `Authorization` header first, because an API client that sent one means
+ * it. A browser navigation sends no such header, and the empty string it yields
+ * is the provider's documented signal to go read the `Cookie` header itself —
+ * which is what every provider-minted session still relies on.
+ *
+ * When this host owns the session cookie, its signed value is read here and
+ * passed in explicitly instead. That is the difference the kit makes: the token
+ * reaches the provider as an argument rather than each provider re-deriving it
+ * from a header, and a cookie that fails its signature check or has expired
+ * yields `''` — indistinguishable from no cookie at all, which is exactly how
+ * a forged one should read.
+ */
+function requestAuthToken(c: Context): string {
+  const bearer = getBearerToken(c.req.header('Authorization'));
+  if (bearer) return bearer;
+  const secret = authSessionSecret();
+  if (!isAuthIdentityV2Enabled() || secret === undefined) return '';
+  try {
+    return readSessionCookie(c.req.raw, { secret }) ?? '';
+  } catch {
+    // A malformed cookie is not a reason to 500 a request that is merely
+    // unauthenticated.
+    return '';
+  }
+}
+
+/**
  * Whether the SPA is served cross-origin from this API (platform deploy). When
  * `MASTRACODE_ALLOWED_ORIGINS` is set the browser talks to us cross-site, so
  * session cookies must be `SameSite=None; Secure` for the browser to send them.
@@ -171,6 +202,60 @@ export function getBearerToken(authorization: string | undefined): string {
  */
 export function isCrossSiteAuth(): boolean {
   return Boolean(process.env.MASTRACODE_ALLOWED_ORIGINS?.trim());
+}
+
+/**
+ * Name of the env var holding the HMAC secret for the host's own session cookie.
+ *
+ * Must be at least 32 bytes and identical on every instance a request might
+ * land on — two replicas with different secrets sign a user out every time the
+ * load balancer moves them.
+ */
+export const AUTH_SESSION_SECRET_ENV_VAR = 'MASTRACODE_AUTH_SESSION_SECRET';
+
+/**
+ * The host session-cookie secret, or `undefined` when none is configured.
+ *
+ * Read per call rather than captured at module load, unlike the compat flag:
+ * this one is a credential, and a process that rotates it (or a test that sets
+ * it) should not have to be restarted to be believed. It is read on the
+ * callback and on each gated request, which is a `process.env` lookup — cheaper
+ * than the HMAC it guards.
+ */
+function authSessionSecret(): string | undefined {
+  const secret = process.env[AUTH_SESSION_SECRET_ENV_VAR];
+  return secret && secret.length > 0 ? secret : undefined;
+}
+
+/**
+ * Whether this process mints, reads and clears its own session cookie through
+ * the kit, rather than leaving all three to the provider.
+ *
+ * Two conditions, and both are deliberate:
+ *
+ * - the identity compat flag, because a change to the session cookie is a
+ *   change to who is signed in, and it ships with the rest of that migration;
+ * - a configured secret, because {@link mintSessionCookie} refuses to sign with
+ *   a weak one and there is no safe default to invent. A deployment that turns
+ *   the flag on without setting the secret keeps the behaviour it had rather
+ *   than failing every sign-in, which is the direction that degrades safely.
+ *
+ * NOTE ON UPGRADING: the cookie the kit mints is not the cookie a provider
+ * minted, so sessions do not survive switching this on. Everyone signs in once
+ * more. That is a one-time cost of the host owning its own session, and it is
+ * why this is behind a flag rather than simply shipped.
+ */
+function hostOwnsSessionCookie(): boolean {
+  return isAuthIdentityV2Enabled() && authSessionSecret() !== undefined;
+}
+
+/**
+ * Where the browser sits relative to this API, in the shape the kit's cookie
+ * module takes. Drives `SameSite` and `Secure`, and with them whether the
+ * cookie can carry the `__Host-` prefix — see {@link sessionCookieName}.
+ */
+function sessionCookieSite(): SessionCookieSite {
+  return { crossSite: isCrossSiteAuth() };
 }
 
 /** Hono context variables set by the auth gate. */
@@ -415,6 +500,25 @@ async function ensureUserOrg(provider: IMastraAuthProvider, user: FactoryAuthUse
 /**
  * `Set-Cookie` values that clear the provider's session cookie(s), from the
  * provider's (possibly partial) `ISessionProvider.getClearSessionHeaders`.
+ *
+ * THE UN-JOIN, AND WHAT IT IS DEFENDING AGAINST
+ *
+ * `getClearSessionHeaders` returns a `Record<string, string>`, so a provider
+ * clearing two cookies has one slot to put them in and joins them with a comma
+ * — which is how `Set-Cookie` is folded in HTTP/1.1, and is exactly what
+ * `Headers.get('set-cookie')` hands back for multiple values. Appending that
+ * joined string as a single header writes one malformed cookie and clears
+ * neither, so it has to be split again.
+ *
+ * A plain `split(',')` cannot do it: a cookie's own `Expires` attribute
+ * contains a comma (`Expires=Thu, 01 Jan 1970 00:00:00 GMT`), and splitting
+ * there produces two fragments that are each nonsense. The lookahead requires
+ * the comma to be followed by something shaped like `name=`, which an
+ * `Expires` date is not — the day name is followed by a space and digits.
+ *
+ * It is a heuristic over a format that was never meant to be re-parsed, so the
+ * malformed-header case it defends against is pinned by tests rather than left
+ * to be rediscovered.
  */
 function providerClearCookies(provider: IMastraAuthProvider): string[] {
   const getClearSessionHeaders = (provider as Partial<ISessionProvider>).getClearSessionHeaders;
@@ -424,6 +528,21 @@ function providerClearCookies(provider: IMastraAuthProvider): string[] {
   if (!setCookie) return [];
   // A provider may join several clearing cookies into one header value.
   return setCookie.split(/,(?=\s*[^;=,\s]+=)/).map(cookie => cookie.trim());
+}
+
+/**
+ * Every `Set-Cookie` a sign-out should emit: the provider's own clearing
+ * cookies, plus this host's when it owns one.
+ *
+ * Both, not either. A deployment that switched the host cookie on still has
+ * users holding provider-minted cookies from before the switch, and a sign-out
+ * that cleared only one of the two would leave the other behind — which reads
+ * as "sign out did nothing" to the one person it happens to.
+ */
+function sessionClearCookies(provider: IMastraAuthProvider): string[] {
+  const cookies = providerClearCookies(provider);
+  if (hostOwnsSessionCookie()) cookies.push(clearSessionCookie(sessionCookieSite()));
+  return cookies;
 }
 
 /**
@@ -484,7 +603,7 @@ export async function ensureFactoryAuthUser(
   if (existing) return existing;
   if (!provider) return undefined;
 
-  const token = getBearerToken(c.req.header('Authorization'));
+  const token = requestAuthToken(c);
   const user = await authenticateRequest(provider, token, c.req.raw);
   if (!user) return undefined;
 
@@ -582,7 +701,7 @@ function authMeta(provider: IMastraAuthProvider): {
  * sign in from the same payload that tells it that it is signed out.
  */
 async function handleAuthMe(provider: IMastraAuthProvider, c: Context): Promise<Response> {
-  const token = getBearerToken(c.req.header('Authorization'));
+  const token = requestAuthToken(c);
   const user = await authenticateRequest(provider, token, c.req.raw);
   const meta = authMeta(provider);
   if (!user) {
@@ -759,8 +878,24 @@ function providerAuthRoutes(provider: IMastraAuthProvider, publicUrl?: string): 
                 expiresAt: result.tokens.expiresAt,
                 organizationId: resultUser.organizationId,
               });
-              for (const [key, value] of Object.entries(provider.getSessionHeaders(session))) {
-                c.header(key, value, { append: true });
+              const secret = authSessionSecret();
+              if (hostOwnsSessionCookie() && secret !== undefined) {
+                // The host mints its own cookie: signed, `__Host-` prefixed
+                // where the deployment allows it, and read back by
+                // `requestAuthToken` rather than by each provider re-deriving
+                // it from a header. `createSession` above is still the
+                // provider's own record of the session — only the cookie moves.
+                c.header(
+                  'Set-Cookie',
+                  mintSessionCookie(result.tokens.accessToken, { ...sessionCookieSite(), secret }),
+                  {
+                    append: true,
+                  },
+                );
+              } else {
+                for (const [key, value] of Object.entries(provider.getSessionHeaders(session))) {
+                  c.header(key, value, { append: true });
+                }
               }
             }
             return c.redirect(returnTo);
@@ -783,7 +918,7 @@ function providerAuthRoutes(provider: IMastraAuthProvider, publicUrl?: string): 
           }
           // Clear the session cookie regardless of whether the provider
           // returned a logout URL.
-          for (const cookie of providerClearCookies(provider)) {
+          for (const cookie of sessionClearCookies(provider)) {
             c.header('Set-Cookie', cookie, { append: true });
           }
           return c.redirect(logoutUrl ?? '/');
@@ -820,7 +955,7 @@ function providerAuthRoutes(provider: IMastraAuthProvider, publicUrl?: string): 
           } catch {
             // No/invalid session: nothing to revoke.
           }
-          for (const cookie of providerClearCookies(provider)) {
+          for (const cookie of sessionClearCookies(provider)) {
             c.header('Set-Cookie', cookie, { append: true });
           }
           return c.redirect('/');
@@ -956,7 +1091,7 @@ export function createFactoryAuthGate(provider: IMastraAuthProvider) {
       return next();
     }
 
-    const token = getBearerToken(c.req.header('Authorization'));
+    const token = requestAuthToken(c);
     // A slow verification here delays EVERY protected request — surface
     // outliers so auth-backend latency is attributable from server logs.
     const user = await timedAboveThreshold('auth.gate.authenticate', 1_000, () =>

@@ -794,3 +794,235 @@ describe('identity resolution under the compat flag', () => {
     expect(on).toBeNull();
   });
 });
+
+/**
+ * B9: the session cookie — who mints it, who reads it, who clears it.
+ *
+ * Two sources exist and both have to keep working. A provider that returns
+ * `cookies` from `handleCallback` has already built its own session cookie
+ * (WorkOS and Okta both do), and the host must not second-guess it. A provider
+ * that returns only tokens leaves the cookie to the host, and that is the branch
+ * the kit takes over: signed, `__Host-` prefixed where the deployment allows it,
+ * and read back by the host rather than re-derived from a header by each
+ * provider.
+ *
+ * The host path is behind the compat flag AND a configured secret, so these
+ * reload the module the same way the identity tests do.
+ */
+describe('session cookie', () => {
+  const SECRET = 'a'.repeat(32);
+
+  async function importAuthWith(
+    flag: string | undefined,
+    secret: string | undefined,
+  ): Promise<typeof import('./auth.js')> {
+    if (flag === undefined) delete process.env.MASTRACODE_AUTH_IDENTITY_V2;
+    else process.env.MASTRACODE_AUTH_IDENTITY_V2 = flag;
+    if (secret === undefined) delete process.env.MASTRACODE_AUTH_SESSION_SECRET;
+    else process.env.MASTRACODE_AUTH_SESSION_SECRET = secret;
+    vi.resetModules();
+    return import('./auth.js');
+  }
+
+  afterEach(() => {
+    delete process.env.MASTRACODE_AUTH_IDENTITY_V2;
+    delete process.env.MASTRACODE_AUTH_SESSION_SECRET;
+    vi.resetModules();
+  });
+
+  /** An SSO provider whose handleCallback returns `cookies`, `tokens`, or both. */
+  function callbackProvider(result: Record<string, unknown>, extra: Record<string, unknown> = {}): IMastraAuthProvider {
+    return fakeProvider({
+      ...ssoCapability({ handleCallback: vi.fn(async () => result) }),
+      ...extra,
+    });
+  }
+
+  /** Session capability, so the tokens-only branch is reachable. */
+  function sessionCapabilityFor(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      createSession: vi.fn(async () => ({ id: 'sess-1' })),
+      validateSession: vi.fn(),
+      getSessionHeaders: vi.fn(() => ({ 'Set-Cookie': 'provider_session=built-by-provider; Path=/' })),
+      ...overrides,
+    };
+  }
+
+  async function callbackSetCookies(
+    auth: typeof import('./auth.js'),
+    provider: IMastraAuthProvider,
+  ): Promise<string[]> {
+    const app = new Hono();
+    auth.mountFactoryAuth(app, { provider });
+    const res = await app.request('/auth/callback?code=ok&state=id%7C%2Fdash');
+    return res.headers.getSetCookie();
+  }
+
+  describe('source 1: the provider built its own cookie', () => {
+    it('forwards provider cookies verbatim, flag off', async () => {
+      const auth = await importAuthWith(undefined, undefined);
+      const cookies = await callbackSetCookies(
+        auth,
+        callbackProvider({ user: { id: 'u1' }, cookies: ['wos_session=sealed; Path=/'] }),
+      );
+      expect(cookies).toContain('wos_session=sealed; Path=/');
+    });
+
+    it('still forwards them verbatim with the host cookie switched on', async () => {
+      // The host does not second-guess a provider that already built a session.
+      const auth = await importAuthWith('true', SECRET);
+      const cookies = await callbackSetCookies(
+        auth,
+        callbackProvider({ user: { id: 'u1' }, cookies: ['wos_session=sealed; Path=/'] }),
+      );
+      expect(cookies).toContain('wos_session=sealed; Path=/');
+      expect(cookies.some(cookie => cookie.includes('mastra_factory_session'))).toBe(false);
+    });
+  });
+
+  describe('source 2: the provider returned tokens and left the cookie to the host', () => {
+    const tokensResult = { user: { id: 'u1' }, tokens: { accessToken: 'access-1' } };
+
+    it('uses the provider session headers when the host cookie is off', async () => {
+      const auth = await importAuthWith(undefined, undefined);
+      const cookies = await callbackSetCookies(auth, callbackProvider(tokensResult, sessionCapabilityFor()));
+      expect(cookies).toContain('provider_session=built-by-provider; Path=/');
+    });
+
+    it('mints a signed __Host- cookie when the host owns the session', async () => {
+      const auth = await importAuthWith('true', SECRET);
+      const cookies = await callbackSetCookies(auth, callbackProvider(tokensResult, sessionCapabilityFor()));
+      const session = cookies.find(cookie => cookie.startsWith('__Host-mastra_factory_session='));
+      expect(session).toBeDefined();
+      expect(session).toContain('HttpOnly');
+      expect(session).toContain('Secure');
+      expect(session).toContain('Path=/');
+      // The provider's own header is not also written: one session, one cookie.
+      expect(cookies.some(cookie => cookie.startsWith('provider_session='))).toBe(false);
+      // Signed, so the access token is not sitting there in the clear.
+      expect(session).not.toContain('access-1');
+    });
+
+    it('falls back to the provider when the flag is on but no secret is configured', async () => {
+      // Minting refuses a weak secret, and there is no safe default to invent,
+      // so a half-configured deployment keeps working rather than failing every
+      // sign-in.
+      const auth = await importAuthWith('true', undefined);
+      const cookies = await callbackSetCookies(auth, callbackProvider(tokensResult, sessionCapabilityFor()));
+      expect(cookies).toContain('provider_session=built-by-provider; Path=/');
+      expect(cookies.some(cookie => cookie.includes('mastra_factory_session'))).toBe(false);
+    });
+
+    it('round trips: the minted cookie authenticates the next request', async () => {
+      const auth = await importAuthWith('true', SECRET);
+      const authenticateToken = vi.fn(async (token: string) =>
+        token === 'access-1' ? { id: 'u1', organizationId: 'org_a' } : null,
+      );
+      const provider = callbackProvider(tokensResult, { ...sessionCapabilityFor(), authenticateToken });
+
+      const app = new Hono();
+      auth.mountFactoryAuth(app, { provider });
+      app.get('/web/whoami', c => c.json(auth.factoryAuthTenant(c) ?? { tenant: null }));
+
+      const setCookies = (await app.request('/auth/callback?code=ok&state=id%7C%2Fdash')).headers.getSetCookie();
+      const session = setCookies.find(cookie => cookie.startsWith('__Host-mastra_factory_session='))!;
+      const cookieHeader = session.split(';')[0]!;
+
+      // No Authorization header — a browser navigation, exactly as it arrives.
+      const res = await app.request('/web/whoami', { headers: { Accept: 'application/json', Cookie: cookieHeader } });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ orgId: 'org_a', userId: 'u1' });
+      expect(authenticateToken).toHaveBeenCalledWith('access-1', expect.anything());
+    });
+
+    it('rejects a tampered cookie as if it were absent', async () => {
+      const auth = await importAuthWith('true', SECRET);
+      const app = new Hono();
+      // Only the real token authenticates, so a cookie that fails its signature
+      // check yields '' and the request is refused. A provider that accepted
+      // anything would pass this test without the signature mattering at all.
+      auth.mountFactoryAuth(app, {
+        provider: fakeProvider({
+          authenticateToken: vi.fn(async (token: string) => (token === 'access-1' ? { id: 'u1' } : null)),
+        }),
+      });
+      app.get('/web/whoami', c => c.json(auth.factoryAuthTenant(c) ?? { tenant: null }));
+
+      const res = await app.request('/web/whoami', {
+        headers: { Accept: 'application/json', Cookie: '__Host-mastra_factory_session=v1.forged.999.nope' },
+      });
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe('clearing on sign-out', () => {
+    it('clears the host cookie alongside the provider cookies', async () => {
+      const auth = await importAuthWith('true', SECRET);
+      const app = new Hono();
+      auth.mountFactoryAuth(app, { provider: fakeProvider(ssoCapability()) });
+
+      const cookies = (await app.request('/auth/logout')).headers.getSetCookie();
+      // Both, because a user upgraded across the switch still holds the old one.
+      expect(cookies.some(cookie => cookie.startsWith('fake_session='))).toBe(true);
+      const host = cookies.find(cookie => cookie.startsWith('__Host-mastra_factory_session='));
+      expect(host).toBeDefined();
+      expect(host).toContain('Max-Age=0');
+    });
+
+    it('clears only the provider cookies when the host owns none', async () => {
+      const auth = await importAuthWith(undefined, undefined);
+      const app = new Hono();
+      auth.mountFactoryAuth(app, { provider: fakeProvider(ssoCapability()) });
+
+      const cookies = (await app.request('/auth/logout')).headers.getSetCookie();
+      expect(cookies.some(cookie => cookie.startsWith('fake_session='))).toBe(true);
+      expect(cookies.some(cookie => cookie.includes('mastra_factory_session'))).toBe(false);
+    });
+  });
+
+  /**
+   * The un-join heuristic in `providerClearCookies`. `getClearSessionHeaders`
+   * returns one string slot, so a provider clearing two cookies folds them with
+   * a comma — the same folding `Headers.get('set-cookie')` performs. Appending
+   * that joined value as one header clears neither cookie.
+   */
+  describe('splitting a provider header that folded several cookies together', () => {
+    async function clearCookiesFor(setCookie: string): Promise<string[]> {
+      const auth = await importAuthWith(undefined, undefined);
+      const app = new Hono();
+      auth.mountFactoryAuth(app, {
+        provider: fakeProvider(ssoCapability({ getClearSessionHeaders: vi.fn(() => ({ 'Set-Cookie': setCookie })) })),
+      });
+      return (await app.request('/auth/logout')).headers.getSetCookie();
+    }
+
+    it('splits two folded cookies back into two headers', async () => {
+      const cookies = await clearCookiesFor('a=; Path=/; Max-Age=0, b=; Path=/; Max-Age=0');
+      expect(cookies).toContain('a=; Path=/; Max-Age=0');
+      expect(cookies).toContain('b=; Path=/; Max-Age=0');
+    });
+
+    it('does NOT split on the comma inside an Expires date', async () => {
+      // This is the malformed-header case the lookahead exists for. A plain
+      // split(',') yields `a=; Path=/; Expires=Thu` and ` 01 Jan 1970 ...`,
+      // neither of which clears anything, and the failure is invisible: sign-out
+      // returns 302 and the user stays signed in.
+      const folded =
+        'a=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT, b=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT';
+      const cookies = await clearCookiesFor(folded);
+      expect(cookies).toContain('a=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT');
+      expect(cookies).toContain('b=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT');
+      expect(cookies.some(cookie => cookie.startsWith('01 Jan'))).toBe(false);
+    });
+
+    it('leaves a single unfolded cookie alone', async () => {
+      const cookies = await clearCookiesFor('only=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT');
+      expect(cookies).toContain('only=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT');
+    });
+
+    it('emits nothing when the provider offers no clearing header', async () => {
+      const cookies = await clearCookiesFor('');
+      expect(cookies.some(cookie => cookie.startsWith('fake_session='))).toBe(false);
+    });
+  });
+});
