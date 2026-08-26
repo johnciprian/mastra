@@ -65,7 +65,18 @@ Run a hosted login by sending the browser to a page the identity provider owns, 
 | `getLogoutUrl` | `(redirectUri: string, request?: Request) => string \| null \| Promise<string \| null>` | No |
 | `getLoginCookies` | `(redirectUri: string, state: string) => string[] \| undefined` | No |
 
-`SSOLoginConfig` carries `provider` and `text`, plus optional `icon` and `description`. `SSOCallbackResult` carries the authenticated `user` and a `tokens` object holding `accessToken` and optionally `refreshToken`, `idToken`, and `expiresAt`.
+`SSOLoginConfig` carries `provider: string` and `text: string`, plus optional `icon: string` and `description: string`. `SSOCallbackResult` carries the authenticated `user`, an optional `cookies: string[]` of `Set-Cookie` values, and a `tokens` object:
+
+| Field | Type | Required |
+| - | - | - |
+| `accessToken` | `string` | Yes |
+| `refreshToken` | `string` | No |
+| `idToken` | `string` | No |
+| `expiresAt` | `Date` | No |
+
+`expiresAt` is a `Date`, while an OAuth token response reports `expires_in` as a number of seconds. Convert rather than pass through: `new Date(Date.now() + expires_in * 1000)`.
+
+Neither `SSOLoginConfig` nor `SSOCallbackResult` is exported from `@mastra/core/server` or from the kit, so you can't import either to annotate a return. Declare `implements ISSOProvider<TUser>` on your class and let the interface constrain the returns instead.
 
 Treat `state` as opaque. The host mints it, and the value has to survive the round trip unchanged. See [Obligations the interfaces don't state](#obligations-the-interfaces-dont-state).
 
@@ -170,7 +181,7 @@ Carry both of these into your own code:
 
 `toAuthDescriptor(provider)` from `@mastra/factory-auth/capabilities` reduces a provider to a record a browser can render, so a sign-in screen branches on declared capability instead of on a provider name.
 
-```typescript title="src/auth/me.ts"
+```typescript title="src/auth/me.ts" docscheck=statements docscheck-scaffold=provider
 import { toAuthDescriptor } from '@mastra/factory-auth/capabilities'
 
 const descriptor = toAuthDescriptor(provider)
