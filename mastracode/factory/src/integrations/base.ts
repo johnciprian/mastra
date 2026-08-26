@@ -205,13 +205,17 @@ export interface FactoryIntegration {
    * Session-scoped tools (e.g. GitHub's PR subscribe/unsubscribe). Optional
    * capability, resolved synchronously per request.
    */
-  sessionTools?(args: { requestContext: RequestContext }): IntegrationTools;
+  sessionTools?(args: { requestContext: RequestContext; auth: RouteAuth }): IntegrationTools;
   /**
    * Optional provider-owned observer for successful or failed tool calls.
    * The factory invokes every configured observer independently so one
    * integration cannot prevent another from observing the same tool result.
    */
-  postToolObserver?(args: { toolContext: IntegrationPostToolContext; requestContext?: RequestContext }): Promise<void>;
+  postToolObserver?(args: {
+    toolContext: IntegrationPostToolContext;
+    requestContext?: RequestContext;
+    auth: RouteAuth;
+  }): Promise<void>;
   /**
    * Background workers the integration needs running for its lifecycle
    * (e.g. polling an upstream that doesn't support webhooks). Optional
