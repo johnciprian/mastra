@@ -476,6 +476,118 @@ async function authenticateRequest(
   }
 }
 
+/** The three `ISessionProvider` members transparent refresh needs. */
+type SessionRefreshProvider = Pick<
+  ISessionProvider,
+  'refreshSession' | 'getSessionIdFromRequest' | 'getSessionHeaders'
+>;
+
+/**
+ * Whether a provider can refresh a session without sending the user back
+ * through a login.
+ *
+ * All three members are checked, not `isSessionProvider`: that guard narrows on
+ * `createSession` and `validateSession`, so a provider can satisfy it while
+ * implementing none of these.
+ */
+function supportsSessionRefresh(
+  provider: IMastraAuthProvider,
+): provider is IMastraAuthProvider & SessionRefreshProvider {
+  const candidate = provider as Partial<ISessionProvider>;
+  return (
+    typeof candidate.getSessionIdFromRequest === 'function' &&
+    typeof candidate.refreshSession === 'function' &&
+    typeof candidate.getSessionHeaders === 'function'
+  );
+}
+
+/** What the gate learned about this request, plus any cookies it must send back. */
+interface AuthenticatedRequest {
+  user: FactoryAuthUser | null;
+  /** Response headers carrying a refreshed session, when one was minted. */
+  headers?: Record<string, string>;
+}
+
+/**
+ * Authenticate a request, transparently refreshing an expired session once
+ * before giving up.
+ *
+ * WHY THIS EXISTS
+ *
+ * `packages/server` already does this on `/api/*`, and the Factory did not. The
+ * same provider, with a working `refreshSession`, therefore kept an API client
+ * signed in indefinitely while signing a browser out of the Factory the moment
+ * its access token expired — the same session, two different lifetimes,
+ * depending only on which host served the route. That is the divergence this
+ * closes; it is not a new capability.
+ *
+ * HOW A REFRESH IS FED BACK IN
+ *
+ * A provider reads its session from the request's `Cookie` header, so handing
+ * it a refreshed session means handing it a request that carries one. The new
+ * cookie is built from `getSessionHeaders`, spliced into a copy of the original
+ * request, and the cookie's value is passed as the token as well — providers
+ * differ on which of the two they read, and the two agree here.
+ *
+ * FAILURE IS ALWAYS THE ORIGINAL 401
+ *
+ * A refresh that returns nothing, throws, or produces a session that still does
+ * not authenticate leaves `user` null and drops the headers. Sending a
+ * `Set-Cookie` for a session that did not work would replace a cookie the
+ * browser has with one that is no better, and the person would be signed out
+ * with a fresh cookie in hand.
+ */
+async function authenticateWithRefresh(
+  provider: IMastraAuthProvider,
+  token: string,
+  c: Context,
+): Promise<AuthenticatedRequest> {
+  const user = await authenticateRequest(provider, token, c.req.raw);
+  if (user) return { user };
+  if (!supportsSessionRefresh(provider)) return { user: null };
+
+  try {
+    const sessionId = provider.getSessionIdFromRequest(c.req.raw);
+    if (!sessionId) return { user: null };
+
+    const session = await provider.refreshSession(sessionId);
+    if (!session) return { user: null };
+
+    const headers = provider.getSessionHeaders(session);
+    const cookiePair = Object.entries(headers)
+      .filter(([key]) => key.toLowerCase() === 'set-cookie')
+      .map(([, value]) => value.split(';')[0]?.trim() ?? '')
+      .filter(pair => pair.length > 0)
+      .join('; ');
+    if (!cookiePair) return { user: null };
+
+    const refreshedRequest = new Request(c.req.raw.url, {
+      method: c.req.raw.method,
+      headers: new Headers(c.req.raw.headers),
+    });
+    refreshedRequest.headers.set('Cookie', cookiePair);
+    const refreshedValue = cookiePair.includes('=') ? cookiePair.slice(cookiePair.indexOf('=') + 1) : cookiePair;
+
+    const refreshedUser = await authenticateRequest(provider, refreshedValue, refreshedRequest);
+    if (!refreshedUser) return { user: null };
+
+    // When this host owns the session cookie, the browser is holding ours
+    // rather than the provider's, so the refreshed token has to be re-minted
+    // under our name too — otherwise the next request presents the old one.
+    const secret = authSessionSecret();
+    if (hostOwnsSessionCookie() && secret !== undefined) {
+      return {
+        user: refreshedUser,
+        headers: { ...headers, 'Set-Cookie': mintSessionCookie(refreshedValue, { ...sessionCookieSite(), secret }) },
+      };
+    }
+    return { user: refreshedUser, headers };
+  } catch {
+    // A provider that throws mid-refresh is a provider that cannot refresh.
+    return { user: null };
+  }
+}
+
 /**
  * Bootstrap a personal org for no-org accounts so org-scoped features (GitHub
  * connect) work without leaving the app. Mutates the resolved user so the
@@ -1188,9 +1300,16 @@ export function createFactoryAuthGate(provider: IMastraAuthProvider) {
     const token = requestAuthToken(c);
     // A slow verification here delays EVERY protected request — surface
     // outliers so auth-backend latency is attributable from server logs.
-    const user = await timedAboveThreshold('auth.gate.authenticate', 1_000, () =>
-      authenticateRequest(provider, token, c.req.raw),
+    const { user, headers } = await timedAboveThreshold('auth.gate.authenticate', 1_000, () =>
+      authenticateWithRefresh(provider, token, c),
     );
+
+    // A refreshed session has to reach the browser even on the request that
+    // triggered the refresh, or the next one presents the same expired cookie
+    // and refreshes again — working, but re-refreshing forever.
+    for (const [key, value] of Object.entries(headers ?? {})) {
+      c.header(key, value, { append: true });
+    }
 
     if (user) {
       // Bootstrap a personal org for no-org accounts so the org id resolves on
