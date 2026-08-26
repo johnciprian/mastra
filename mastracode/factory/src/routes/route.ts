@@ -35,6 +35,20 @@ export interface RouteAuth {
    * from "you are not allowed" for a user who simply was not in a team.
    */
   tenant(c: Context): { orgId: string; userId: string } | undefined;
+  /**
+   * Tenant identity for an agent-run request context, for callers that never
+   * see a Hono `Context`.
+   *
+   * Dynamic workspace resolution, rule tools and session subscriptions all run
+   * inside an agent turn, under a `RequestContext`. They used to read identity
+   * out of that context themselves, importing the auth module directly — the
+   * three places where this port was the preferred identity path rather than
+   * the only one. Same answer as {@link tenant}, same organization resolution,
+   * same treatment of a blank id.
+   */
+  runTenant(
+    requestContext: { get: (key: string) => unknown } | undefined,
+  ): { orgId: string; userId: string } | undefined;
   /** Fail-closed check that the caller administers the given organization. */
   isOrganizationAdmin(c: Context, organizationId: string): Promise<boolean>;
 }

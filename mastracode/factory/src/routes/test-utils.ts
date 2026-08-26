@@ -55,6 +55,11 @@ export function fakeRouteAuth(
   return {
     enabled: () => enabled,
     ensureUser: async c => user(c),
+    runTenant: requestContext => {
+      const raw = requestContext?.get('user') as TestAuthUser | undefined;
+      if (!raw?.id) return undefined;
+      return { orgId: resolveOrganizationId({ id: raw.id, organizationId: raw.organizationId }), userId: raw.id };
+    },
     tenant: c => {
       const u = user(c);
       // Through the same resolver the real seam uses, so a fixture that omits

@@ -12,7 +12,7 @@ import { LocalSandbox, LocalSkillSource, Workspace } from '@mastra/core/workspac
 import type { SkillSource, SkillSourceEntry, SkillSourceStat } from '@mastra/core/workspace';
 import { resolveOrganizationId } from '@mastra/factory-auth/organizations';
 
-import { getFactoryAuthUserFromContext, getFactoryAuthUserId } from './auth.js';
+import { factoryRunTenant, getFactoryAuthUserFromContext, getFactoryAuthUserId } from './auth.js';
 import type { MastraFactorySandboxConfig } from './factory.js';
 import type { GithubIntegration } from './integrations/github/integration.js';
 import { getGithubPat } from './integrations/github/pat.js';
@@ -413,7 +413,7 @@ export function createWorkspaceFactory(options: CreateWorkspaceFactoryOptions = 
     const resolveGithubPatKind = async (fallback: GithubPatKind): Promise<GithubPatKind> => {
       if (!workItems) return 'default';
       try {
-        const address = getFactorySessionAddress(requestContext);
+        const address = getFactorySessionAddress(requestContext, { runTenant: factoryRunTenant });
         const runBinding = address ? await workItems.findRunBindingBySession(address) : null;
         return runBinding?.role === 'review' && runBinding.status === 'active' && runBinding.orgId === session.orgId
           ? 'reviewer'
