@@ -4,8 +4,7 @@ import type { ApiRoute, IUserProvider } from '@mastra/core/server';
 import { registerApiRoute } from '@mastra/core/server';
 import type { Context } from 'hono';
 
-import { getFactoryAuthUser } from '../../../auth.js';
-import type { RouteAuth } from '../../../routes/route.js';
+import type { RouteAuth, RouteAuthProfile } from '../../../routes/route.js';
 import type { FactoryProjectsStorage } from '../projects/base.js';
 import type {
   AuditContext,
@@ -58,11 +57,15 @@ export interface AuditActorProfile {
 
 /**
  * Reserved metadata key on `AuditEventRow.metadata` that carries the acting
- * human user's display name and avatar captured from the auth context at
+ * human user's display name and avatar, taken from `RouteAuth.profile()` at
  * record time. Read back by `#resolveActorProfiles` so names/avatars work
  * for every auth provider without requiring an `IUserProvider.getUser(id)`
  * implementation — the Studio provider proxies through the shared API and
  * cannot resolve arbitrary users by id.
+ *
+ * Capturing at record time rather than resolving at read time is also what
+ * makes the trail an actual record: the name stored is the name the person had
+ * when they acted, and it survives them leaving the organization.
  */
 const ACTOR_PROFILE_METADATA_KEY = '__actorProfile';
 
@@ -83,13 +86,18 @@ function readStoredActorProfile(metadata: Record<string, unknown> | undefined): 
   return { ...(name ? { name } : {}), ...(avatarUrl ? { avatarUrl } : {}) };
 }
 
-function buildActorProfileMetadata(user: {
-  name?: string;
-  email?: string;
-  avatarUrl?: string;
-}): StoredActorProfile | undefined {
-  const name = user.name?.trim() || user.email?.trim();
-  const avatarUrl = user.avatarUrl?.trim();
+/**
+ * Reduce the port's display profile to what gets stamped on the event.
+ *
+ * Email stands in for a missing name because an address is a person a reader
+ * recognizes, where a provider user id is not. Neither field is stored when the
+ * provider supplied neither: an entry with no display fields reads back as
+ * "resolve this actor some other way", which is what `#resolveActorProfiles`
+ * then does, rather than as an actor whose name is the empty string.
+ */
+function buildActorProfileMetadata(profile: RouteAuthProfile): StoredActorProfile | undefined {
+  const name = profile.name?.trim() || profile.email?.trim();
+  const avatarUrl = profile.avatarUrl?.trim();
   if (!name && !avatarUrl) return undefined;
   return { ...(name ? { name } : {}), ...(avatarUrl ? { avatarUrl } : {}) };
 }
@@ -225,8 +233,8 @@ export class AuditDomain implements AuditEmitter, AuditAgentEmitter {
     try {
       const tenant = this.#auth.tenant(context);
       if (!tenant?.orgId) return;
-      const user = getFactoryAuthUser(context);
-      const actorProfile = user ? buildActorProfileMetadata(user) : undefined;
+      const profile = this.#auth.profile(context);
+      const actorProfile = profile ? buildActorProfileMetadata(profile) : undefined;
       const metadata = actorProfile
         ? { ...input.metadata, [ACTOR_PROFILE_METADATA_KEY]: actorProfile }
         : input.metadata;

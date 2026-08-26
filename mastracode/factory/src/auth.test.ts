@@ -3,10 +3,12 @@ import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  createFactoryRouteAuth,
   getFactoryAuthOrgId,
   getFactoryAuthUser,
   getFactoryAuthUserId,
   mountFactoryAuth,
+  factoryAuthProfile,
   factoryAuthTenant,
 } from './auth.js';
 
@@ -48,6 +50,8 @@ function hostedProvider(): IMastraAuthProvider {
     name: 'hosted',
     getLoginUrl: mockGetLoginUrl,
     handleCallback: mockHandleCallback,
+    // Third member `ISSOProvider` requires; the guard tests all three.
+    getLoginButtonConfig: () => ({ label: 'Sign in' }),
     authenticateToken: mockAuthenticate,
     authorizeUser: async () => true,
     getLogoutUrl: mockGetLogoutUrl,
@@ -632,6 +636,97 @@ describe('org-tenant identity', () => {
 });
 
 /**
+ * `RouteAuth.profile()` — the port's answer to "who is this, to a reader?".
+ *
+ * It exists because the audit trail needed a name and an avatar, the port had
+ * no member that could give it one, and so the audit domain read the gate's
+ * `factoryAuthUser` context variable itself. That was the last identity read in
+ * this package that went around the port instead of through it. These tests
+ * pin the behaviour the domain now depends on; the structural guarantee that no
+ * new such read appears is `src/__tests__/route-auth-is-the-only-identity-path.test.ts`.
+ */
+describe('RouteAuth.profile', () => {
+  /** Mount the gate and expose the profile the seam resolves for the request. */
+  function profileApp() {
+    const app = new Hono();
+    mountFactoryAuth(app, { provider: hostedProvider() });
+    const auth = createFactoryRouteAuth(hostedProvider());
+    app.get('/web/whoami', c => c.json(auth.profile(c) ?? { profile: null }));
+    return app;
+  }
+
+  async function profileOf(app: Hono): Promise<unknown> {
+    const res = await app.request('/web/whoami', { headers: { Accept: 'application/json' } });
+    expect(res.status).toBe(200);
+    return res.json();
+  }
+
+  it('carries the display fields the provider supplied, under the tenant id', async () => {
+    mockAuthenticate.mockResolvedValue({
+      id: 'user_1',
+      organizationId: 'org_a',
+      name: 'Ada Lovelace',
+      email: 'ada@example.com',
+      avatarUrl: 'https://avatars.example/ada.png',
+    });
+
+    expect(await profileOf(profileApp())).toEqual({
+      id: 'user_1',
+      name: 'Ada Lovelace',
+      email: 'ada@example.com',
+      avatarUrl: 'https://avatars.example/ada.png',
+    });
+  });
+
+  it('reports an id-only profile for a provider that knows nothing else', async () => {
+    // A bearer-token provider that returns an id and no profile is a valid
+    // provider, not a broken one. The caller gets an actor it can still scope
+    // and attribute by id, rather than nothing at all.
+    mockAuthenticate.mockResolvedValue({ id: 'user_bare', organizationId: 'org_a' });
+
+    expect(await profileOf(profileApp())).toEqual({ id: 'user_bare' });
+  });
+
+  it('drops blank display fields rather than passing them through', async () => {
+    // A name of "  " renders as a missing name but is truthy in code, which is
+    // how an actor ends up looking present and nameless in the audit trail.
+    mockAuthenticate.mockResolvedValue({
+      id: 'user_blank',
+      organizationId: 'org_a',
+      name: '   ',
+      email: '',
+      avatarUrl: ' ',
+    });
+
+    expect(await profileOf(profileApp())).toEqual({ id: 'user_blank' });
+  });
+
+  it('agrees with tenant() about whether anybody is signed in', async () => {
+    // Two entry points that disagreed about the presence of a user would be
+    // worse than the context read this member replaced.
+    mockAuthenticate.mockResolvedValue(null);
+    const app = new Hono();
+    app.get('/web/whoami', c =>
+      c.json({ profile: factoryAuthProfile(c) ?? null, tenant: factoryAuthTenant(c) ?? null }),
+    );
+
+    const res = await app.request('/web/whoami', { headers: { Accept: 'application/json' } });
+    expect(await res.json()).toEqual({ profile: null, tenant: null });
+  });
+
+  it('treats a blank id as no user, exactly as tenant() does', async () => {
+    const app = new Hono();
+    app.get('/web/whoami', c => {
+      c.set('factoryAuthUser' as never, { id: '   ', name: 'Ghost' } as never);
+      return c.json({ profile: factoryAuthProfile(c) ?? null, tenant: factoryAuthTenant(c) ?? null });
+    });
+
+    const res = await app.request('/web/whoami', { headers: { Accept: 'application/json' } });
+    expect(await res.json()).toEqual({ profile: null, tenant: null });
+  });
+});
+
+/**
  * The PKCE round trip: a verifier written as a login cookie has to be readable
  * again at the callback.
  *
@@ -668,6 +763,7 @@ describe('mountFactoryAuth PKCE round trip', () => {
     const provider = {
       name: 'pkce',
       getLoginUrl: () => 'https://idp.example/authorize',
+      getLoginButtonConfig: () => ({ label: 'Sign in' }),
       getLoginCookies: () => [`pkce_verifier=${verifier}; Path=/; HttpOnly; Max-Age=600`],
       setCallbackCookieHeader(header: string | null) {
         seenCookieHeaders.push(header);

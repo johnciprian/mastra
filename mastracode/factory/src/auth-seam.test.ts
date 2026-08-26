@@ -33,11 +33,20 @@ function fakeProvider(overrides: Record<string, unknown> = {}): IMastraAuthProvi
   } as unknown as IMastraAuthProvider;
 }
 
-/** SSO capability mixin (makes `isSSOProvider` true). */
+/**
+ * SSO capability mixin (makes `isSSOProvider` true).
+ *
+ * Every member `ISSOProvider` requires, which is what the guard tests. It used
+ * to carry two of the three and pass anyway; the guards were narrowed to their
+ * interfaces, so a fixture that stops short of the required set no longer
+ * stands in for a provider that has it - which is the point of the narrowing,
+ * and the reason `getLoginButtonConfig` is here.
+ */
 function ssoCapability(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     getLoginUrl: vi.fn(async () => 'https://fake.example/login'),
     handleCallback: vi.fn(async () => ({ user: {}, tokens: { accessToken: 't' }, cookies: ['fake_session=abc'] })),
+    getLoginButtonConfig: vi.fn(() => ({ label: 'Sign in' })),
     getLogoutUrl: vi.fn(async () => 'https://fake.example/logout'),
     getClearSessionHeaders: vi.fn(() => ({ 'Set-Cookie': 'fake_session=; Path=/; Max-Age=0' })),
     ...overrides,
@@ -175,8 +184,7 @@ describe('mountFactoryAuth with an explicit custom provider', () => {
     const { app } = buildApp(
       fakeProvider({
         authenticateToken: vi.fn(async () => null),
-        signIn: vi.fn(),
-        isSignUpEnabled: () => false,
+        ...credentialsCapability({ isSignUpEnabled: () => false }),
       }),
     );
     const res = await app.request('/auth/me');
@@ -392,16 +400,20 @@ interface AuthMeBody {
 
 /** Credentials capability mixin (makes `isCredentialsProvider` true). */
 function credentialsCapability(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return { signIn: vi.fn(), ...overrides };
+  // Both members `ICredentialsProvider` requires. See ssoCapability above.
+  return { signIn: vi.fn(), signUp: vi.fn(), ...overrides };
 }
 
-/** Session capability mixin (makes `isSessionProvider` true). */
+/** Session capability mixin (makes `isSessionProvider` true). All seven required members. */
 function sessionCapability(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     createSession: vi.fn(),
     validateSession: vi.fn(),
     refreshSession: vi.fn(),
     destroySession: vi.fn(),
+    getSessionIdFromRequest: vi.fn(() => null),
+    getSessionHeaders: vi.fn(() => ({})),
+    getClearSessionHeaders: vi.fn(() => ({})),
     ...overrides,
   };
 }
@@ -484,8 +496,11 @@ describe('/auth/me capability descriptor', () => {
   });
 
   it('offers no session revocation when the provider only looks like a session provider', async () => {
-    // isSessionProvider narrows on createSession/validateSession alone, so a
-    // provider can pass the guard with no destroySession to call.
+    // Not an ISessionProvider at all once refreshSession and destroySession
+    // are gone - the guard requires all seven. The two features are read off
+    // their own methods rather than off the guard, so both answer false, and
+    // logout stays true on the strength of getClearSessionHeaders: there is
+    // still a way to end the session in the browser.
     const body = await authMe(
       fakeProvider({ ...sessionCapability({ refreshSession: undefined, destroySession: undefined }) }),
     );
@@ -895,12 +910,23 @@ describe('session cookie', () => {
     });
   }
 
-  /** Session capability, so the tokens-only branch is reachable. */
+  /**
+   * Session capability, so the tokens-only branch is reachable.
+   *
+   * All seven members `ISessionProvider` requires. The branch under test is
+   * gated on `isSessionProvider`, which tests the full required set, so a fake
+   * carrying three of them stops reaching the code these tests are about. Every
+   * provider that actually runs this path has all seven.
+   */
   function sessionCapabilityFor(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     return {
       createSession: vi.fn(async () => ({ id: 'sess-1' })),
       validateSession: vi.fn(),
+      destroySession: vi.fn(),
+      refreshSession: vi.fn(),
+      getSessionIdFromRequest: vi.fn(() => null),
       getSessionHeaders: vi.fn(() => ({ 'Set-Cookie': 'provider_session=built-by-provider; Path=/' })),
+      getClearSessionHeaders: vi.fn(() => ({})),
       ...overrides,
     };
   }
@@ -1320,8 +1346,9 @@ describe('session refresh', () => {
   });
 
   it('401s without refreshing when the provider cannot refresh', async () => {
-    // isSessionProvider narrows on createSession/validateSession, so a provider
-    // can pass that guard with none of the three refresh members.
+    // supportsSessionRefresh asks for its three members directly rather than
+    // asking isSessionProvider, so this provider is refused for the right
+    // reason: it has no refreshSession, whatever else it does or does not have.
     const provider = fakeProvider({
       authenticateToken: vi.fn(async () => null),
       createSession: vi.fn(),
@@ -1696,9 +1723,10 @@ describe('BACKEND EXIT GATE (flag ON)', () => {
       ...ssoCapability({
         handleCallback: vi.fn(async () => ({ user: { id: 'u-host' }, tokens: { accessToken: 'host-token' } })),
       }),
-      createSession: vi.fn(async () => ({ id: 'sess' })),
-      validateSession: vi.fn(),
-      getSessionHeaders: vi.fn(() => ({ 'Set-Cookie': 'ignored=1' })),
+      ...sessionCapability({
+        createSession: vi.fn(async () => ({ id: 'sess' })),
+        getSessionHeaders: vi.fn(() => ({ 'Set-Cookie': 'ignored=1' })),
+      }),
       authenticateToken: vi.fn(async (token: string) => (token === 'host-token' ? { id: 'u-host' } : null)),
     });
     const app = board(auth, provider);
@@ -1812,9 +1840,7 @@ describe('BACKEND EXIT GATE (flag ON)', () => {
           tokens: { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: 123 },
         })),
       }),
-      createSession,
-      validateSession: vi.fn(),
-      getSessionHeaders: vi.fn(() => ({ 'Set-Cookie': 'provider=1' })),
+      ...sessionCapability({ createSession, getSessionHeaders: vi.fn(() => ({ 'Set-Cookie': 'provider=1' })) }),
     });
     const app = board(auth, provider);
 
@@ -1948,9 +1974,10 @@ describe('sessions across the flag flip', () => {
       ...ssoCapability({
         handleCallback: vi.fn(async () => ({ user: { id: 'u1' }, tokens: { accessToken: 'access-1' } })),
       }),
-      createSession: vi.fn(async () => ({ id: 's1' })),
-      validateSession: vi.fn(),
-      getSessionHeaders: vi.fn(() => ({ 'Set-Cookie': 'provider_session=legacy; Path=/' })),
+      ...sessionCapability({
+        createSession: vi.fn(async () => ({ id: 's1' })),
+        getSessionHeaders: vi.fn(() => ({ 'Set-Cookie': 'provider_session=legacy; Path=/' })),
+      }),
       authenticateToken: vi.fn(async (token: string) => (token === 'access-1' ? { id: 'u1' } : null)),
     });
 
