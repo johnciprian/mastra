@@ -270,7 +270,7 @@ RBAC requires a valid Enterprise Edition license. It works without a license in 
 
 Use `MastraRBACOkta` alongside an auth provider by passing it to the `rbac` option:
 
-```typescript title="src/mastra/index.ts"
+```typescript title="src/mastra/index.ts" docscheck=replace
 import { Mastra } from '@mastra/core'
 import { MastraAuthOkta, MastraRBACOkta } from '@mastra/auth-okta'
 
@@ -289,17 +289,26 @@ export const mastra = new Mastra({
 })
 ```
 
-To use Okta RBAC with a different auth provider, pass a `getUserId` function to resolve the Okta user ID from the other provider's user object:
+To use Okta RBAC with a different auth provider, pass a `getUserId` function to resolve the Okta user ID from the other provider's user object. `getUserId` receives `unknown`, because the user shape belongs to whichever provider authenticated the request, so narrow it to the shape that provider returns:
 
-```typescript title="src/mastra/index.ts"
+```typescript title="src/mastra/index.ts" docscheck=replace
+import { Mastra } from '@mastra/core'
 import { MastraAuthAuth0 } from '@mastra/auth-auth0'
 import { MastraRBACOkta } from '@mastra/auth-okta'
+
+type Auth0Profile = {
+  email?: string
+  metadata?: { oktaUserId?: string }
+}
 
 export const mastra = new Mastra({
   server: {
     auth: new MastraAuthAuth0(),
     rbac: new MastraRBACOkta({
-      getUserId: user => user.metadata?.oktaUserId || user.email,
+      getUserId: user => {
+        const profile = user as Auth0Profile
+        return profile.metadata?.oktaUserId ?? profile.email
+      },
       roleMapping: {
         Engineering: ['agents:*', 'workflows:*'],
         Admin: ['*'],

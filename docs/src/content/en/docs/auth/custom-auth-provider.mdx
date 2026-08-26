@@ -18,7 +18,7 @@ This page and [Write an auth provider](/docs/auth/write-a-provider) both build p
 
 This page covers gating an API with your own provider, using `@mastra/core/server` directly. It's the right page when your provider only has to protect `/api/*` for an application you control.
 
-[Write an auth provider](/docs/auth/write-a-provider) covers publishing a provider that runs the Software Factory, using `@mastra/factory-auth`. Follow that page when your provider needs a browser sign-in, organizations, or a conformance suite. Its examples import `MastraAuthRequest` from the kit rather than `HonoRequest` from `hono`, and they satisfy the four [provider obligations](/docs/auth/provider-obligations) that no interface states.
+[Write an auth provider](/docs/auth/write-a-provider) covers publishing a provider that runs the Software Factory, using `@mastra/factory-auth`. Follow that page when your provider needs a browser sign-in, organizations, or a conformance suite. Its examples import from the kit rather than from `@mastra/core/server`, and they satisfy the four [provider obligations](/docs/auth/provider-obligations) that no interface states.
 
 The base contract is the same either way. The kit re-exports it from `@mastra/core/server` and adds the pieces the Factory needs on top.
 
@@ -43,10 +43,9 @@ Create custom auth providers to support:
 
 Extend the `MastraAuthProvider` class and implement the required methods:
 
-```typescript
+```typescript title="src/my-auth-provider.ts"
 import { MastraAuthProvider } from '@mastra/core/server'
-import type { MastraAuthProviderOptions } from '@mastra/core/server'
-import type { HonoRequest } from 'hono'
+import type { MastraAuthProviderOptions, MastraAuthRequest } from '@mastra/core/server'
 
 // Define your user type
 type MyUser = {
@@ -89,7 +88,7 @@ export class MyAuthProvider extends MastraAuthProvider<MyUser> {
    * Verify the token and return the user
    * Return null if authentication fails
    */
-  async authenticateToken(token: string, request: HonoRequest): Promise<MyUser | null> {
+  async authenticateToken(token: string, request: MastraAuthRequest): Promise<MyUser | null> {
     try {
       const response = await fetch(`${this.apiUrl}/verify`, {
         method: 'POST',
@@ -116,7 +115,7 @@ export class MyAuthProvider extends MastraAuthProvider<MyUser> {
    * Check if the authenticated user is authorized
    * Return true to allow access, false to deny
    */
-  async authorizeUser(user: MyUser, request: HonoRequest): Promise<boolean> {
+  async authorizeUser(user: MyUser, request: MastraAuthRequest): Promise<boolean> {
     // Basic authorization: user must exist and have an ID
     return !!user?.id
   }
@@ -129,31 +128,31 @@ export class MyAuthProvider extends MastraAuthProvider<MyUser> {
 
 Verify the incoming token and return the user object if valid, or `null` if authentication fails.
 
-```typescript prettier:false
-async authenticateToken(token: string, request: HonoRequest): Promise<TUser | null>
+```typescript prettier:false docscheck=skip docscheck-reason="a method signature, shown without a body"
+authenticateToken(token: string, request: MastraAuthRequest): Promise<TUser | null>
 ```
 
 | Parameter | Type | Description |
 | - | - | - |
 | `token` | `string` | The bearer token extracted from the `Authorization` header |
-| `request` | `HonoRequest` | The incoming request object (access headers, cookies, etc.) |
+| `request` | `MastraAuthRequest` | The incoming request, either a web `Request` or a Hono-style request object |
 
 **Returns**: The user object if authentication succeeds, or `null` if it fails.
 
-The token is automatically extracted from the `Authorization: Bearer <token>` header. If you need to access other headers or cookies, use the `request` parameter.
+The token is automatically extracted from the `Authorization: Bearer <token>` header. `MastraAuthRequest` is a union of a web `Request` and a Hono-style request, so read other headers with `getRequestHeader(request, name)` and reach the underlying web request with `getWebRequest(request)`. Both come from `@mastra/core/server`.
 
 ### `authorizeUser()`
 
 Determine if the authenticated user is allowed to access the resource.
 
-```typescript prettier:false
-async authorizeUser(user: TUser, request: HonoRequest): Promise<boolean> | boolean
+```typescript prettier:false docscheck=skip docscheck-reason="a method signature, shown without a body"
+authorizeUser(user: TUser, request: MastraAuthRequest): Promise<boolean> | boolean
 ```
 
 | Parameter | Type | Description |
 | - | - | - |
 | `user` | `TUser` | The user object returned by `authenticateToken` |
-| `request` | `HonoRequest` | The incoming request object |
+| `request` | `MastraAuthRequest` | The incoming request, either a web `Request` or a Hono-style request object |
 
 **Returns**: `true` to allow access, `false` to deny (returns 403 Forbidden).
 
@@ -172,7 +171,7 @@ The `MastraAuthProviderOptions` interface supports these options:
 
 Configure which paths require authentication using pattern matching:
 
-```typescript
+```typescript title="src/mastra/index.ts" docscheck=statements
 const auth = new MyAuthProvider({
   // Paths that require authentication
   protected: [
@@ -194,7 +193,7 @@ const auth = new MyAuthProvider({
 
 Register your custom auth provider with the Mastra instance:
 
-```typescript
+```typescript title="src/mastra/index.ts"
 import { Mastra } from '@mastra/core'
 import { MyAuthProvider } from './my-auth-provider'
 
@@ -212,25 +211,31 @@ export const mastra = new Mastra({
 
 The `@mastra/auth` package provides utilities for common token verification patterns:
 
-### JWT Verification
+### JWT verification
 
-```typescript
+```typescript title="src/auth-helpers.ts"
 import { verifyHmac, verifyJwks, decodeToken, getTokenIssuer } from '@mastra/auth'
 
-// Verify HMAC-signed JWT
-const payload = await verifyHmac(token, 'your-secret-key')
+export async function inspectToken(token: string) {
+  // Verify an HMAC-signed JWT
+  const hmacPayload = await verifyHmac(token, 'your-secret-key')
 
-// Verify with JWKS (for OAuth providers)
-const payload = await verifyJwks(token, 'https://provider.com/.well-known/jwks.json')
+  // Verify with JWKS (for OAuth providers)
+  const jwksPayload = await verifyJwks(token, 'https://provider.com/.well-known/jwks.json')
 
-// Decode without verification (for inspection)
-const decoded = await decodeToken(token)
+  // Decode without verifying, for inspection
+  const decoded = await decodeToken(token)
 
-// Get the issuer from a decoded token
-const issuer = getTokenIssuer(decoded)
+  // Read the issuer off the decoded token
+  const issuer = getTokenIssuer(decoded)
+
+  return { hmacPayload, jwksPayload, issuer }
+}
 ```
 
-### Example: JWKS-based Provider
+Each verifier returns the token payload and throws when the token doesn't verify, so call them inside the `try` block of `authenticateToken` and return `null` from the `catch`.
+
+### Example: JWKS-based provider
 
 :::warning
 
@@ -238,7 +243,7 @@ This example gates an API. It doesn't meet the [provider obligations](/docs/auth
 
 :::
 
-```typescript
+```typescript title="src/my-jwks-auth.ts"
 import { MastraAuthProvider } from '@mastra/core/server'
 import type { MastraAuthProviderOptions } from '@mastra/core/server'
 import { verifyJwks } from '@mastra/auth'
@@ -300,7 +305,7 @@ export class MyJwksAuth extends MastraAuthProvider<MyUser> {
 
 Override the default authorization by providing a custom `authorizeUser` function:
 
-```typescript
+```typescript title="src/mastra/index.ts" docscheck=statements
 const auth = new MyAuthProvider({
   apiUrl: process.env.MY_AUTH_API_URL,
   apiKey: process.env.MY_AUTH_API_KEY,
@@ -312,13 +317,19 @@ const auth = new MyAuthProvider({
 })
 ```
 
-### Role-based Authorization
+### Role-based authorization
 
-```typescript
+To branch on the path or method, unwrap the request first. `getWebRequest` returns the underlying web `Request` for either arm of `MastraAuthRequest`, or `undefined` when the provider was handed a request object that carries only headers.
+
+```typescript title="src/mastra/index.ts" docscheck=statements
+import { getWebRequest } from '@mastra/core/server'
+import type { MastraAuthRequest } from '@mastra/core/server'
+
 const auth = new MyAuthProvider({
-  async authorizeUser(user, request) {
-    const path = request.url
-    const method = request.method
+  async authorizeUser(user, request: MastraAuthRequest) {
+    const webRequest = getWebRequest(request)
+    const path = webRequest === undefined ? '/' : new URL(webRequest.url).pathname
+    const method = webRequest?.method ?? 'GET'
 
     // Admin routes require admin role
     if (path.startsWith('/admin/')) {
@@ -340,7 +351,7 @@ const auth = new MyAuthProvider({
 
 Example test structure using Vitest:
 
-```typescript
+```typescript title="src/my-auth-provider.test.ts"
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { MyAuthProvider } from './my-auth-provider'
 
@@ -462,10 +473,27 @@ describe('MyAuthProvider', () => {
 
 ## Error handling
 
-Provide descriptive errors for common failure scenarios:
+Provide descriptive errors for common failure scenarios. This is the whole file again, with one message per missing setting and an early return for a token that isn't a string:
 
-```typescript
+```typescript title="src/my-auth-provider.ts" docscheck=replace
+import { MastraAuthProvider } from '@mastra/core/server'
+import type { MastraAuthProviderOptions, MastraAuthRequest } from '@mastra/core/server'
+
+type MyUser = {
+  id: string
+  email: string
+  roles: string[]
+}
+
+interface MyAuthOptions extends MastraAuthProviderOptions<MyUser> {
+  apiUrl?: string
+  apiKey?: string
+}
+
 export class MyAuthProvider extends MastraAuthProvider<MyUser> {
+  protected apiUrl: string
+  protected apiKey: string
+
   constructor(options?: MyAuthOptions) {
     super({ name: options?.name ?? 'my-auth' })
 
@@ -489,7 +517,7 @@ export class MyAuthProvider extends MastraAuthProvider<MyUser> {
     this.registerOptions(options)
   }
 
-  async authenticateToken(token: string): Promise<MyUser | null> {
+  async authenticateToken(token: string, request: MastraAuthRequest): Promise<MyUser | null> {
     if (!token || typeof token !== 'string') {
       return null // Immediate safe fail
     }
@@ -514,6 +542,10 @@ export class MyAuthProvider extends MastraAuthProvider<MyUser> {
       console.error('Auth verification error:', error)
       return null
     }
+  }
+
+  async authorizeUser(user: MyUser, request: MastraAuthRequest): Promise<boolean> {
+    return !!user?.id
   }
 }
 ```

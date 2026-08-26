@@ -75,7 +75,7 @@ When a request comes in, CompositeAuth:
 
 For authorization, it calls each provider's `authorizeUser()` method until one returns `true`.
 
-```typescript prettier:false
+```typescript prettier:false docscheck=skip docscheck-reason="pseudocode of the internal loop, not an API a reader calls"
 // Pseudocode of CompositeAuth behavior
 async authenticateToken(token, request) {
   for (const provider of this.providers) {
@@ -90,7 +90,7 @@ async authenticateToken(token, request) {
 
 Place the most common authentication method first because provider order affects performance:
 
-```typescript
+```typescript title="src/mastra/index.ts" docscheck=statements
 // If most requests use Clerk, put it first
 new CompositeAuth([
   clerkAuth, // Checked first (most common)
@@ -108,7 +108,8 @@ new CompositeAuth([
 
 Support users from different identity providers:
 
-```typescript
+```typescript title="src/mastra/index.ts" docscheck=replace
+import { Mastra } from '@mastra/core'
 import { CompositeAuth } from '@mastra/core/server'
 import { MastraAuthClerk } from '@mastra/auth-clerk'
 import { MastraAuthAuth0 } from '@mastra/auth-auth0'
@@ -135,7 +136,8 @@ export const mastra = new Mastra({
 
 Migrate from JWT to Clerk while maintaining backwards compatibility:
 
-```typescript
+```typescript title="src/mastra/index.ts" docscheck=replace
+import { Mastra } from '@mastra/core'
 import { CompositeAuth } from '@mastra/core/server'
 import { MastraJwtAuth } from '@mastra/auth'
 import { MastraAuthClerk } from '@mastra/auth-clerk'
@@ -167,7 +169,8 @@ export const mastra = new Mastra({
 
 Combine built-in providers with custom implementations:
 
-```typescript
+```typescript title="src/mastra/index.ts" docscheck=replace
+import { Mastra } from '@mastra/core'
 import { CompositeAuth, SimpleAuth } from '@mastra/core/server'
 import { MyCustomAuth } from './my-custom-auth'
 
@@ -192,7 +195,7 @@ export const mastra = new Mastra({
 
 CompositeAuth silently catches errors from individual providers and moves to the next one. This prevents one failing provider from blocking authentication:
 
-```typescript
+```typescript prettier:false docscheck=skip docscheck-reason="a two-line ordering illustration, reusing providers built under an earlier heading"
 // If clerkAuth throws an error, apiKeyAuth still gets tried
 new CompositeAuth([clerkAuth, apiKeyAuth])
 ```

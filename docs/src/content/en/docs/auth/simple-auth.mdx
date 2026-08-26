@@ -77,7 +77,7 @@ SimpleAuth checks these headers by default:
 
 Add custom headers using the `headers` option:
 
-```typescript
+```typescript title="src/mastra/index.ts" docscheck=statements
 new SimpleAuth({
   tokens: {/* ... */},
   headers: ['X-API-Key', 'X-Custom-Auth'],
@@ -108,15 +108,18 @@ curl -X POST http://localhost:4111/api/agents/myAgent/generate \
 
 Add role-based or custom authorization logic:
 
-```typescript
+```typescript title="src/mastra/index.ts" docscheck=statements
+import { getWebRequest } from '@mastra/core/server'
+import type { MastraAuthRequest } from '@mastra/core/server'
+
 new SimpleAuth<User>({
   tokens: {
     'sk-admin-token': { id: '1', name: 'Admin', role: 'admin' },
     'sk-user-token': { id: '2', name: 'User', role: 'user' },
   },
-  authorizeUser: (user, request) => {
+  authorizeUser: (user, request: MastraAuthRequest) => {
     // Only admins can access /admin routes
-    if (request.url.includes('/admin')) {
+    if (getWebRequest(request)?.url.includes('/admin')) {
       return user.role === 'admin'
     }
     return true
@@ -128,7 +131,16 @@ new SimpleAuth<User>({
 
 For production-like setups, load tokens from environment variables:
 
-```typescript
+```typescript title="src/mastra/index.ts" docscheck=replace
+import { Mastra } from '@mastra/core'
+import { SimpleAuth } from '@mastra/core/server'
+
+type User = {
+  id: string
+  name: string
+  role: 'admin' | 'user'
+}
+
 const tokens: Record<string, User> = {}
 
 // Load from environment
@@ -153,7 +165,7 @@ export const mastra = new Mastra({
 
 Configure the client with your token:
 
-```typescript
+```typescript title="lib/mastra-client.ts" docscheck=statements
 import { MastraClient } from '@mastra/client-js'
 
 const client = new MastraClient({
