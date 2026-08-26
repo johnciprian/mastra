@@ -379,7 +379,7 @@
     },
     {
       "id": "B3",
-      "status": "pending",
+      "status": "done",
       "title": "Route identity through the kit",
       "lane": "B",
       "size": "M",
@@ -395,7 +395,7 @@
     },
     {
       "id": "B4",
-      "status": "pending",
+      "status": "done",
       "title": "Drop workosId from the neutral user shapes",
       "lane": "B",
       "size": "S",
@@ -426,7 +426,7 @@
     },
     {
       "id": "B6",
-      "status": "pending",
+      "status": "done",
       "title": "Delete the WORKOS_* env fallback provider",
       "lane": "B",
       "size": "M",
@@ -441,7 +441,7 @@
     },
     {
       "id": "B7",
-      "status": "pending",
+      "status": "done",
       "title": "Remove @mastra/auth-workos from the Factory",
       "lane": "B",
       "size": "S",
