@@ -32,14 +32,19 @@
  * A conformance file that exists is not a conformance suite that runs. Those
  * came apart in this repository already, twice, in the same way:
  *
- *  - `vitest.config.ts` at the repo root globs `mastracode/vitest.config.ts`,
- *    a file that does not exist, so nothing under `mastracode/` is in the PR
- *    gate at all. The kit's own suite needed a dedicated job in `lint.yml`.
- *  - `auth/cloud/vitest.config.ts` declares no `name`, so vitest falls back to
- *    the package.json name and the project is called `@mastra/auth-cloud`. The
- *    unit job selects `--project 'unit:*'`. `auth/cloud`'s tests have never run
- *    in the PR gate, and if somebody adds conformance there tomorrow it still
- *    will not run.
+ *  - `vitest.config.ts` at the repo root used to glob `mastracode/vitest.config.ts`,
+ *    a file that did not exist, so nothing under `mastracode/` was in the PR gate
+ *    at all — 2,855 green tests that could not fail a merge. Fixed by `P1`, which
+ *    enumerates per package rather than globbing, and throws on any `mastracode/`
+ *    package accounted for in neither list.
+ *  - `auth/cloud/vitest.config.ts` declared no `name`, so vitest fell back to the
+ *    package.json name and the project was called `@mastra/auth-cloud`, which
+ *    `--project 'unit:*'` never matched. Its tests had never run in the PR gate,
+ *    and conformance added there would not have run either. Fixed by `P2`.
+ *
+ * Both are fixed, and both are kept described here because the *class* of defect
+ * is what this assertion exists to catch: a selector pointing at something that
+ * is not there fails silently green, and nothing else in CI notices.
  *
  * Both are invisible to a check that only asks "does the file exist". So the
  * second assertion asks the real selector, in a real subprocess, which files it
