@@ -458,7 +458,7 @@
     },
     {
       "id": "B8",
-      "status": "pending",
+      "status": "done",
       "title": "Adopt the kit state codec on login and callback",
       "lane": "B",
       "size": "M",
@@ -474,7 +474,7 @@
     },
     {
       "id": "B9",
-      "status": "pending",
+      "status": "done",
       "title": "Session cookie minting and clearing via the kit",
       "lane": "B",
       "size": "M",
@@ -490,7 +490,7 @@
     },
     {
       "id": "B10",
-      "status": "pending",
+      "status": "done",
       "title": "Logout revokes, and moves to POST",
       "lane": "B",
       "size": "M",
@@ -505,7 +505,7 @@
     },
     {
       "id": "B11",
-      "status": "pending",
+      "status": "done",
       "title": "Session refresh parity with packages/server",
       "lane": "B",
       "size": "M",
@@ -520,7 +520,7 @@
     },
     {
       "id": "B12",
-      "status": "pending",
+      "status": "done",
       "title": "resolveTenant wired into the RouteAuth seam",
       "lane": "B",
       "size": "M",
@@ -713,7 +713,7 @@
     },
     {
       "id": "U5",
-      "status": "pending",
+      "status": "done",
       "title": "Credentials endpoint comes from the descriptor",
       "lane": "U",
       "size": "M",
@@ -728,7 +728,7 @@
     },
     {
       "id": "U6",
-      "status": "pending",
+      "status": "done",
       "title": "Remaining provider-name reads in the SPA",
       "lane": "U",
       "size": "S",
@@ -743,7 +743,7 @@
     },
     {
       "id": "U7",
-      "status": "pending",
+      "status": "done",
       "title": "MSW tests for every sign-in kind",
       "lane": "U",
       "size": "M",
@@ -759,7 +759,7 @@
     },
     {
       "id": "U8",
-      "status": "pending",
+      "status": "done",
       "title": "CI test banning provider-name literals in the SPA",
       "lane": "U",
       "size": "S",
@@ -872,7 +872,7 @@
     },
     {
       "id": "C6",
-      "status": "pending",
+      "status": "done",
       "title": "Retire the 60-second boot tests",
       "lane": "C",
       "size": "M",
