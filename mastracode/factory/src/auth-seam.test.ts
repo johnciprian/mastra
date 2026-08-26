@@ -1,4 +1,12 @@
 import type { IMastraAuthProvider } from '@mastra/core/server';
+import {
+  fakeProvider as kitFakeProvider,
+  withCredentials,
+  withHttpHandler,
+  withOrganizations,
+  withSSO,
+  withSession,
+} from '@mastra/factory-auth/testing';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -1429,5 +1437,149 @@ describe('tenant organization resolution', () => {
     const app = tenantApp(fakeProvider({ authenticateToken: vi.fn(async () => null) }));
     const res = await app.request('/web/whoami', { headers: { Accept: 'application/json' } });
     expect(res.status).toBe(401);
+  });
+});
+
+/** A kit fake with no valid session, so `/auth/me` answers signed-out. */
+function kitFake() {
+  return kitFakeProvider({ tokens: [] });
+}
+
+/**
+ * U2: the `/auth/me` descriptor, against the kit's own fakes.
+ *
+ * The seam tests above build their doubles by hand, which is right for testing
+ * the gate. This block deliberately does not: it drives the four sign-in kinds
+ * through `@mastra/factory-auth/testing`, so what the host emits is checked
+ * against the same provider shapes the kit's conformance suite uses. A
+ * hand-rolled double that happens to satisfy `isCredentialsProvider` proves the
+ * host reads its own fixture; the kit's fake proves the host reads a provider.
+ *
+ * The sign-up half is the server side of a fact the SPA also has to get right.
+ * `/auth/me` carries the same answer twice with opposite polarity for one
+ * release — positive `auth.signIn.signUpEnabled`, negative legacy
+ * `signUpDisabled` — and the UI stream covers what the browser does with them.
+ * What is covered here is narrower and is the host's alone: `authMeta()`
+ * derives the negative field *from* the descriptor rather than asking the
+ * provider a second time, so the pair cannot drift no matter what the provider
+ * does.
+ */
+describe('/auth/me descriptor, against the kit fakes', () => {
+  async function authMeFor(provider: IMastraAuthProvider): Promise<AuthMeBody> {
+    const app = new Hono();
+    mountFactoryAuth(app, { provider });
+    const res = await app.request('/auth/me');
+    expect(res.status).toBe(200);
+    return (await res.json()) as AuthMeBody;
+  }
+
+  describe('the four sign-in kinds', () => {
+    it('hosted: a provider with an SSO login only', async () => {
+      const body = await authMeFor(withSSO(kitFake()) as unknown as IMastraAuthProvider);
+      expect(body.auth.signIn.kind).toBe('hosted');
+      // No credentials, so nothing is claimed about sign-up in either polarity.
+      expect(body.auth.signIn.signUpEnabled).toBeUndefined();
+      expect(body.auth.signIn.credentialsBasePath).toBeUndefined();
+      expect(body.signUpDisabled).toBeUndefined();
+      expect(body.auth.features.logout).toBe(true);
+    });
+
+    it('credentials: a provider with an email/password sign-in only', async () => {
+      const body = await authMeFor(withCredentials(kitFake()) as unknown as IMastraAuthProvider);
+      expect(body.auth.signIn.kind).toBe('credentials');
+      expect(body.auth.signIn.credentialsBasePath).toBe('/auth');
+      expect(body.auth.signIn.signUpEnabled).toBe(true);
+    });
+
+    it('both: a provider offering hosted login and credentials', async () => {
+      const body = await authMeFor(withCredentials(withSSO(kitFake())) as unknown as IMastraAuthProvider);
+      expect(body.auth.signIn.kind).toBe('both');
+      expect(body.auth.signIn.credentialsBasePath).toBe('/auth');
+    });
+
+    it('none: a provider that validates tokens but cannot sign anyone in', async () => {
+      // Not "auth is off". This provider enforces; it simply has no browser
+      // sign-in, which is what today's Supabase and Firebase providers are.
+      const body = await authMeFor(kitFake() as unknown as IMastraAuthProvider);
+      expect(body.auth.signIn.kind).toBe('none');
+      expect(body.auth.features.logout).toBe(false);
+      expect(body.authenticated).toBe(false);
+    });
+  });
+
+  describe('features come from the capabilities the fake actually declares', () => {
+    it('reports organizations and session revocation when the fake has them', async () => {
+      const provider = withSession(withOrganizations(withSSO(kitFake())));
+      const body = await authMeFor(provider as unknown as IMastraAuthProvider);
+      expect(body.auth.features).toEqual({
+        logout: true,
+        organizations: true,
+        refresh: true,
+        sessionRevocation: true,
+      });
+    });
+
+    it('reports logout for an http-handler provider that cannot sign anyone in', async () => {
+      // kind is `none`, but the provider serves its own auth routes, so there
+      // is a sign-out to offer.
+      const body = await authMeFor(withHttpHandler(kitFake()) as unknown as IMastraAuthProvider);
+      expect(body.auth.signIn.kind).toBe('none');
+      expect(body.auth.features.logout).toBe(true);
+    });
+  });
+
+  /**
+   * The server-side half of the polarity contract. Every case asserts the two
+   * fields *in the same payload*, and the last one asserts the invariant
+   * directly rather than by example.
+   */
+  describe('both sign-up fields, derived from one answer', () => {
+    it.each([
+      { what: 'sign-up on', signUpEnabled: true, enabled: true },
+      { what: 'sign-up off', signUpEnabled: false, enabled: false },
+      { what: 'no isSignUpEnabled method at all', signUpEnabled: null, enabled: true },
+      {
+        what: 'a provider whose sign-up check throws',
+        signUpEnabled: () => {
+          throw new Error('sign-up check is down');
+        },
+        enabled: false,
+      },
+    ])('$what', async ({ signUpEnabled, enabled }) => {
+      const provider = withCredentials(kitFake(), { signUpEnabled });
+      const body = await authMeFor(provider as unknown as IMastraAuthProvider);
+
+      expect(body.auth.signIn.signUpEnabled).toBe(enabled);
+      expect(body.signUpDisabled).toBe(enabled ? undefined : true);
+      // Opposite polarity, same payload, every time.
+      expect(body.auth.signIn.signUpEnabled).toBe(!(body.signUpDisabled ?? false));
+    });
+
+    it('asks the provider once, so the two fields cannot answer differently', async () => {
+      // The property the derivation exists for. If `signUpDisabled` were
+      // computed by asking the provider a second time, an implementation that
+      // is not idempotent — a flag read from config, a cache that expires
+      // between the two calls — could answer differently, and the payload would
+      // contradict itself. One call means that cannot happen.
+      let asks = 0;
+      const provider = withCredentials(kitFake(), {
+        signUpEnabled: () => {
+          asks += 1;
+          // Answers differently every time it is asked.
+          return asks % 2 === 1;
+        },
+      });
+
+      const body = await authMeFor(provider as unknown as IMastraAuthProvider);
+
+      expect(asks).toBe(1);
+      expect(body.auth.signIn.signUpEnabled).toBe(!(body.signUpDisabled ?? false));
+    });
+  });
+
+  it('keeps the provider name beside the descriptor for one release', async () => {
+    const body = await authMeFor(withSSO(kitFake()) as unknown as IMastraAuthProvider);
+    expect(typeof body.provider).toBe('string');
+    expect(body.auth).toBeDefined();
   });
 });
