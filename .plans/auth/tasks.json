@@ -1480,15 +1480,18 @@
     },
     {
       "id": "P29",
-      "status": "pending",
+      "status": "done",
       "title": "packages/core turbo outputs overlap, and a cache hit can leave dist with no declarations",
       "lane": "C",
       "size": "S",
       "deps": [],
       "files": [
-        "packages/core/turbo.json"
+        "packages/core/turbo.json",
+        "packages/server/turbo.json",
+        "client-sdks/ai-sdk/turbo.json",
+        "scripts/commonjs-tsc-fixer.js"
       ],
-      "detail": "Found twice during this work, from opposite directions, and it wastes real time both times. `packages/core/turbo.json` gives `build:lib` outputs `[\"dist/**\"]` and `build:patch-commonjs` outputs `[\"./**/*.d.ts\"]`, which overlap. A cache-restored build can leave `packages/core/dist` with ZERO `.d.ts` files while reporting success, and the symptom is indistinguishable from having broken the types: every consumer fails with \"has no exported member\", and `@mastra/core/server` appears to have lost exports it still declares in source. `pnpm turbo build --filter ./packages/core --force` restores all of them. Both P11 and P26 lost cycles to this, P11 while also blaming a concurrent agent. Narrow the globs so the two tasks do not claim the same files.",
+      "detail": "Found twice during this work, from opposite directions, and it wastes real time both times. `packages/core/turbo.json` gives `build:lib` outputs `[\"dist/**\"]` and `build:patch-commonjs` outputs `[\"./**/*.d.ts\"]`, which overlap. A cache-restored build can leave `packages/core/dist` with ZERO `.d.ts` files while reporting success, and the symptom is indistinguishable from having broken the types: every consumer fails with \"has no exported member\", and `@mastra/core/server` appears to have lost exports it still declares in source. `pnpm turbo build --filter ./packages/core --force` restores all of them. Both P11 and P26 lost cycles to this, P11 while also blaming a concurrent agent. Narrow the globs so the two tasks do not claim the same files. DONE at 0a14ce30. It was not only packages/core: packages/server and client-sdks/ai-sdk declare the identical glob, so all three are fixed. Measured, excluding node_modules - core claimed 1084 files and writes 84, server claimed 286 and writes 7, ai-sdk claimed 23 and writes 1. The explanation lives in scripts/commonjs-tsc-fixer.js because turbo rejects an unknown `//` key inside a task definition.",
       "doneWhen": "The two build tasks declare disjoint outputs, and a cache-restored core build always leaves a complete dist."
     }
   ],
