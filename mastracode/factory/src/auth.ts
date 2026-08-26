@@ -385,21 +385,6 @@ export function createFactoryRouteAuth(provider: IMastraAuthProvider | undefined
   };
 }
 
-/** True when the given provider is WorkOS. Gates WorkOS-only capabilities. */
-export function isWorkOSAuth(provider: IMastraAuthProvider | undefined): boolean {
-  return provider instanceof MastraAuthWorkos;
-}
-
-/**
- * The raw WorkOS provider, for features that need the WorkOS client directly
- * (audit-log export, Admin Portal links). Callers must gate on
- * {@link isWorkOSAuth} first — throws when the provider is not WorkOS.
- */
-export function getWorkOSProvider(provider: IMastraAuthProvider | undefined): MastraAuthWorkos {
-  if (provider instanceof MastraAuthWorkos) return provider;
-  throw new Error('WorkOS provider requested but the active factory auth provider is not WorkOS');
-}
-
 /**
  * Resolve the authenticated user for a request, stashing it on the context.
  *
