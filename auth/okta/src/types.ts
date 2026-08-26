@@ -3,6 +3,7 @@
  */
 
 import type { EEUser, RoleMapping } from '@internal/auth/ee';
+import type { MastraAuthProviderOptions } from '@internal/auth/provider';
 import type { JWTPayload } from 'jose';
 
 // ============================================================================
@@ -72,8 +73,14 @@ export interface OktaSessionOptions {
 
 /**
  * Options for MastraAuthOkta.
+ *
+ * Extends `MastraAuthProviderOptions` for the same reason `MastraAuthWorkos`
+ * does: the constructor hands this object to `registerOptions`, which binds
+ * `authorizeUser`, `mapUserToResourceId`, `protected` and `public`. No test
+ * exercised those here, so unlike WorkOS the gap produced no error and was
+ * found only by comparison.
  */
-export interface MastraAuthOktaOptions {
+export interface MastraAuthOktaOptions extends MastraAuthProviderOptions<OktaUser> {
   /** Okta domain (e.g., 'dev-123456.okta.com'). Defaults to OKTA_DOMAIN env var. */
   domain?: string;
   /** Okta OAuth client ID. Defaults to OKTA_CLIENT_ID env var. */
