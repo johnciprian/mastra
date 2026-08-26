@@ -1,4 +1,3 @@
-import { MastraAuthWorkos } from '@mastra/auth-workos';
 import {
   registerApiRoute,
   isAuthHttpHandler,
@@ -19,9 +18,9 @@ import { timedAboveThreshold } from './timing.js';
 /**
  * Provider-neutral factory auth gating for the MastraCode web server.
  *
- * When an auth provider is active (a `MastraAuthProvider` instance passed to
- * `MastraFactory`'s `auth` slot, or — back-compat for suites/paths that never
- * boot the factory — implied by the WorkOS env vars), every route on the web
+ * When an auth provider is active — a `MastraAuthProvider` instance passed to
+ * `MastraFactory`'s `auth` slot, which is the only way to activate one — every
+ * route on the web
  * server is placed behind it: unauthenticated browser navigations are
  * redirected to the SPA's `/signin` page, API/XHR calls receive a 401, and a
  * small set of public routes stay reachable while signed out — the provider's
@@ -238,27 +237,6 @@ export function factoryAuthTenant(c: Context): FactoryAuthTenant | undefined {
   const userId = getFactoryAuthUserId(user);
   if (!userId) return undefined;
   return { orgId: getFactoryAuthOrgId(user), userId };
-}
-
-/** True when both WorkOS credential env vars are present (legacy env gate). */
-function envWorkosConfigured(): boolean {
-  return Boolean(process.env.WORKOS_API_KEY && process.env.WORKOS_CLIENT_ID);
-}
-
-/**
- * WorkOS provider implied by the `WORKOS_*` env vars — back-compat for test
- * suites exercised without booting the factory (route suites set `WORKOS_*`
- * directly and call {@link mountFactoryAuth} without an explicit provider).
- * `fetchMemberships: true` lets `authenticateToken` resolve `organizationId`
- * from a single membership when the JWT has no org claim — required so a
- * bootstrapped personal org resolves without re-auth.
- */
-function envFallbackAuthProvider(redirectUri: string | undefined): MastraAuthWorkos | undefined {
-  if (!envWorkosConfigured()) return undefined;
-  return new MastraAuthWorkos({
-    redirectUri: redirectUri ?? process.env.WORKOS_REDIRECT_URI,
-    fetchMemberships: true,
-  });
 }
 
 /**
@@ -517,16 +495,15 @@ export async function ensureFactoryAuthUser(
 
 export interface MountFactoryAuthOptions {
   /**
-   * Explicit auth provider to mount. When omitted, falls back to a WorkOS
-   * provider implied by the `WORKOS_*` env vars (back-compat for suites that
-   * never boot the factory).
+   * The auth provider to mount. Omitting it leaves auth disabled.
+   *
+   * There is no environment fallback. Which provider is active used to depend
+   * on whether two `WORKOS_*` variables happened to be set in the process, so a
+   * deployment could acquire an identity provider it never configured — and the
+   * host had to name a vendor to offer that. The provider is now passed in, by
+   * whoever decided on it.
    */
   provider?: IMastraAuthProvider;
-  /**
-   * Absolute URL the identity provider redirects back to after login (WorkOS
-   * env-fallback path only). Defaults to the `WORKOS_REDIRECT_URI` env var.
-   */
-  redirectUri?: string;
   /** Browser-facing origin used to derive the SSO callback URL. */
   publicUrl?: string;
 }
@@ -1014,15 +991,19 @@ export function createFactoryAuthGate(provider: IMastraAuthProvider) {
 
 /**
  * Mount factory auth gating onto the host app. No-op when auth is disabled
- * (no provider active).
+ * (no provider passed).
  *
  * Must be called before the Mastra adapter routes, the `/web/*` routes, and
  * the static UI handlers so the gate covers every request. Composes the shared
  * `registerAuthRoutes` + `createFactoryAuthGate` factories so the local Hono server
  * and the platform Mastra entry stay behavior-identical.
+ *
+ * Reads no environment variables. Whether auth is on is now exactly "was a
+ * provider passed", which is a question the caller can answer by looking at its
+ * own code rather than at the process environment.
  */
 export function mountFactoryAuth(app: Hono<any>, options: MountFactoryAuthOptions = {}): boolean {
-  const provider = options.provider ?? envFallbackAuthProvider(options.redirectUri);
+  const provider = options.provider;
   if (!provider) return false;
 
   registerAuthRoutes(app, provider, { publicUrl: options.publicUrl });
