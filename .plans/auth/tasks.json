@@ -1111,7 +1111,7 @@
     },
     {
       "id": "P5",
-      "status": "pending",
+      "status": "done",
       "title": "Declare the PKCE read side, and call it from the Factory callback",
       "lane": "B",
       "size": "M",
@@ -1126,7 +1126,7 @@
     },
     {
       "id": "P6",
-      "status": "pending",
+      "status": "done",
       "title": "Conformance check for a PKCE cookie round-trip",
       "lane": "K",
       "size": "M",
