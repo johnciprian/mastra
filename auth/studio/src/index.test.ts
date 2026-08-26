@@ -59,7 +59,10 @@ describe('MastraAuthStudio', () => {
     // to /v1/auth/orgs were leaving the process on every run. Failing loudly
     // keeps that visible instead of turning it into a slow, order-dependent
     // test.
-    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
+    // `Parameters<typeof fetch>[0]`, not `RequestInfo | URL`: `RequestInfo` is a
+    // DOM-lib type and this package compiles with `lib: ["ES2023"]` plus
+    // `@types/node`, where the global `fetch` takes `string | URL | Request`.
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: Parameters<typeof fetch>[0]) => {
       throw new Error(`unmocked fetch reached the network: ${String(input)}`);
     }) as ReturnType<typeof vi.spyOn>;
     auth = new MastraAuthStudio({ sharedApiUrl: SHARED_API });
@@ -1018,7 +1021,10 @@ describe('MastraAuthStudio IOrganizationsProvider', () => {
     // to /v1/auth/orgs were leaving the process on every run. Failing loudly
     // keeps that visible instead of turning it into a slow, order-dependent
     // test.
-    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
+    // `Parameters<typeof fetch>[0]`, not `RequestInfo | URL`: `RequestInfo` is a
+    // DOM-lib type and this package compiles with `lib: ["ES2023"]` plus
+    // `@types/node`, where the global `fetch` takes `string | URL | Request`.
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: Parameters<typeof fetch>[0]) => {
       throw new Error(`unmocked fetch reached the network: ${String(input)}`);
     }) as ReturnType<typeof vi.spyOn>;
     auth = new MastraAuthStudio({ sharedApiUrl: SHARED_API });
