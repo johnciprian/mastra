@@ -76,6 +76,37 @@ const REPO_ROOT = resolve(DOCS_ROOT, '..')
 const SCOPES = ['src/content/en/docs/auth', 'src/content/en/reference/auth']
 
 /**
+ * Auth documentation directories deliberately OUTSIDE {@link SCOPES}, each with
+ * the reason and the count of pages it holds.
+ *
+ * This exists because an out-of-scope directory is worse than an excluded page.
+ * {@link LEGACY_UNCHECKED} is visible debt: every line names a page, a stale
+ * line fails the run, and the summary counts what is left. A directory nobody
+ * listed is none of that - its pages are neither checked nor reported, and the
+ * "N pages in scope are not checked yet" line never counted them, because they
+ * were never in scope to begin with. That is how eight pages and their examples
+ * stayed invisible while the excluded list was driven to empty.
+ *
+ * The count is the enforcement. Add a page to one of these directories and the
+ * run fails until somebody decides whether it belongs in scope, which is the
+ * decision that was being skipped.
+ */
+const OUT_OF_SCOPE: ReadonlyArray<{ dir: string; pages: number; reason: string }> = [
+  {
+    dir: 'src/content/en/integrations/auth',
+    pages: 8,
+    reason:
+      'Frontend integration guides. Their examples import browser and framework packages the docs ' +
+      'workspace does not install - @auth0/auth0-react, react, @clerk/nextjs, firebase/app, ' +
+      'firebase/auth, react-firebase-hooks/auth, @supabase/supabase-js, @workos-inc/node, better-auth ' +
+      '- plus app-relative paths the pages never define (@/lib/auth, ./auth-client, ./firebase). ' +
+      'Bringing them in scope means adding browser-framework dependencies to the docs workspace and ' +
+      'writing scaffolds for the app-relative imports. That is a dependency decision rather than a ' +
+      'change, so it is declared here rather than done quietly. Tracked as P27.',
+  },
+]
+
+/**
  * Pages inside {@link SCOPES} that predate this check, with the reason each is
  * not checked yet. **Debt, not policy.**
  *
@@ -297,6 +328,30 @@ function discover(): string[] {
       throw new DocsExampleError(`typecheck-examples: the configured scope '${scope}' is not a directory.`)
     }
     files.push(...walkMdx(dir))
+  }
+
+  for (const entry of OUT_OF_SCOPE) {
+    const dir = join(DOCS_ROOT, entry.dir)
+    let found: string[]
+    try {
+      found = walkMdx(dir)
+    } catch {
+      throw new DocsExampleError(
+        `typecheck-examples: the out-of-scope directory '${entry.dir}' does not exist under ${DOCS_ROOT}. ` +
+          'Update OUT_OF_SCOPE in this script when a documentation directory moves, or delete the entry ' +
+          'if the directory is gone.',
+      )
+    }
+    if (found.length !== entry.pages) {
+      throw new DocsExampleError(
+        `typecheck-examples: '${entry.dir}' holds ${found.length} pages and OUT_OF_SCOPE records ` +
+          `${entry.pages}.\n` +
+          `  ${entry.reason}\n` +
+          'That directory is not type-checked, so a page added to it is checked by nothing and reported ' +
+          'by nothing. Decide which it is: move the page into SCOPES and make its examples compile, or ' +
+          'update the count here to accept that it is unchecked too.',
+      )
+    }
   }
 
   const known = new Set(files.map(file => relative(DOCS_ROOT, file)))

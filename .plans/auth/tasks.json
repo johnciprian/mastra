@@ -1449,7 +1449,7 @@
     },
     {
       "id": "P27",
-      "status": "pending",
+      "status": "done",
       "title": "integrations/auth/ is outside the docs typechecker entirely",
       "lane": "D",
       "size": "M",
@@ -1460,7 +1460,7 @@
         "docs/scripts/typecheck-examples.ts",
         "docs/package.json"
       ],
-      "detail": "P16 emptied LEGACY_UNCHECKED, but that list only ever covered pages inside SCOPES - `['src/content/en/docs/auth', 'src/content/en/reference/auth']`. `src/content/en/integrations/auth/` is in neither, so its 8 pages and 58 TypeScript examples are neither checked nor excluded, and the \"N pages in scope are not checked yet\" line never counted them. Note the path given in P16 and P20, `docs/src/content/en/docs/integrations/auth/better-auth.mdx`, does not exist. Widening SCOPES is not free: these are frontend integration guides whose examples import `@auth0/auth0-react`, `react`, `@clerk/nextjs`, `firebase/app`, `firebase/auth`, `react-firebase-hooks/auth`, `@supabase/supabase-js`, `@workos-inc/node` and `better-auth`, plus app-relative imports the pages never define (`@/lib/auth`, `./auth-client`, `./firebase`). Closing it means deciding whether browser-framework dependencies belong in the docs workspace.",
+      "detail": "P16 emptied LEGACY_UNCHECKED, but that list only ever covered pages inside SCOPES - `['src/content/en/docs/auth', 'src/content/en/reference/auth']`. `src/content/en/integrations/auth/` is in neither, so its 8 pages and 58 TypeScript examples are neither checked nor excluded, and the \"N pages in scope are not checked yet\" line never counted them. Note the path given in P16 and P20, `docs/src/content/en/docs/integrations/auth/better-auth.mdx`, does not exist. Widening SCOPES is not free: these are frontend integration guides whose examples import `@auth0/auth0-react`, `react`, `@clerk/nextjs`, `firebase/app`, `firebase/auth`, `react-firebase-hooks/auth`, `@supabase/supabase-js`, `@workos-inc/node` and `better-auth`, plus app-relative imports the pages never define (`@/lib/auth`, `./auth-client`, `./firebase`). Closing it means deciding whether browser-framework dependencies belong in the docs workspace. DONE via the second branch of its doneWhen, not the first. The directory is now declared in an OUT_OF_SCOPE table in the checker with the reason and its page count, and the count is enforced: adding a page there fails the run until somebody decides whether it belongs in scope. Proved by adding one - \"holds 9 pages and OUT_OF_SCOPE records 8\", exit 1 - and removing it. The widening itself is left as a maintainer decision, because it means adding React, Next, Firebase and Supabase client packages to the docs workspace plus scaffolds for the app-relative imports those pages use and never define. What is fixed is the invisibility: an unlisted directory was worse than an excluded page, since LEGACY_UNCHECKED at least fails when it rots and counts what is left, while these eight pages were never in scope to be counted.",
       "doneWhen": "Every page under integrations/auth/ is checked, or SCOPES states why that directory is out of scope and something fails when a new page is added there."
     },
     {
