@@ -9,6 +9,8 @@ import {
 import type { ApiRoute, IMastraAuthProvider, ISessionProvider } from '@mastra/core/server';
 import { toAuthDescriptor } from '@mastra/factory-auth/capabilities';
 import type { AuthDescriptor } from '@mastra/factory-auth/capabilities';
+import { toAuthIdentity } from '@mastra/factory-auth/identity';
+import type { AuthIdentity } from '@mastra/factory-auth/identity';
 import type { Context, Hono } from 'hono';
 
 import type { RouteAuth } from './routes/route.js';
@@ -248,13 +250,85 @@ function envFallbackAuthProvider(redirectUri: string | undefined): MastraAuthWor
 /**
  * Map a provider `authenticateToken` result onto the neutral SPA user shape.
  *
- * Two result families exist today:
+ * Two implementations, chosen by {@link isAuthIdentityV2Enabled}: the kit's
+ * {@link toAuthIdentity} when the flag is on, and {@link legacyFactoryAuthUser}
+ * — the code that shipped — when it is off.
+ *
+ * WHAT THE KIT CHANGES, MEASURED RATHER THAN ASSUMED
+ *
+ * The two agree on structure: a `{ session, user }` wrapper is recognized
+ * first, it never falls through to the flat reader, and the flat reader
+ * otherwise takes the top level. They disagree on which keys count, and the
+ * differences were enumerated by running both over a payload corpus rather than
+ * by reading the two functions side by side.
+ *
+ * Mostly the kit resolves users the old reader turned into `null`, which is the
+ * point of the change — a provider returning `{ uid }` (Firebase) or `{ sub }`
+ * (raw OIDC claims) authenticated as nobody, then failed somewhere unrelated
+ * with a message about state:
+ *
+ * - ids are read as `id` → `uid` → `sub`, not `id` alone;
+ * - the same three keys are read inside a `{ session, user }` wrapper, where
+ *   the old reader accepted only `user.id`;
+ * - a numeric or bigint id is coerced to its decimal string, rather than
+ *   rejected — a serial primary key behind a self-hosted provider is ordinary;
+ * - in a wrapper, an absent `session.activeOrganizationId` now falls back to the
+ *   `user` half's own `organizationId` instead of resolving to no org. This one
+ *   *widens* org scope: a session that resolved as personal may now resolve into
+ *   an organization the user does in fact belong to.
+ *
+ * Two narrow it, both fail-closed and both fixes:
+ *
+ * - a blank or whitespace-only `id` is treated as absent. The old reader
+ *   returned it verbatim, so every user with a blank id shared one storage key;
+ * - `workosId` is not an id key. See below, because this is the one with a
+ *   production edge.
+ *
+ * THE `workosId` EDGE, AND WHY IT IS NARROW
+ *
+ * The old flat reader accepted `workosId` as an id, and {@link getFactoryAuthUserId}
+ * preferred it over `id`. `AuthIdentity` has no vendor field, so under the flag
+ * the key is simply `id`.
+ *
+ * That is a no-op against the real provider, which always emits both and sets
+ * `workosId` to the same value as `id`. It is observable only where a
+ * deployment has mapped `workosId` to a *different* JWT claim than the user id,
+ * and there the storage key moves from the one to the other. That is exactly
+ * the class of change the flag exists to make reversible.
+ */
+function toFactoryAuthUser(result: unknown, provider?: unknown): FactoryAuthUser | null {
+  if (isAuthIdentityV2Enabled()) return fromAuthIdentity(toAuthIdentity(result, provider));
+  return legacyFactoryAuthUser(result);
+}
+
+/**
+ * Widen an {@link AuthIdentity} to the shape the rest of this module still
+ * passes around. Field-for-field, minus `workosId`, which the kit's identity
+ * does not carry — so under the flag {@link getFactoryAuthUserId} resolves `id`,
+ * its only remaining source. B4 removes the field and this gap with it.
+ */
+function fromAuthIdentity(identity: AuthIdentity | null): FactoryAuthUser | null {
+  if (!identity) return null;
+  return {
+    id: identity.id,
+    email: identity.email,
+    name: identity.name,
+    avatarUrl: identity.avatarUrl,
+    organizationId: identity.organizationId,
+  };
+}
+
+/**
+ * The identity reader that shipped, kept reachable while the flag defaults off.
+ * Deleted once `MASTRACODE_AUTH_IDENTITY_V2` stops being a switch.
+ *
+ * Two result families:
  * - flat provider users (WorkOS `WorkOSUser` et al.): `id`/`workosId`/`email`/
  *   `name`/`organizationId` directly on the object;
  * - session-shaped results (better-auth `BetterAuthUser`): `{ session, user }`
  *   with the active org on the session.
  */
-function toFactoryAuthUser(result: unknown): FactoryAuthUser | null {
+function legacyFactoryAuthUser(result: unknown): FactoryAuthUser | null {
   if (!result || typeof result !== 'object') return null;
   const record = result as Record<string, unknown>;
 
@@ -300,6 +374,13 @@ function toFactoryAuthUser(result: unknown): FactoryAuthUser | null {
 /**
  * Resolve the authenticated user for a request via the provider. Never throws:
  * ordinary invalid/expired sessions resolve to `null`.
+ *
+ * The provider is handed to {@link toFactoryAuthUser} as well as called. Under
+ * the v2 path that lets a provider implementing the kit's `toIdentity` map its
+ * own payload — the escape hatch for a token shape the kit does not recognize,
+ * such as an id under a custom claim namespace. A mapper that throws is caught
+ * here like any other provider failure and resolves to `null`, which is the
+ * fail-closed direction: an unreadable payload authenticates nobody.
  */
 async function authenticateRequest(
   provider: IMastraAuthProvider,
@@ -308,7 +389,7 @@ async function authenticateRequest(
 ): Promise<FactoryAuthUser | null> {
   try {
     const result = await provider.authenticateToken(token, raw);
-    return toFactoryAuthUser(result);
+    return toFactoryAuthUser(result, provider);
   } catch {
     return null;
   }

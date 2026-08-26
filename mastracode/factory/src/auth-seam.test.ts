@@ -512,3 +512,167 @@ describe('MASTRACODE_AUTH_IDENTITY_V2 (compat flag)', () => {
     expect(reloaded.isAuthIdentityV2Enabled()).toBe(true);
   });
 });
+
+/**
+ * B3: what the flag actually switches — which reader turns a provider's
+ * `authenticateToken` result into an identity.
+ *
+ * Each case runs the SAME payload through BOTH readers via the reload recipe
+ * above, so the table below is a behavioural diff rather than two independent
+ * suites that could drift. `legacy` and `v2` are the user id each path resolves,
+ * with `null` meaning "authenticated as nobody".
+ *
+ * The differences here were found by running both readers over a payload corpus
+ * before the change, not by reading them side by side: the kit's own note says
+ * its precedence matches what this module already did, and on the flat id key
+ * set that turned out to be an overstatement worth pinning down in tests.
+ */
+describe('identity resolution under the compat flag', () => {
+  async function importAuthWith(value: string | undefined): Promise<typeof import('./auth.js')> {
+    if (value === undefined) delete process.env.MASTRACODE_AUTH_IDENTITY_V2;
+    else process.env.MASTRACODE_AUTH_IDENTITY_V2 = value;
+    vi.resetModules();
+    return import('./auth.js');
+  }
+
+  afterEach(() => {
+    delete process.env.MASTRACODE_AUTH_IDENTITY_V2;
+    vi.resetModules();
+  });
+
+  /**
+   * Sign in through the gate with `payload` as the provider's result, and report
+   * the tenant the request resolved to. Goes through `mountFactoryAuth` rather
+   * than calling the reader directly, so the assertion covers the path a real
+   * request takes: authenticate, normalize, stash, read back.
+   */
+  async function tenantFor(
+    auth: typeof import('./auth.js'),
+    payload: unknown,
+    providerOverrides: Record<string, unknown> = {},
+  ): Promise<{ orgId?: string; userId?: string } | null> {
+    const app = new Hono();
+    auth.mountFactoryAuth(app, {
+      provider: fakeProvider({ authenticateToken: vi.fn(async () => payload), ...providerOverrides }),
+    });
+    app.get('/web/whoami', c => c.json(auth.factoryAuthTenant(c) ?? { tenant: null }));
+    const res = await app.request('/web/whoami', { headers: { Accept: 'application/json' } });
+    if (res.status === 401) return null;
+    return (await res.json()) as { orgId?: string; userId?: string };
+  }
+
+  it.each([
+    {
+      what: 'a flat provider id',
+      payload: { id: 'u1', organizationId: 'org_a' },
+      legacy: 'u1',
+      v2: 'u1',
+    },
+    {
+      what: 'the real WorkOS shape, id and workosId holding the same value',
+      payload: { id: 'w1', workosId: 'w1', organizationId: 'org_a' },
+      legacy: 'w1',
+      v2: 'w1',
+    },
+    {
+      what: 'a Firebase DecodedIdToken, which names its id `uid`',
+      payload: { uid: 'fb1' },
+      legacy: null,
+      v2: 'fb1',
+    },
+    {
+      what: 'raw OIDC claims, which name it `sub`',
+      payload: { sub: 'oidc1' },
+      legacy: null,
+      v2: 'oidc1',
+    },
+    {
+      what: 'a numeric id, as a serial primary key produces',
+      payload: { id: 7 },
+      legacy: null,
+      v2: '7',
+    },
+    {
+      what: 'a blank id, which is a storage key every user would share',
+      payload: { id: '   ' },
+      legacy: '   ',
+      v2: null,
+    },
+    {
+      what: 'a workosId with no id, which the real provider never emits',
+      payload: { workosId: 'w1' },
+      legacy: 'w1',
+      v2: null,
+    },
+    {
+      what: 'a session wrapper, org taken from the session half',
+      payload: { session: { activeOrganizationId: 'org_s' }, user: { id: 'u1' } },
+      legacy: 'u1',
+      v2: 'u1',
+    },
+    {
+      what: 'a session wrapper whose user half names nobody (no fallthrough)',
+      payload: { session: { activeOrganizationId: 'org_s' }, user: { email: 'e@x.com' }, id: 'top' },
+      legacy: null,
+      v2: null,
+    },
+    {
+      what: 'a payload naming no user at all',
+      payload: { email: 'e@x.com' },
+      legacy: null,
+      v2: null,
+    },
+  ])('$what', async ({ payload, legacy, v2 }) => {
+    const off = await tenantFor(await importAuthWith(undefined), payload);
+    expect(off?.userId ?? null).toBe(legacy);
+
+    const on = await tenantFor(await importAuthWith('true'), payload);
+    expect(on?.userId ?? null).toBe(v2);
+  });
+
+  it('takes the org from the user half when the session names none, only under v2', async () => {
+    // A widening rather than a fix: a session that resolved as personal can now
+    // resolve into an organization the user does belong to. Worth stating on its
+    // own because it changes which org-scoped data a request can reach.
+    const payload = { session: {}, user: { id: 'u1', organizationId: 'org_u' } };
+
+    // This provider does no organization bootstrap, so legacy leaves the user
+    // personal: the org sitting on the user half is simply never read.
+    const off = await tenantFor(await importAuthWith(undefined), payload);
+    expect(off).toEqual({ userId: 'u1' });
+
+    const on = await tenantFor(await importAuthWith('true'), payload);
+    expect(on).toEqual({ userId: 'u1', orgId: 'org_u' });
+  });
+
+  it('lets a provider map its own payload through the kit escape hatch, under v2', async () => {
+    // The id lives under a custom claim the kit cannot know about. Legacy has no
+    // such hook, so the same payload authenticates as nobody there.
+    const payload = { 'https://claims.example/uid': 'custom1' };
+    const toIdentity = vi.fn((raw: unknown) => ({
+      id: (raw as Record<string, string>)['https://claims.example/uid']!,
+    }));
+
+    const off = await tenantFor(await importAuthWith(undefined), payload, { toIdentity });
+    expect(off).toBeNull();
+
+    const on = await tenantFor(await importAuthWith('true'), payload, { toIdentity });
+    expect(on?.userId).toBe('custom1');
+    expect(toIdentity).toHaveBeenCalled();
+  });
+
+  it('treats a throwing identity mapper as an unauthenticated request', async () => {
+    // toAuthIdentity lets a mapper's throw propagate on purpose; the gate's own
+    // catch turns it into a 401 rather than into a plausible-looking identity.
+    const on = await tenantFor(
+      await importAuthWith('true'),
+      { id: 'u1' },
+      {
+        toIdentity: vi.fn(() => {
+          throw new Error('mapper is broken');
+        }),
+      },
+    );
+    expect(on).toBeNull();
+  });
+});
