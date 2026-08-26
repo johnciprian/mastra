@@ -19,7 +19,7 @@ function requestContext(
   overrides: Partial<{ orgId: string; projectId: string; threadId: string; resourceId: string; scope: string }> = {},
 ) {
   const context = new RequestContext();
-  context.set('user', { workosId: 'user-1', organizationId: overrides.orgId ?? 'org-1' });
+  context.set('user', { id: 'user-1', organizationId: overrides.orgId ?? 'org-1' });
   context.set('controller', {
     resourceId: overrides.resourceId ?? 'resource-1',
     threadId: overrides.threadId ?? 'thread-1',
@@ -36,7 +36,7 @@ function crashResumedContext(
   overrides: Partial<{ threadId: string; resourceId: string }> = {},
 ) {
   const context = new RequestContext();
-  context.set('user', { workosId: 'user-1', organizationId: 'org-1' });
+  context.set('user', { id: 'user-1', organizationId: 'org-1' });
   context.set('controller', {
     resourceId: overrides.resourceId ?? 'resource-1',
     threadId: overrides.threadId ?? 'thread-1',

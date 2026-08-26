@@ -22,7 +22,7 @@ function requestContext(
 ) {
   const context = new RequestContext();
   if (overrides.authenticated !== false) {
-    context.set('user', { workosId: 'user-1', organizationId: 'org-1' });
+    context.set('user', { id: 'user-1', organizationId: 'org-1' });
   }
   context.set('controller', {
     resourceId: 'resource-1',

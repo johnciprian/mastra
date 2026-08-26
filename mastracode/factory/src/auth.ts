@@ -106,11 +106,18 @@ export function isAuthIdentityV2Enabled(): boolean {
   return AUTH_IDENTITY_V2;
 }
 
-/** Minimal shape of the signed-in user surfaced to the SPA (no tokens). */
+/**
+ * Minimal shape of the signed-in user surfaced to the SPA (no tokens).
+ *
+ * There is no vendor field. The type used to carry `workosId` beside `id`, which
+ * meant every consumer had to decide which of the two was the real key — and a
+ * vendor name in the neutral type is the tell that identity was never really
+ * abstracted. Whatever the provider called its identifier, it arrives here as
+ * {@link id}; see {@link legacyFactoryAuthUser} for how the pre-kit reader folds
+ * `workosId` into it without changing which value wins.
+ */
 export interface FactoryAuthUser {
-  /** Stable WorkOS user id used to scope per-user data (GitHub installs etc.). */
-  workosId?: string;
-  /** Provider user id; WorkOS shapes may use `workosId` instead (see {@link workosId}). */
+  /** Stable provider user id, used to scope per-user data (GitHub installs etc.). */
   id?: string;
   email?: string;
   name?: string;
@@ -202,9 +209,16 @@ export function getFactoryAuthUserFromContext(
   return toFactoryAuthUser(requestContext.get('user')) ?? undefined;
 }
 
-/** Resolve the stable user id from an authenticated user shape. */
+/**
+ * Resolve the stable user id from an authenticated user shape.
+ *
+ * One field now, because {@link FactoryAuthUser} has one. This used to read
+ * `workosId ?? id`, and that precedence is preserved where it mattered: the
+ * legacy reader folds `workosId` into `id` with the same precedence, so the
+ * value this returns is unchanged on both flag paths.
+ */
 export function getFactoryAuthUserId(user: FactoryAuthUser | undefined): string | undefined {
-  return user?.workosId ?? user?.id;
+  return user?.id;
 }
 
 /** Resolve the organization id from a user shape, if present. */
@@ -362,8 +376,11 @@ function legacyFactoryAuthUser(result: unknown): FactoryAuthUser | null {
   const workosId = typeof flat.workosId === 'string' ? flat.workosId : undefined;
   if (!id && !workosId) return null;
   return {
-    id,
-    workosId,
+    // `workosId` first, then `id`. The neutral shape no longer has a vendor
+    // field, so the vendor key is folded into `id` here instead — in the order
+    // `getFactoryAuthUserId` used to apply itself, which is what keeps the
+    // resolved user id identical for every payload this reader accepts.
+    id: workosId ?? id,
     email: typeof flat.email === 'string' ? flat.email : undefined,
     name: typeof flat.name === 'string' ? flat.name : undefined,
     avatarUrl: typeof flat.avatarUrl === 'string' ? flat.avatarUrl : undefined,

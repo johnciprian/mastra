@@ -240,7 +240,7 @@ describe('FactoryStartCoordinator', () => {
     expect((await storage.listPendingStarts('org-1', PROJECT_ID))[0]?.status).toBe('pending');
     const requestContext = vi.mocked(controller.createSession).mock.calls[0]?.[0].requestContext;
     expect(requestContext?.get('user')).toEqual({
-      workosId: 'user-1',
+      id: 'user-1',
       organizationId: 'org-1',
       orgFirstCredentials: true,
     });
@@ -268,7 +268,7 @@ describe('FactoryStartCoordinator', () => {
     await coordinator.prepare({ ...startRequest(), requestContext });
 
     expect(requestContext.get('user')).toEqual({
-      workosId: 'user-1',
+      id: 'user-1',
       organizationId: 'org-1',
       orgFirstCredentials: true,
     });
@@ -284,12 +284,12 @@ describe('FactoryStartCoordinator', () => {
       makeSourceControl() as never,
     );
     const requestContext = new RequestContext();
-    requestContext.set('user', { workosId: 'authenticated-user', organizationId: 'org-1' });
+    requestContext.set('user', { id: 'authenticated-user', organizationId: 'org-1' });
 
     await coordinator.prepare({ ...startRequest(), requestContext });
 
     expect(requestContext.get('user')).toEqual({
-      workosId: 'authenticated-user',
+      id: 'authenticated-user',
       organizationId: 'org-1',
       orgFirstCredentials: true,
     });

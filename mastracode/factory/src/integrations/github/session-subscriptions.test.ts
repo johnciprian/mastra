@@ -72,7 +72,7 @@ import { registerGithubPatKind, registerGithubTokenInjector } from './token-refr
 
 function authenticatedRequestContext(scope = '/worktrees/a') {
   const requestContext = new RequestContext();
-  requestContext.set('user', { workosId: 'user-1', organizationId: 'org-1' });
+  requestContext.set('user', { id: 'user-1', organizationId: 'org-1' });
   requestContext.set('controller', {
     resourceId: 'resource-1',
     threadId: 'thread-1',
@@ -144,7 +144,7 @@ describe('GitHub subscription entry points', () => {
 
   it('does not expose tools without an active thread', () => {
     const requestContext = new RequestContext();
-    requestContext.set('user', { workosId: 'user-1', organizationId: 'org-1' });
+    requestContext.set('user', { id: 'user-1', organizationId: 'org-1' });
     requestContext.set('controller', { getState: () => ({ projectRepositoryId: 'project-repository-1' }) });
 
     expect(createGithubSubscriptionTools(requestContext, githubStub)).toEqual({});

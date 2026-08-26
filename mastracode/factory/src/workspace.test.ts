@@ -115,7 +115,7 @@ function createRequestContext(projectPath: string) {
 function createGithubRequestContext(
   projectId: string,
   sessionId: string,
-  user: Record<string, unknown> = { organizationId: 'org-1', workosId: 'user-1' },
+  user: Record<string, unknown> = { organizationId: 'org-1', id: 'user-1' },
 ) {
   const requestContext = createRequestContext('/unused');
   const state: Record<string, unknown> = { factoryProjectId: projectId };
@@ -146,7 +146,7 @@ function createUnscopedGithubRequestContext(projectId: string, projectPath: stri
     getState,
     session: { id: projectId, state: { get: getState } },
   });
-  requestContext.set('user', { organizationId: 'org-1', workosId: 'user-1' });
+  requestContext.set('user', { organizationId: 'org-1', id: 'user-1' });
   return requestContext;
 }
 
@@ -859,6 +859,17 @@ describe('GitHub session workspace preparation', () => {
     // No active org on the session half means no org at all: the wrapper's inner
     // user is never consulted for one. Refusing is the only safe answer, and it
     // is the answer a signed-in user gets before they pick an organization.
+    //
+    // THIS INVARIANT AND THE KIT DISAGREE, AND IT IS NOT YET SETTLED.
+    // `toAuthIdentity` falls back to the `user` half's own `organizationId` when
+    // the session names none, so under MASTRACODE_AUTH_IDENTITY_V2 this resolves
+    // into org-1 instead of refusing, and this is the only assertion in the
+    // whole suite that the flag flips. The two positions are both defensible —
+    // the user does belong to that organization, but they have not chosen to act
+    // in it for this session — and the difference decides which org's data a
+    // request can reach. Left asserting the shipped behaviour on purpose: the
+    // flag defaults off, and reversing a deliberate refusal is a product call,
+    // not a fixture update. Settle it before the flag is turned on.
     const requestContext = createGithubRequestContext('project-1', 'session-a', {
       session: {},
       user: { id: 'user-1', organizationId: 'org-1' },
@@ -1772,7 +1783,7 @@ describe('GitHub session workspace preparation', () => {
       workspace({
         requestContext: createGithubRequestContext('project-1', 'session-a', {
           organizationId: 'org-2',
-          workosId: 'user-2',
+          id: 'user-2',
         }),
       }),
     ).rejects.toThrow(/Factory session session-a is not available/);

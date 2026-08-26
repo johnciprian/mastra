@@ -213,7 +213,7 @@ describe('Platform GitHub event worker factory lifecycle', () => {
         }),
       );
       const requestContext = harness.controller.createSession.mock.calls[0]![0].requestContext;
-      expect(requestContext.get('user')).toEqual({ workosId: 'user-1', organizationId: 'org-1' });
+      expect(requestContext.get('user')).toEqual({ id: 'user-1', organizationId: 'org-1' });
       expect(await pubsub.getLeaseOwner('platform-github-events:github')).toEqual(expect.any(String));
 
       await mastra.stopWorkers();

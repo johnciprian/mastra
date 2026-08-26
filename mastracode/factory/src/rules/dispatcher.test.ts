@@ -655,7 +655,7 @@ describe('FactoryDecisionDispatcher', () => {
       },
     );
     const requestContext = sendNotificationSignal.mock.calls[0]?.[1]?.requestContext;
-    expect(requestContext?.get('user')).toEqual({ workosId: 'user-1', organizationId: 'org-1' });
+    expect(requestContext?.get('user')).toEqual({ id: 'user-1', organizationId: 'org-1' });
     expect(consumeStream).toHaveBeenCalledOnce();
   });
 
@@ -955,7 +955,7 @@ describe('FactoryDecisionDispatcher', () => {
       { requestContext: expect.anything(), requireDelivery: true },
     );
     const requestContext = session.sendSignal.mock.calls[0]?.[1]?.requestContext;
-    expect(requestContext?.get('user')).toEqual({ workosId: 'user-1', organizationId: 'org-1' });
+    expect(requestContext?.get('user')).toEqual({ id: 'user-1', organizationId: 'org-1' });
     expect(session.subscribe).toHaveBeenCalledTimes(1);
     expect(getAgentEndListenerCount()).toBe(0);
   });
@@ -1925,7 +1925,7 @@ describe('FactoryDecisionDispatcher', () => {
       }),
     );
     const requestContext = sendNotificationSignal.mock.calls[0]?.[1]?.requestContext;
-    expect(requestContext?.get('user')).toEqual({ workosId: 'user-1', organizationId: 'org-1' });
+    expect(requestContext?.get('user')).toEqual({ id: 'user-1', organizationId: 'org-1' });
   });
 
   it('retries the skill kickoff when the signal is persisted without starting a run', async () => {
@@ -2796,7 +2796,7 @@ describe('FactoryDecisionDispatcher', () => {
     // authenticated session owner on the request context.
     expect(primeCredentials).toHaveBeenCalledWith({ orgId: 'org-1', userId: 'user-1' });
     const kickoffOptions = sendNotificationSignal.mock.calls[0]![1];
-    expect(kickoffOptions?.requestContext?.get('user')).toEqual({ workosId: 'user-1', organizationId: 'org-1' });
+    expect(kickoffOptions?.requestContext?.get('user')).toEqual({ id: 'user-1', organizationId: 'org-1' });
     expect((await storage.listPendingStarts('org-1', PROJECT_ID))[0]?.status).toBe('sent');
   });
 
