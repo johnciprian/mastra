@@ -38,6 +38,7 @@ import type {
   UpdateReviewersInput,
   VersionControl,
 } from '../../../capabilities/version-control.js';
+import type { RouteAuth } from '../../../routes/route.js';
 import { withBaseCheckpointWebhookTrigger } from '../../../sandbox/base-checkpoint-triggers.js';
 import type { IntegrationStorageHandle } from '../../../storage/domains/integrations/base.js';
 import type {
@@ -927,18 +928,20 @@ export class PlatformGithubIntegration implements FactoryIntegration {
     return { action: 'created', commentId: String(comment.id), url: comment.htmlUrl };
   }
 
-  sessionTools({ requestContext }: { requestContext: RequestContext }): IntegrationTools {
-    return createGithubSubscriptionTools(requestContext, this as unknown as GithubIntegration);
+  sessionTools({ requestContext, auth }: { requestContext: RequestContext; auth: RouteAuth }): IntegrationTools {
+    return createGithubSubscriptionTools(requestContext, auth, this as unknown as GithubIntegration);
   }
 
   async postToolObserver({
     toolContext,
     requestContext,
+    auth,
   }: Parameters<NonNullable<FactoryIntegration['postToolObserver']>>[0]): Promise<void> {
     const pullRequestUrl = parseCreatedPullRequest(toolContext);
     if (!pullRequestUrl || !requestContext) return;
     await subscribeCurrentSessionToPullRequest(
       requestContext,
+      auth,
       pullRequestUrl,
       'auto-gh-pr-create',
       this as unknown as GithubIntegration,

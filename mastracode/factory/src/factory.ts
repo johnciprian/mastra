@@ -776,7 +776,7 @@ export class MastraFactory {
                     mergeTools(integration.id, await integration.agentTools({ requestContext }));
                   }
                   if (integration.sessionTools) {
-                    mergeTools(integration.id, integration.sessionTools({ requestContext }));
+                    mergeTools(integration.id, integration.sessionTools({ requestContext, auth: routeAuth }));
                   }
                 }
                 return tools;
@@ -796,7 +796,7 @@ export class MastraFactory {
             integrations.map(async integration => {
               if (!integration.postToolObserver) return;
               try {
-                await integration.postToolObserver({ toolContext, requestContext });
+                await integration.postToolObserver({ toolContext, requestContext, auth: routeAuth });
               } catch (error) {
                 console.warn(`[factory] Integration '${integration.id}' post-tool observer failed:`, error);
               }

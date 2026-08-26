@@ -2,6 +2,7 @@ import { RequestContext } from '@mastra/core/request-context';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { factoryRunTenant } from '../../../auth.js';
 import { defaultFactoryRules } from '../../../rules/defaults.js';
 import type { SourceControlStorageHandle } from '../../../storage/domains/source-control/base.js';
 import type { IntegrationContext } from '../../base.js';
@@ -19,6 +20,9 @@ function fakeAuth(tenant: { orgId?: string; userId: string } | undefined = { org
     enabled: () => true,
     ensureUser: vi.fn(async () => ({ id: tenant?.userId ?? 'user-1', organizationId: tenant?.orgId })),
     tenant: () => tenant,
+    // Through the real resolver, so this double answers about a run context the
+    // same way the host does rather than echoing the fixture back.
+    runTenant: factoryRunTenant,
     isOrganizationAdmin: vi.fn(async () => true),
   };
 }
@@ -782,7 +786,7 @@ describe('PlatformGithubIntegration', () => {
       session: { id: 'session-1', ownerId: 'user-1', modeId: 'build' },
       getState: () => ({ factoryProjectId: 'resource-1', projectRepositoryId: 'project-repository-1' }),
     });
-    expect(Object.keys(integration.sessionTools({ requestContext }))).toEqual([
+    expect(Object.keys(integration.sessionTools({ requestContext, auth: context.auth }))).toEqual([
       'github_refresh_token',
       'github_upsert_factory_triage_comment',
       'github_subscribe_pr',
