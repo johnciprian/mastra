@@ -364,7 +364,7 @@
     },
     {
       "id": "B2",
-      "status": "pending",
+      "status": "done",
       "title": "Compat flag for the identity change",
       "lane": "B",
       "size": "S",
@@ -411,7 +411,7 @@
     },
     {
       "id": "B5",
-      "status": "pending",
+      "status": "done",
       "title": "Delete the WorkOS type-test helpers",
       "lane": "B",
       "size": "S",
@@ -652,7 +652,7 @@
     },
     {
       "id": "U1",
-      "status": "pending",
+      "status": "done",
       "title": "/auth/me emits the capability descriptor",
       "lane": "U",
       "size": "M",
@@ -807,7 +807,7 @@
     },
     {
       "id": "C2",
-      "status": "pending",
+      "status": "held",
       "title": "Conformance baseline: workos and studio",
       "lane": "C",
       "size": "M",
@@ -823,7 +823,7 @@
     },
     {
       "id": "C3",
-      "status": "pending",
+      "status": "done",
       "title": "Conformance on okta - expect red",
       "lane": "C",
       "size": "S",
@@ -838,7 +838,7 @@
     },
     {
       "id": "C4",
-      "status": "pending",
+      "status": "done",
       "title": "Fix the okta state contract",
       "lane": "C",
       "size": "M",
@@ -855,7 +855,7 @@
     },
     {
       "id": "C5",
-      "status": "pending",
+      "status": "done",
       "title": "Conformance on supabase and firebase - decide and act",
       "lane": "C",
       "size": "L",
@@ -905,7 +905,7 @@
     },
     {
       "id": "D1",
-      "status": "pending",
+      "status": "done",
       "title": "Capability reference table",
       "lane": "D",
       "size": "M",
@@ -1073,6 +1073,7 @@
   "statusLegend": {
     "done": "merged and pushed on claude/k1-k6-agent-team-tqgv8e",
     "pending": "not started, or in flight",
-    "note": "Update this field when a task merges. Nothing else records progress."
+    "note": "Update this field when a task merges. Nothing else records progress.",
+    "held": "implemented but deliberately not merged - see README"
   }
 }
