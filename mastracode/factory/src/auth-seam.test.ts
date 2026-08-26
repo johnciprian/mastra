@@ -6,11 +6,11 @@ import { buildAuthRoutes, mountFactoryAuth, factoryAuthTenant } from './auth.js'
 
 /**
  * Provider-seam behavior: the auth module operates on an explicitly-passed
- * provider (DI — an explicit provider is authoritative regardless of env) and
- * falls back to a WorkOS provider implied by the `WORKOS_*` env vars only when
- * the caller passes none. Public `/auth/*` routes are derived from the
- * provider's capabilities (SSO-shaped vs HTTP-handler-shaped).
- * Provider-specific behavior lives in the provider packages' own tests.
+ * provider, and on nothing else. There is no environment fallback — auth is on
+ * when a provider was passed and off when one was not. Public `/auth/*` routes
+ * are derived from the provider's capabilities (SSO-shaped vs
+ * HTTP-handler-shaped). Provider-specific behavior lives in the provider
+ * packages' own tests.
  */
 
 // Mock @mastra/auth-workos so no real WorkOS client is constructed.
@@ -73,16 +73,19 @@ describe('active provider resolution', () => {
     expect(enabled).toBe(true);
   });
 
-  it('no provider and no WORKOS env vars disables auth', () => {
+  it('no provider disables auth', () => {
     const enabled = mountFactoryAuth(new Hono());
     expect(enabled).toBe(false);
   });
 
-  it('falls back to env-implied WorkOS when no provider is passed (back-compat)', () => {
+  it('does not resurrect a provider from the WORKOS_* environment', () => {
+    // These two variables used to switch auth on by themselves, which made
+    // "is auth enabled here?" a question about the process environment rather
+    // than about the call. Now only the argument decides.
     process.env.WORKOS_API_KEY = 'sk_test';
     process.env.WORKOS_CLIENT_ID = 'client_test';
     const enabled = mountFactoryAuth(new Hono());
-    expect(enabled).toBe(true);
+    expect(enabled).toBe(false);
   });
 });
 
