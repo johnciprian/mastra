@@ -81,9 +81,11 @@ beforeEach(async () => {
 });
 
 describe('intake configuration', () => {
-  it('requires an authenticated organization', async () => {
+  it('requires a signed-in user, and serves one with no provider organization', async () => {
     expect((await buildApp(null).request('/web/intake/config')).status).toBe(401);
-    expect((await buildApp({ id: 'u1' }).request('/web/intake/config')).status).toBe(403);
+    // Used to 403. A user whose provider has no organization now reads their
+    // own configuration instead of being refused with no way forward.
+    expect((await buildApp({ id: 'u1' }).request('/web/intake/config')).status).toBe(200);
   });
 
   it('defaults every configured capability to enabled with no selected sources', async () => {
@@ -129,9 +131,9 @@ describe('intake configuration', () => {
         body: JSON.stringify(body),
       });
 
-    it('requires an authenticated organization', async () => {
+    it('requires a signed-in user, and serves one with no provider organization', async () => {
       expect((await buildApp(null).request('/web/intake/bindings')).status).toBe(401);
-      expect((await buildApp({ id: 'u1' }).request('/web/intake/bindings')).status).toBe(403);
+      expect((await buildApp({ id: 'u1' }).request('/web/intake/bindings')).status).toBe(200);
     });
 
     it('binds a source to a Factory project and reads it back', async () => {

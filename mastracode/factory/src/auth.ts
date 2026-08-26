@@ -13,6 +13,7 @@ import type { SessionCookieSite } from '@mastra/factory-auth/cookie';
 import { toAuthIdentity } from '@mastra/factory-auth/identity';
 import type { AuthIdentity } from '@mastra/factory-auth/identity';
 import { decodeState, encodeState } from '@mastra/factory-auth/oauth-state';
+import { resolveOrganizationId } from '@mastra/factory-auth/organizations';
 import type { Context, Hono } from 'hono';
 
 import type { RouteAuth } from './routes/route.js';
@@ -136,11 +137,22 @@ export interface FactoryAuthUser {
 /**
  * Tenant identity: the org is the top-level tenant, and each user inside it is
  * an isolated builder. Agent state, worktrees and sandboxes are scoped per
- * `(orgId, userId)`. Personal (no-org) users have `orgId === undefined`.
+ * `(orgId, userId)`.
+ *
+ * `orgId` is always a string. It used to be optional, and every org-gated route
+ * had to decide what to do when it was missing — they all decided to 403, so a
+ * signed-in user whose provider has no organization concept could not reach the
+ * board at all. The kit resolves a deterministic `user:<userId>` organization
+ * for exactly that case, which is a private organization of one rather than an
+ * absent one, so the branch that produced the 403 no longer exists to be
+ * written.
  */
 export interface FactoryAuthTenant {
-  /** Organization id, or `undefined` for personal (no-org) accounts. */
-  orgId?: string;
+  /**
+   * Organization id. A real one when the provider declares it, otherwise a
+   * synthetic id derived from the user id — see {@link factoryAuthTenant}.
+   */
+  orgId: string;
   /** Stable provider user id. */
   userId: string;
 }
@@ -313,16 +325,42 @@ export function getFactoryAuthOrgId(user: FactoryAuthUser | undefined): string |
 
 /**
  * Resolve the tenant identity `(orgId, userId)` from the authenticated user on
- * the context. Returns `undefined` when there is no signed-in user (auth
- * disabled or unauthenticated). `orgId` is `undefined` for personal accounts;
- * callers gate org-scoped GitHub features on its presence while agent state
- * falls back to a user-only tenant.
+ * the context. Returns `undefined` when there is no signed-in user — auth
+ * disabled, or unauthenticated — and that is now the only reason it does.
+ *
+ * WHAT CHANGED, AND WHY IT IS NOT A WIDENING OF ACCESS
+ *
+ * `orgId` used to be optional, and a signed-in user whose provider has no
+ * organization concept resolved to no organization. Every org-gated route group
+ * then had the same decision to make with no good answer available, and each
+ * one made the safe-looking choice: refuse. The result was a user who had
+ * authenticated successfully, held a valid session, and could not open the
+ * board — with nothing in the logs saying "no organization", because 403 is
+ * what an unauthorized user gets too.
+ *
+ * `resolveOrganizationId` gives that case a real answer: a deterministic
+ * `user:<userId>` organization. It is derived from the user's own id, so it is
+ * unique to them and stable across processes and deploys — a private
+ * organization of one, not a shared bucket. Nobody gains access to anybody
+ * else's data; a user who previously had access to nothing gains access to
+ * their own.
+ *
+ * A declared organization always wins. The provider — or the session inside it
+ * — has said which organization this request is acting in, and preferring a
+ * derived id over that would move a member of a real organization into a
+ * private one, where their team's data is not.
  */
 export function factoryAuthTenant(c: Context): FactoryAuthTenant | undefined {
   const user = getFactoryAuthUser(c);
   const userId = getFactoryAuthUserId(user);
-  if (!userId) return undefined;
-  return { orgId: getFactoryAuthOrgId(user), userId };
+  // Blank counts as absent. The pre-kit reader accepts a whitespace-only id and
+  // hands it back verbatim, so this is reachable with the compat flag off — and
+  // an id that is all spaces is a storage key every such user would share.
+  // `resolveOrganizationId` refuses to derive an organization from one and
+  // throws, which on a gated route is a 500 rather than the 401 the request
+  // deserves. Answering "no tenant" here keeps the refusal and drops the crash.
+  if (!userId || userId.trim() === '') return undefined;
+  return { orgId: resolveOrganizationId({ id: userId, organizationId: getFactoryAuthOrgId(user) }), userId };
 }
 
 /**

@@ -3,6 +3,7 @@
  */
 
 import type { ApiRoute } from '@mastra/core/server';
+import { resolveOrganizationId } from '@mastra/factory-auth/organizations';
 import type { Context, Hono } from 'hono';
 
 import type { RouteAuth } from './route.js';
@@ -56,7 +57,11 @@ export function fakeRouteAuth(
     ensureUser: async c => user(c),
     tenant: c => {
       const u = user(c);
-      return u ? { orgId: u.organizationId, userId: u.id } : undefined;
+      // Through the same resolver the real seam uses, so a fixture that omits
+      // organizationId models a no-org user rather than an impossible one.
+      return u
+        ? { orgId: resolveOrganizationId({ id: u.id, organizationId: u.organizationId }), userId: u.id }
+        : undefined;
     },
     isOrganizationAdmin: async (c, organizationId) => {
       const u = user(c);

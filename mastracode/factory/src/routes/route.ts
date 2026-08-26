@@ -25,8 +25,16 @@ export interface RouteAuth {
    * called before `tenant()` so the request context is populated.
    */
   ensureUser(c: Context): Promise<unknown>;
-  /** Tenant identity for the request, when signed in. */
-  tenant(c: Context): { orgId?: string; userId: string } | undefined;
+  /**
+   * Tenant identity for the request, when signed in.
+   *
+   * `orgId` is always present. A provider with no organization concept resolves
+   * to a deterministic private organization derived from the user id, so a
+   * route never has to decide what an org-scoped operation means for a user who
+   * has no organization — the answer used to be 403, which is indistinguishable
+   * from "you are not allowed" for a user who simply was not in a team.
+   */
+  tenant(c: Context): { orgId: string; userId: string } | undefined;
   /** Fail-closed check that the caller administers the given organization. */
   isOrganizationAdmin(c: Context, organizationId: string): Promise<boolean>;
 }
