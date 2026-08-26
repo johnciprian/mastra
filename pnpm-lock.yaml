@@ -2318,6 +2318,9 @@ importers:
       '@mastra/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@mastra/factory-auth':
+        specifier: workspace:*
+        version: link:../factory-auth
       '@mastra/slack':
         specifier: workspace:*
         version: link:../../channels/slack
