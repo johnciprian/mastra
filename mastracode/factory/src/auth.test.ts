@@ -619,3 +619,121 @@ describe('org-tenant identity', () => {
     expect(await res.json()).toEqual({ orgId: 'user:user_err', userId: 'user_err' });
   });
 });
+
+/**
+ * The PKCE round trip: a verifier written as a login cookie has to be readable
+ * again at the callback.
+ *
+ * `getLoginCookies` is the write half, and the Factory has always called it.
+ * The read half is `setCallbackCookieHeader`, which was declared on no
+ * interface at all, so the Factory had no way to reach it — a PKCE provider
+ * could stash its verifier at login and then find `handleCallback` handed only
+ * `code` and `state`, with the cookie jar out of reach. That is not a
+ * documentation gap; it is a hosted login that cannot complete.
+ */
+describe('mountFactoryAuth PKCE round trip', () => {
+  /** Pull one cookie's value out of a raw `Cookie` header. */
+  function readCookieValue(header: string | null, name: string): string | undefined {
+    for (const part of header?.split(';') ?? []) {
+      const [key, ...rest] = part.trim().split('=');
+      if (key === name) return rest.join('=');
+    }
+    return undefined;
+  }
+
+  /**
+   * A PKCE-shaped hosted-login provider, built here rather than mocked, so the
+   * seam is exercised rather than asserted. The verifier lives only in the
+   * browser's cookie jar between the two requests: `handleCallback` takes no
+   * argument that could carry it, so the sole channel is the callback
+   * request's `Cookie` header arriving through `setCallbackCookieHeader`. A
+   * provider that cannot see it refuses the exchange, which is what a real one
+   * does — `auth/cloud` throws `PKCEError.missingVerifier()` at exactly this
+   * point.
+   */
+  function pkceProvider(verifier: string) {
+    const seenCookieHeaders: (string | null)[] = [];
+    let callbackCookieHeader: string | null = null;
+    const provider = {
+      name: 'pkce',
+      getLoginUrl: () => 'https://idp.example/authorize',
+      getLoginCookies: () => [`pkce_verifier=${verifier}; Path=/; HttpOnly; Max-Age=600`],
+      setCallbackCookieHeader(header: string | null) {
+        seenCookieHeaders.push(header);
+        callbackCookieHeader = header;
+      },
+      handleCallback: async (code: string) => {
+        const sent = readCookieValue(callbackCookieHeader, 'pkce_verifier');
+        if (!sent) throw new Error('missing PKCE code verifier');
+        return {
+          user: { id: 'u_pkce', email: 'pkce@example.com' },
+          cookies: [`idp_session=${code}.${sent}; Path=/`],
+        };
+      },
+      authenticateToken: async () => null,
+      authorizeUser: async () => true,
+    };
+    return { provider: provider as unknown as IMastraAuthProvider, seenCookieHeaders };
+  }
+
+  it('carries the verifier from the login cookie through to handleCallback', async () => {
+    const { provider } = pkceProvider('verifier-abc');
+    const app = new Hono();
+    mountFactoryAuth(app, { provider });
+
+    // Login writes the verifier the way a browser would receive it.
+    const login = await app.request('/auth/login');
+    expect(login.status).toBe(302);
+    expect(login.headers.get('set-cookie')).toContain('pkce_verifier=verifier-abc');
+
+    // The browser sends it straight back on the callback. If the provider
+    // cannot read it, handleCallback throws and the Factory bounces to
+    // /auth/login with no session cookie at all.
+    const callback = await app.request('/auth/callback?code=code-1&state=uuid-1', {
+      headers: { Cookie: 'pkce_verifier=verifier-abc' },
+    });
+
+    expect(callback.status).toBe(302);
+    expect(callback.headers.get('location')).toBe('/');
+    expect(callback.headers.get('set-cookie')).toContain('idp_session=code-1.verifier-abc');
+  });
+
+  it("hands the provider the callback request's whole Cookie header, not just the verifier", async () => {
+    const { provider, seenCookieHeaders } = pkceProvider('verifier-xyz');
+    const app = new Hono();
+    mountFactoryAuth(app, { provider });
+
+    await app.request('/auth/callback?code=code-2&state=uuid-2', {
+      headers: { Cookie: 'other=1; pkce_verifier=verifier-xyz; another=2' },
+    });
+
+    expect(seenCookieHeaders).toEqual(['other=1; pkce_verifier=verifier-xyz; another=2']);
+  });
+
+  it('passes null when the callback carries no cookies at all', async () => {
+    const { provider, seenCookieHeaders } = pkceProvider('verifier-none');
+    const app = new Hono();
+    mountFactoryAuth(app, { provider });
+
+    const res = await app.request('/auth/callback?code=code-3&state=uuid-3');
+
+    // Nothing to read, so the provider refuses and the Factory bounces — but
+    // it was still given the chance to look, which is the whole point.
+    expect(seenCookieHeaders).toEqual([null]);
+    expect(res.headers.get('location')).toBe('/auth/login');
+  });
+
+  it('leaves a provider that does not implement the read side untouched', async () => {
+    // The shared hostedProvider() double has no setCallbackCookieHeader. The
+    // member is optional, so its callback must behave exactly as before.
+    const { app } = buildApp();
+    const res = await app.request('/auth/callback?code=abc&state=uuid-1', {
+      headers: { Cookie: 'some=cookie' },
+    });
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('/');
+    expect(res.headers.get('set-cookie')).toContain('idp_session=sealed');
+    expect(mockHandleCallback).toHaveBeenCalledWith('abc', 'uuid-1');
+  });
+});

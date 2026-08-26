@@ -8,6 +8,7 @@ import {
 import type { ApiRoute, IMastraAuthProvider, ISessionProvider } from '@mastra/core/server';
 import { toAuthDescriptor } from '@mastra/factory-auth/capabilities';
 import type { AuthDescriptor } from '@mastra/factory-auth/capabilities';
+import { getRequestHeader } from '@mastra/factory-auth/contract';
 import { clearSessionCookie, mintSessionCookie, readSessionCookie } from '@mastra/factory-auth/cookie';
 import type { SessionCookieSite } from '@mastra/factory-auth/cookie';
 import { toAuthIdentity } from '@mastra/factory-auth/identity';
@@ -1088,6 +1089,20 @@ function providerAuthRoutes(provider: IMastraAuthProvider, publicUrl?: string): 
             return c.redirect('/auth/login');
           }
           try {
+            // The read half of the `getLoginCookies` call in /auth/login above.
+            // A PKCE provider wrote its code verifier there and needs it back
+            // to finish the exchange, but `handleCallback` takes only `code`
+            // and `state` — so the callback request's `Cookie` header has to
+            // arrive separately, and this is the only channel for it. Without
+            // this call such a provider throws for a missing verifier and the
+            // catch below bounces the browser to /auth/login, which re-enters
+            // the identity provider: a hosted login that cannot complete.
+            //
+            // Read through the contract's `getRequestHeader` rather than
+            // `c.req.header('Cookie')` so header access here is the same
+            // header access the rest of the kit performs.
+            provider.setCallbackCookieHeader?.(getRequestHeader(c.req.raw, 'cookie'));
+
             // The RAW `state`, exactly as the identity provider echoed it, which
             // is what the codec documents a host hands to `handleCallback`.
             //

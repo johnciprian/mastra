@@ -325,9 +325,7 @@ export class CompositeAuth
    */
   setCallbackCookieHeader(cookieHeader: string | null): void {
     const sso = this.findProvider(isSSOProvider);
-    if (sso && typeof (sso as any).setCallbackCookieHeader === 'function') {
-      (sso as any).setCallbackCookieHeader(cookieHeader);
-    }
+    sso?.setCallbackCookieHeader?.(cookieHeader);
   }
 
   getLoginUrl(redirectUri: string, state: string): string | Promise<string> {
