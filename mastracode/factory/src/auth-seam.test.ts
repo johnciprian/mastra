@@ -227,6 +227,132 @@ describe('buildAuthRoutes', () => {
   });
 });
 
+/**
+ * B8: the OAuth `state` round trip, through the kit's codec.
+ *
+ * `state` is the only channel that survives the bounce to an identity provider
+ * and back, so its format is a contract between this host and every provider —
+ * and the thing that makes it fragile is that the two hosts driving the same
+ * providers hand `handleCallback` different spellings of it. This host passes
+ * the raw value the IdP echoed; `packages/server` splits it and passes the id
+ * half. A provider that keys anything on `state` sees one or the other.
+ */
+describe('OAuth state codec', () => {
+  /** Mount the SSO routes and return the app plus the provider's spies. */
+  function ssoApp(overrides: Record<string, unknown> = {}) {
+    const getLoginUrl = vi.fn(async (_redirectUri: string, _state: string) => 'https://idp.example/login');
+    const handleCallback = vi.fn(async (_code: string, _state: string) => ({
+      user: { id: 'u1' },
+      cookies: ['idp_session=abc'],
+    }));
+    const provider = fakeProvider({ ...ssoCapability({ getLoginUrl, handleCallback }), ...overrides });
+    const app = new Hono();
+    mountFactoryAuth(app, { provider });
+    return { app, getLoginUrl, handleCallback };
+  }
+
+  /** The `state` this host mints for a given destination. */
+  async function mintState(returnTo: string): Promise<string> {
+    const { app, getLoginUrl } = ssoApp();
+    await app.request(`/auth/login?returnTo=${encodeURIComponent(returnTo)}`);
+    return getLoginUrl.mock.calls[0]![1];
+  }
+
+  it('mints state in the documented id|encodedReturnTo format', async () => {
+    const state = await mintState('/agents/42');
+    const delimiter = state.indexOf('|');
+    expect(delimiter).toBeGreaterThan(0);
+    expect(state.slice(delimiter + 1)).toBe(encodeURIComponent('/agents/42'));
+  });
+
+  it('round trips a returnTo that itself contains the delimiter', async () => {
+    // The first `|` is the only significant one. Splitting on every pipe and
+    // taking element 1 works right up until a destination contains one, and a
+    // post-login redirect that quietly goes to `/` is a bug nobody files.
+    const state = await mintState('/search?q=a|b');
+    expect(state.slice(state.indexOf('|') + 1)).toBe(encodeURIComponent('/search?q=a|b'));
+
+    const { app } = ssoApp();
+    const res = await app.request(`/auth/callback?code=ok&state=${encodeURIComponent(state)}`);
+    expect(res.headers.get('location')).toBe('/search?q=a|b');
+  });
+
+  it('hands handleCallback the raw state, exactly as the IdP echoed it', async () => {
+    // This host's half of the disagreement, pinned: the contract documents the
+    // raw value, so narrowing it here would break a provider that stored
+    // something under the full `state` at login.
+    const state = await mintState('/dashboard');
+    const { app, handleCallback } = ssoApp();
+    await app.request(`/auth/callback?code=ok&state=${encodeURIComponent(state)}`);
+    expect(handleCallback).toHaveBeenCalledWith('ok', state);
+  });
+
+  it('lets a provider keyed through parseStateId complete a callback under both hosts', async () => {
+    // The kit's `stateStoreKey(state) = parseStateId(state) ?? state` is what
+    // reconciles the two spellings. A provider using it stores under one key at
+    // login and finds it again whichever host drives the callback. Modelled
+    // here rather than asserted about: the store is real, and a miss throws.
+    const stateStoreKey = (state: string): string => {
+      const delimiter = state.indexOf('|');
+      if (state.length === 0) return state;
+      if (delimiter === -1) return state;
+      if (delimiter === 0) return state;
+      return state.slice(0, delimiter);
+    };
+    const store = new Map<string, { redirectUri: string }>();
+
+    const getLoginUrl = vi.fn(async (redirectUri: string, state: string) => {
+      store.set(stateStoreKey(state), { redirectUri });
+      return 'https://idp.example/login';
+    });
+    const handleCallback = vi.fn(async (_code: string, state: string) => {
+      const entry = store.get(stateStoreKey(state));
+      if (!entry) throw new Error('invalid or expired state');
+      return { user: { id: 'u1' }, cookies: ['idp_session=abc'] };
+    });
+
+    const { app } = ssoApp({ ...ssoCapability({ getLoginUrl, handleCallback }) });
+    await app.request('/auth/login?returnTo=%2Fdashboard');
+    const state = getLoginUrl.mock.calls[0]![1];
+
+    // This host: the raw value.
+    const raw = await app.request(`/auth/callback?code=ok&state=${encodeURIComponent(state)}`);
+    expect(raw.headers.get('location')).toBe('/dashboard');
+
+    // packages/server: the id half only. Same provider, same store, same key.
+    const idHalf = state.slice(0, state.indexOf('|'));
+    expect(await handleCallback('ok', idHalf)).toMatchObject({ user: { id: 'u1' } });
+  });
+
+  it.each([
+    { what: 'no state at all', state: undefined, expected: '/' },
+    { what: 'a state with no delimiter', state: 'opaque-provider-state', expected: '/' },
+    { what: 'a malformed percent escape', state: 'id|%zz', expected: '/' },
+    { what: 'an absolute URL', state: `id|${encodeURIComponent('https://evil.com')}`, expected: '/' },
+    { what: 'a protocol-relative URL', state: `id|${encodeURIComponent('//evil.com')}`, expected: '/' },
+    { what: 'a backslash-smuggled host', state: `id|${encodeURIComponent('/\\evil.com')}`, expected: '/' },
+    {
+      what: 'an already-encoded protocol-relative URL, which must not be decoded twice',
+      state: `id|${encodeURIComponent('/%2F%2Fevil.com')}`,
+      expected: '/%2F%2Fevil.com',
+    },
+  ])('sends the user to $what safely', async ({ state, expected }) => {
+    const { app } = ssoApp();
+    const query = state === undefined ? '' : `&state=${encodeURIComponent(state)}`;
+    const res = await app.request(`/auth/callback?code=ok${query}`);
+    expect(res.headers.get('location')).toBe(expected);
+  });
+
+  it('survives a state the query parser turned into something other than a string', async () => {
+    // `?state=a&state=b` is an array under some parsers, `?state[x]=y` an
+    // object. Neither is a string, and the codec is documented as total.
+    const { app } = ssoApp();
+    const res = await app.request('/auth/callback?code=ok&state=a&state=b');
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('/');
+  });
+});
+
 /** The `/auth/me` body, as far as these tests read it. */
 interface AuthMeBody {
   authenticated: boolean;

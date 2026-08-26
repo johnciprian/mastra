@@ -10,6 +10,7 @@ import { toAuthDescriptor } from '@mastra/factory-auth/capabilities';
 import type { AuthDescriptor } from '@mastra/factory-auth/capabilities';
 import { toAuthIdentity } from '@mastra/factory-auth/identity';
 import type { AuthIdentity } from '@mastra/factory-auth/identity';
+import { decodeState, encodeState } from '@mastra/factory-auth/oauth-state';
 import type { Context, Hono } from 'hono';
 
 import type { RouteAuth } from './routes/route.js';
@@ -604,31 +605,6 @@ async function handleAuthMe(provider: IMastraAuthProvider, c: Context): Promise<
 }
 
 /**
- * Encode a validated returnTo path into the OAuth `state` parameter.
- *
- * Pipe format (`uuid|encodedPath`) is the contract `MastraAuthStudio` parses
- * to forward the path as the platform's `post_login_redirect`; a JSON blob
- * here silently degrades every post-login redirect to `/`.
- */
-function encodeState(returnTo: string): string {
-  return `${crypto.randomUUID()}|${encodeURIComponent(returnTo)}`;
-}
-
-/** Decode the OAuth `state` parameter back into a sanitized returnTo path. */
-function decodeState(state: string | undefined): string {
-  if (!state) return '/';
-  const pipeIndex = state.indexOf('|');
-  if (pipeIndex !== -1) {
-    try {
-      return sanitizeReturnTo(decodeURIComponent(state.slice(pipeIndex + 1)));
-    } catch {
-      return '/';
-    }
-  }
-  return '/';
-}
-
-/**
  * Short-lived cookie stashing the post-login destination across the hosted
  * OAuth round-trip. Providers/platforms differ in whether they echo `state`
  * back to the callback, so the cookie is the reliable channel; `state` (when
@@ -728,7 +704,7 @@ function providerAuthRoutes(provider: IMastraAuthProvider, publicUrl?: string): 
         method: 'GET',
         handler: async c => {
           const code = c.req.query('code');
-          const stateReturnTo = decodeState(c.req.query('state'));
+          const { returnTo: stateReturnTo } = decodeState(c.req.query('state'));
           const cookieReturnTo = sanitizeReturnTo(readReturnToCookie(c));
           const returnTo = cookieReturnTo !== '/' ? cookieReturnTo : stateReturnTo;
           c.header('Set-Cookie', clearReturnToCookieHeader(), { append: true });
@@ -746,6 +722,22 @@ function providerAuthRoutes(provider: IMastraAuthProvider, publicUrl?: string): 
             return c.redirect('/auth/login');
           }
           try {
+            // The RAW `state`, exactly as the identity provider echoed it, which
+            // is what the codec documents a host hands to `handleCallback`.
+            //
+            // The other host disagrees: `packages/server` splits the value and
+            // passes only the id half. A provider that stores something under
+            // the `state` it was given at login and looks it up again here sees
+            // two different spellings depending on who is driving it, and gets
+            // "invalid or expired state" under one of them. The kit's answer is
+            // `parseStateId(state) ?? state`, which normalizes both spellings to
+            // the same key; `auth/okta` uses exactly that and works under both.
+            //
+            // So this deliberately keeps sending the raw value rather than
+            // matching the other host: raw is what the contract documents, and a
+            // provider written against that contract already handles it. Narrow
+            // the value here and a provider that stored under the full `state`
+            // would break instead.
             const result = await provider.handleCallback(code, c.req.query('state') ?? '');
             if (result.cookies?.length) {
               // Provider populated cookies directly (e.g. WorkOS AuthKit builds
