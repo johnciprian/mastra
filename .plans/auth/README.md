@@ -44,17 +44,24 @@ so the boundary is a build error rather than a code-review habit.
 
 ## Status
 
-**23 of 65 tasks done.** Each task in `tasks.json` carries a `status` field (`done` /
-`pending`) — that file is the source of truth for progress; update it when a task merges.
+**30 of 65 tasks done.** Each task in `tasks.json` carries a `status` field (`done` /
+`pending` / `held`) — that file is the source of truth for progress; update it when a
+task merges.
 
 | Lane | | Done |
 | --- | --- | --- |
 | K | Kit foundation (`mastracode/factory-auth`) | 21 / 21 ✅ |
-| B | Backend seam (`mastracode/factory`) | 1 / 19 |
-| U | UI seam (`factory-ui`) | 0 / 9 |
-| C | Conformance and providers | 1 / 7 |
-| D | Documentation | 0 / 6 |
+| B | Backend seam (`mastracode/factory`) | 3 / 19 |
+| U | UI seam (`factory-ui`) | 1 / 9 |
+| C | Conformance and providers | 4 / 7 (C2 held) |
+| D | Documentation | 1 / 6 |
 | R | Release | 0 / 3 |
+
+**`C2` is `held`:** implemented and green as a diagnosis, but deliberately unmerged. It
+runs conformance against `auth/workos` and `auth/studio` and four checks fail — every one
+a real provider defect (listed below). The PR gate runs `vitest --project 'unit:*'`, which
+includes both packages, so merging as-is turns CI red repo-wide. It lands once the kit can
+express "known-failing, tracked" via `knownFailures`.
 
 `B18`, `B19`, `U9` and `R3` are deferred by one release and are not on the path to A−,
 so 38 remain to reach the target grade.
