@@ -152,23 +152,6 @@ export class MastraAuthFirebase extends MastraAuthProvider<FirebaseUser> {
       });
     }
 
-    // Assigned here rather than declared as a prototype method, and the reason is
-    // a trap worth naming: `MastraAuthProvider`'s constructor runs
-    // `this.mapUserToResourceId = options?.mapUserToResourceId`, unconditionally.
-    // For every provider that does not forward the option — this one forwards
-    // only `name` — that installs an own property holding `undefined`, which
-    // shadows any method of the same name on the prototype. A prototype
-    // implementation would therefore be invisible to
-    // `typeof provider.mapUserToResourceId === 'function'`. Assigning after
-    // `super` and before `registerOptions` keeps this as the default while
-    // leaving a caller-supplied option free to replace it.
-    //
-    // `uid` is the field Firebase's own API names as the user id. It is also
-    // what the identity normalizer resolves for a `DecodedIdToken`, so the two
-    // halves of a deployment — memory resources, keyed on this, and everything
-    // else, keyed on the identity — agree about who this is.
-    this.mapUserToResourceId = (user: FirebaseUser) => user?.uid;
-
     this.registerOptions(options);
   }
 
@@ -232,6 +215,21 @@ export class MastraAuthFirebase extends MastraAuthProvider<FirebaseUser> {
       // 403 instead of 500.
       return false;
     }
+  }
+
+  /**
+   * The memory resource id for an authenticated user: their `uid`.
+   *
+   * `uid` is the field Firebase's own API names as the user id. It is also what
+   * the identity normalizer resolves for a `DecodedIdToken`, so the two halves of
+   * a deployment — memory resources, keyed on this, and everything else, keyed on
+   * the identity — agree about who this is.
+   *
+   * A caller-supplied `mapUserToResourceId` option replaces this, via
+   * `registerOptions`.
+   */
+  mapUserToResourceId(user: FirebaseUser): string | undefined {
+    return user?.uid;
   }
 
   /**

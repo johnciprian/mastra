@@ -82,7 +82,27 @@ export abstract class MastraAuthProvider<TUser = unknown> extends MastraBase imp
 
     this.protected = options?.protected;
     this.public = options?.public;
-    this.mapUserToResourceId = options?.mapUserToResourceId;
+
+    // Assign only when the option is actually supplied. `mapUserToResourceId` is
+    // declared above as an *optional method*, so the documented way for a subclass
+    // to implement it is a prototype method — and every consumer duck-types it with
+    // `typeof provider.mapUserToResourceId === 'function'`. An unconditional
+    // assignment here installs an own property holding `undefined` on every
+    // provider that does not forward the option (which is all of them; they pass
+    // only `name`), and that own `undefined` shadows the subclass's own prototype
+    // method. The method became unreachable and the duck-type read false, with no
+    // error anywhere: hosts silently fell back to the identity id, and the
+    // conformance check for it reported "this provider does not implement the
+    // optional mapUserToResourceId" about providers that plainly did.
+    //
+    // A supplied option still wins, which is the documented override — it is only
+    // the absent case that now leaves the prototype alone. Contrast `authorizeUser`
+    // just above, which has always been guarded, and `protected`/`public`, which
+    // are plain data the base declares and owns rather than a method a subclass
+    // supplies.
+    if (options?.mapUserToResourceId) {
+      this.mapUserToResourceId = options.mapUserToResourceId;
+    }
   }
 
   /**
