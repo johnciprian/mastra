@@ -469,12 +469,29 @@ describe('mountFactoryAuth /auth routes (enabled)', () => {
     expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
   });
 
+  /**
+   * The descriptor this mocked WorkOS provider derives to: a hosted login with
+   * organizations, no credentials sign-in, and no server-side session (the mock
+   * implements neither createSession nor validateSession). Spelled out once and
+   * shared, so a change in what the provider can do shows up as one diff rather
+   * than three.
+   */
+  const workosDescriptor = {
+    signIn: { kind: 'hosted', providerHint: 'generic' },
+    features: { logout: true, organizations: true, refresh: false, sessionRevocation: false },
+  };
+
   it('/auth/me reports authenticated:false when no session', async () => {
     mockAuthenticate.mockResolvedValue(null);
     const { app } = buildApp();
     const res = await app.request('/auth/me');
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ authenticated: false, user: null, provider: 'workos' });
+    expect(await res.json()).toEqual({
+      authenticated: false,
+      user: null,
+      provider: 'workos',
+      auth: workosDescriptor,
+    });
   });
 
   it('/auth/me reports the user when authenticated', async () => {
@@ -498,6 +515,7 @@ describe('mountFactoryAuth /auth routes (enabled)', () => {
         organizationId: 'org_new',
       },
       provider: 'workos',
+      auth: workosDescriptor,
     });
     expect(mockEnsureOrganization).toHaveBeenCalledWith('user_me');
   });
@@ -516,8 +534,22 @@ describe('mountFactoryAuth /auth routes (enabled)', () => {
       authenticated: true,
       user: { email: 'user@example.com', name: 'User', organizationId: 'org_a', userId: 'user_1' },
       provider: 'workos',
+      auth: workosDescriptor,
     });
     expect(mockEnsureOrganization).not.toHaveBeenCalled();
+  });
+
+  it('/auth/me states no sign-up field for the hosted-login provider', async () => {
+    // WorkOS has no credentials sign-in, so neither the descriptor's positive
+    // signUpEnabled nor the legacy negative signUpDisabled is claimed.
+    mockAuthenticate.mockResolvedValue(null);
+    const { app } = buildApp();
+    const body = (await (await app.request('/auth/me')).json()) as {
+      signUpDisabled?: boolean;
+      auth: { signIn: { signUpEnabled?: boolean } };
+    };
+    expect(body.auth.signIn.signUpEnabled).toBeUndefined();
+    expect(body.signUpDisabled).toBeUndefined();
   });
 });
 
