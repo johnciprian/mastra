@@ -1185,7 +1185,7 @@
     },
     {
       "id": "P10",
-      "status": "pending",
+      "status": "done",
       "title": "Stop mapUserToResourceId shadowing itself",
       "lane": "K",
       "size": "S",
@@ -1319,7 +1319,7 @@
     },
     {
       "id": "P19",
-      "status": "pending",
+      "status": "done",
       "title": "Typecheck the conformance suites in auth/*",
       "lane": "C",
       "size": "S",
@@ -1331,6 +1331,51 @@
       ],
       "detail": "Every auth/* package excludes **/*.test.ts from its tsconfig, so no conformance suite is typechecked anywhere - vitest transpiles without checking. P3 found this by typechecking its four suites on a throwaway config and surfaced two genuine type errors: getLoginUrl and handleCallback do not exist on the provider class type in auth0/clerk/google, because ssoEnabled attaches them dynamically at construction. P3 fixed its own four by narrowing through the kit isSSOProvider guard, which also asserts the attachment happened. The seven pre-existing suites have never been typechecked either. Changing the tsconfig exclude is a shape change across eleven packages and was deliberately not made unasked.",
       "doneWhen": "A type error in any auth/*/src/conformance.test.ts fails CI. Verified by introducing one and observing the failure, then reverting."
+    },
+    {
+      "id": "P20",
+      "status": "pending",
+      "title": "Widen MastraAuthBetterAuthOptions.auth so the documented usage typechecks",
+      "lane": "C",
+      "size": "S",
+      "deps": [
+        "P19"
+      ],
+      "files": [
+        "auth/better-auth/src/index.ts"
+      ],
+      "detail": "P19 found that `new MastraAuthBetterAuth({ auth: betterAuth({...}) })` does not typecheck for anyone. betterAuth() is generic over its exact options object and Auth<T> is invariant in T (DBAdapter<T> appears in both a covariant and a contravariant position), so the inferred Auth<{...}> is not assignable to the bare Auth the option declares. That call is exactly what auth/better-auth/README.md:19, docs integrations/auth/better-auth.mdx:51, docs reference/auth/better-auth.mdx:20 and the class JSDoc all tell users to write. index.ts:298 already documents the defect and widens to BetterAuthOptions for the instance it builds itself; nobody applied the same widening to the public option. Changes a published API, so it was not done inside a test task.",
+      "doneWhen": "The documented snippet typechecks verbatim in a fresh consumer project, and the docs examples are covered by the docs typechecker."
+    },
+    {
+      "id": "P21",
+      "status": "pending",
+      "title": "Typecheck the remaining auth/* test files",
+      "lane": "C",
+      "size": "M",
+      "deps": [
+        "P19"
+      ],
+      "files": [
+        "auth/*/tsconfig.conformance.json",
+        "auth/*/vitest.config.ts"
+      ],
+      "detail": "P19 scoped to conformance.test.ts and measured the rest: 66 errors across 7 files in 5 packages -- workos/fga-provider (23), neon/index (20), better-auth/index (15), workos/index (4), cloud/index (2), google/index (1), better-auth/deferred (1). Mostly partial object literals standing in for full SDK types (WorkOSUser, RoleMapping), plus one that looks like real drift: authorizeUser does not exist in MastraAuthWorkosOptions. Widening the file list is mechanical; fixing 66 errors is not, and some may be provider findings rather than test bugs.",
+      "doneWhen": "Every test file under auth/* is typechecked in CI, and each error fixed was classified as a test bug or a provider finding."
+    },
+    {
+      "id": "P22",
+      "status": "pending",
+      "title": "Fix the ~10% flake in the auth unit suites",
+      "lane": "C",
+      "size": "M",
+      "deps": [],
+      "files": [
+        "auth/*/src/*.test.ts",
+        "auth/*/vitest.config.ts"
+      ],
+      "detail": "Measured by P19 on the baseline as well as on its own branch: running all auth unit projects fails roughly 1 run in 10, in a different package each time (neon on baseline, okta on the branch). Cause is isolate:false plus nine index.test.ts files calling vi.mock('jose') and similar, whose module registry bleeds into the same package's real-jose conformance.test.ts when worker scheduling puts index first. Fixing means editing index.test.ts or flipping isolate; both were outside P19's remit. A 10% flake on a suite that now gates merges will erode trust in the gate.",
+      "doneWhen": "The auth unit projects pass 20 consecutive full runs."
     }
   ],
   "criticalPath": [
