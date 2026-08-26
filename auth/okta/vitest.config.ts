@@ -6,7 +6,13 @@ export default defineConfig({
       {
         test: {
           name: 'unit:auth/okta',
-          isolate: false,
+          // Isolated, unlike almost every other project in this repo: these
+          // packages run a suite that mocks the vendor SDK next to a conformance
+          // suite that must NOT have it mocked, and with a shared module registry
+          // whichever file loads the module first wins. Costs nothing measurable
+          // here - isolated and shared time the same, to within 1%. See the
+          // isolation check in .github/workflows/auth-conformance-gate.test.ts.
+          isolate: true,
           globals: true,
           include: ['src/**/*.test.ts'],
         },
