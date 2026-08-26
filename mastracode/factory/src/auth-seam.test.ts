@@ -1197,3 +1197,148 @@ describe('logout', () => {
     });
   });
 });
+
+/**
+ * B11: transparent session refresh on Factory routes.
+ *
+ * `packages/server` already refreshes an expired session on `/api/*`. The
+ * Factory did not, so the same provider with a working `refreshSession` kept an
+ * API client signed in indefinitely and signed a browser out of the Factory the
+ * moment its access token expired. Same session, two lifetimes, decided only by
+ * which host served the route.
+ */
+describe('session refresh', () => {
+  /**
+   * A provider whose access token expires after the first use. `authenticateToken`
+   * accepts only the token currently in `state.valid`, and `refreshSession` mints
+   * the next one — so a request presenting a stale cookie can only succeed by
+   * actually going through the refresh path.
+   */
+  function expiringProvider(overrides: Record<string, unknown> = {}) {
+    const state = { valid: 'token-2' };
+    const refreshSession = vi.fn(async (sessionId: string) => (sessionId === 'sess-1' ? { id: sessionId } : null));
+    const getSessionIdFromRequest = vi.fn(() => 'sess-1');
+    const getSessionHeaders = vi.fn(() => ({ 'Set-Cookie': `refreshed=${state.valid}; Path=/; HttpOnly` }));
+    const authenticateToken = vi.fn(async (token: string) =>
+      token === state.valid ? { id: 'u1', organizationId: 'org_a' } : null,
+    );
+    const provider = fakeProvider({
+      authenticateToken,
+      createSession: vi.fn(),
+      validateSession: vi.fn(),
+      getSessionIdFromRequest,
+      refreshSession,
+      getSessionHeaders,
+      ...overrides,
+    });
+    return { provider, refreshSession, getSessionIdFromRequest, authenticateToken };
+  }
+
+  function gatedApp(provider: IMastraAuthProvider): Hono {
+    const app = new Hono();
+    mountFactoryAuth(app, { provider });
+    app.get('/web/whoami', c => c.json(factoryAuthTenant(c) ?? { tenant: null }));
+    return app;
+  }
+
+  it('refreshes an expired session and serves the request', async () => {
+    const { provider, refreshSession } = expiringProvider();
+    const res = await gatedApp(provider).request('/web/whoami', {
+      headers: { Accept: 'application/json', Authorization: 'Bearer token-1' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ orgId: 'org_a', userId: 'u1' });
+    expect(refreshSession).toHaveBeenCalledWith('sess-1');
+  });
+
+  it('sends the refreshed cookie back on the request that triggered the refresh', async () => {
+    // Without this the next request presents the same expired cookie and
+    // refreshes again — working, but re-refreshing forever.
+    const { provider } = expiringProvider();
+    const res = await gatedApp(provider).request('/web/whoami', {
+      headers: { Accept: 'application/json', Authorization: 'Bearer token-1' },
+    });
+
+    expect(res.headers.getSetCookie()).toContain('refreshed=token-2; Path=/; HttpOnly');
+  });
+
+  it('does not refresh when the first authentication already succeeded', async () => {
+    const { provider, refreshSession } = expiringProvider();
+    const res = await gatedApp(provider).request('/web/whoami', {
+      headers: { Accept: 'application/json', Authorization: 'Bearer token-2' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(refreshSession).not.toHaveBeenCalled();
+  });
+
+  it('401s without refreshing when the provider cannot refresh', async () => {
+    // isSessionProvider narrows on createSession/validateSession, so a provider
+    // can pass that guard with none of the three refresh members.
+    const provider = fakeProvider({
+      authenticateToken: vi.fn(async () => null),
+      createSession: vi.fn(),
+      validateSession: vi.fn(),
+    });
+    const res = await gatedApp(provider).request('/web/whoami', { headers: { Accept: 'application/json' } });
+    expect(res.status).toBe(401);
+  });
+
+  it('401s when the request carries no session id to refresh', async () => {
+    const { provider, refreshSession } = expiringProvider({ getSessionIdFromRequest: vi.fn(() => null) });
+    const res = await gatedApp(provider).request('/web/whoami', {
+      headers: { Accept: 'application/json', Authorization: 'Bearer token-1' },
+    });
+
+    expect(res.status).toBe(401);
+    expect(refreshSession).not.toHaveBeenCalled();
+  });
+
+  it('401s and sends no cookie when the refresh returns nothing', async () => {
+    const { provider } = expiringProvider({ refreshSession: vi.fn(async () => null) });
+    const res = await gatedApp(provider).request('/web/whoami', {
+      headers: { Accept: 'application/json', Authorization: 'Bearer token-1' },
+    });
+
+    expect(res.status).toBe(401);
+    expect(res.headers.getSetCookie()).toEqual([]);
+  });
+
+  it('401s and sends no cookie when the refresh throws', async () => {
+    const { provider } = expiringProvider({
+      refreshSession: vi.fn(async () => {
+        throw new Error('session store unreachable');
+      }),
+    });
+    const res = await gatedApp(provider).request('/web/whoami', {
+      headers: { Accept: 'application/json', Authorization: 'Bearer token-1' },
+    });
+
+    expect(res.status).toBe(401);
+    expect(res.headers.getSetCookie()).toEqual([]);
+  });
+
+  it('401s and drops the cookie when the refreshed session still does not authenticate', async () => {
+    // Sending a Set-Cookie for a session that did not work would replace the
+    // browser's cookie with one that is no better, and sign the person out
+    // holding a fresh cookie.
+    const { provider } = expiringProvider({
+      getSessionHeaders: vi.fn(() => ({ 'Set-Cookie': 'refreshed=still-wrong; Path=/' })),
+    });
+    const res = await gatedApp(provider).request('/web/whoami', {
+      headers: { Accept: 'application/json', Authorization: 'Bearer token-1' },
+    });
+
+    expect(res.status).toBe(401);
+    expect(res.headers.getSetCookie()).toEqual([]);
+  });
+
+  it('redirects an expired browser navigation to /signin when the refresh fails', async () => {
+    const { provider } = expiringProvider({ refreshSession: vi.fn(async () => null) });
+    const res = await gatedApp(provider).request('/web/whoami', { headers: { Accept: 'text/html' } });
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('/signin?returnTo=');
+  });
+});
