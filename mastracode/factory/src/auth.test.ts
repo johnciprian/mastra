@@ -1,4 +1,3 @@
-import { MastraAuthWorkos } from '@mastra/auth-workos';
 import type { IMastraAuthProvider } from '@mastra/core/server';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -11,58 +10,60 @@ import {
   factoryAuthTenant,
 } from './auth.js';
 
-// Mock @mastra/auth-workos so the tests exercise the gating/routing logic in
-// this module without constructing a real WorkOS client. `authenticateToken`'s
-// behavior is swapped per-test via `mockAuthenticate`.
+// A hosted-login provider, built here rather than mocked out of a vendor
+// package. This suite is about the provider-neutral gate — which routes it
+// derives, who it lets through, what it reports to the SPA — and none of that
+// depends on which vendor is behind the provider. Building the double locally
+// says so, and it is what lets the module under test have no vendor dependency
+// at all. `authenticateToken`'s behavior is swapped per-test via
+// `mockAuthenticate`.
 //
 // Every `mockAuthenticate` payload below names the user with `id`. These
-// fixtures used to say `workosId` instead — a shape the real provider cannot
-// produce, since it spreads a mapped user carrying `id` and only then adds
-// `workosId`, defaulting it to that same id. They passed because the pre-kit
-// reader accepted the vendor key as an identifier.
-//
-// The vendor key is no longer part of any neutral shape here, so the payloads
-// that still exercise it deliberately live in `auth-seam.test.ts`, where the
-// differential table asserts what each flag path makes of them.
+// fixtures used to say `workosId` instead — a shape no provider actually
+// emits on its own — and they passed only because the pre-kit reader accepted
+// that vendor key as an identifier. The payloads that still exercise it
+// deliberately live in `auth-seam.test.ts`, where the differential table
+// asserts what each flag path makes of them.
 const mockAuthenticate = vi.fn();
-const mockGetLoginUrl = vi.fn((_redirectUri: string, _state: string) => 'https://workos.example/login');
-const mockHandleCallback = vi.fn(async () => ({ user: { email: 'a@b.com' }, cookies: ['wos_session=sealed; Path=/'] }));
-const mockGetLogoutUrl = vi.fn(async () => 'https://workos.example/logout');
-const mockGetClearSessionHeaders = vi.fn(() => ({ 'Set-Cookie': 'wos_session=; Path=/; HttpOnly; Max-Age=0' }));
-// Personal-org bootstrap (IOrganizationsProvider). The WorkOS-specific
-// bootstrap mechanics live in @mastra/auth-workos and are covered there; here
-// the mock models "no org → org_new".
+const mockGetLoginUrl = vi.fn((_redirectUri: string, _state: string) => 'https://idp.example/login');
+const mockHandleCallback = vi.fn(async () => ({
+  user: { email: 'a@b.com' },
+  cookies: ['idp_session=sealed; Path=/'],
+}));
+const mockGetLogoutUrl = vi.fn(async () => 'https://idp.example/logout');
+const mockGetClearSessionHeaders = vi.fn(() => ({ 'Set-Cookie': 'idp_session=; Path=/; HttpOnly; Max-Age=0' }));
+// Personal-org bootstrap (IOrganizationsProvider). A provider's own bootstrap
+// mechanics are covered in its package; here the double models "no org → org_new".
 const mockEnsureOrganization = vi.fn(async (_userId: string) => 'org_new');
 const mockIsOrganizationAdmin = vi.fn(async () => false);
 
-vi.mock('@mastra/auth-workos', () => ({
-  MastraAuthWorkos: class {
-    name = 'workos';
-    getLoginUrl = mockGetLoginUrl;
-    handleCallback = mockHandleCallback;
-    authenticateToken = mockAuthenticate;
-    authorizeUser = async () => true;
-    getLogoutUrl = mockGetLogoutUrl;
-    getClearSessionHeaders = mockGetClearSessionHeaders;
-    ensureOrganization = mockEnsureOrganization;
-    isOrganizationAdmin = mockIsOrganizationAdmin;
-  },
-}));
-
 const ORIGINAL_ENV = { ...process.env };
 
-/** The provider under test, constructed and passed explicitly by each caller. */
-function workosProvider(): IMastraAuthProvider {
-  return new MastraAuthWorkos({}) as unknown as IMastraAuthProvider;
+/**
+ * The provider under test: hosted login (`ISSOProvider`) plus organizations,
+ * constructed and passed explicitly by each caller.
+ */
+function hostedProvider(): IMastraAuthProvider {
+  return {
+    name: 'hosted',
+    getLoginUrl: mockGetLoginUrl,
+    handleCallback: mockHandleCallback,
+    authenticateToken: mockAuthenticate,
+    authorizeUser: async () => true,
+    getLogoutUrl: mockGetLogoutUrl,
+    getClearSessionHeaders: mockGetClearSessionHeaders,
+    ensureOrganization: mockEnsureOrganization,
+    isOrganizationAdmin: mockIsOrganizationAdmin,
+  } as unknown as IMastraAuthProvider;
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
   // Restore default mock behavior after clearAllMocks wipes it.
-  mockGetLoginUrl.mockReturnValue('https://workos.example/login');
-  mockHandleCallback.mockResolvedValue({ user: { email: 'a@b.com' }, cookies: ['wos_session=sealed; Path=/'] });
-  mockGetLogoutUrl.mockResolvedValue('https://workos.example/logout');
-  mockGetClearSessionHeaders.mockReturnValue({ 'Set-Cookie': 'wos_session=; Path=/; HttpOnly; Max-Age=0' });
+  mockGetLoginUrl.mockReturnValue('https://idp.example/login');
+  mockHandleCallback.mockResolvedValue({ user: { email: 'a@b.com' }, cookies: ['idp_session=sealed; Path=/'] });
+  mockGetLogoutUrl.mockResolvedValue('https://idp.example/logout');
+  mockGetClearSessionHeaders.mockReturnValue({ 'Set-Cookie': 'idp_session=; Path=/; HttpOnly; Max-Age=0' });
   mockEnsureOrganization.mockResolvedValue('org_new');
 });
 
@@ -73,7 +74,7 @@ afterEach(() => {
 /** Build a gated app where the protected catch-all returns 200 "ok". */
 function buildApp() {
   const app = new Hono();
-  const enabled = mountFactoryAuth(app, { provider: workosProvider() });
+  const enabled = mountFactoryAuth(app, { provider: hostedProvider() });
   app.get('*', c => c.text('ok'));
   app.post('*', c => c.text('ok'));
   return { app, enabled };
@@ -85,7 +86,7 @@ describe('active provider resolution', () => {
   });
 
   it('enables auth when a provider is passed', () => {
-    expect(mountFactoryAuth(new Hono(), { provider: workosProvider() })).toBe(true);
+    expect(mountFactoryAuth(new Hono(), { provider: hostedProvider() })).toBe(true);
   });
 
   it('ignores the WORKOS_* environment entirely', () => {
@@ -321,7 +322,7 @@ describe('mountFactoryAuth gate (enabled)', () => {
       avatarUrl: 'https://avatars.example/user.png',
     });
     const app = new Hono();
-    mountFactoryAuth(app, { provider: workosProvider() });
+    mountFactoryAuth(app, { provider: hostedProvider() });
     app.get('/web/whoami', c => {
       const user = getFactoryAuthUser(c);
       return c.json({ userId: getFactoryAuthUserId(user), avatarUrl: user?.avatarUrl });
@@ -343,7 +344,7 @@ describe('mountFactoryAuth gate (enabled)', () => {
       },
     });
     const app = new Hono();
-    mountFactoryAuth(app, { provider: workosProvider() });
+    mountFactoryAuth(app, { provider: hostedProvider() });
     app.get('/web/whoami', c => {
       const user = getFactoryAuthUser(c);
       return c.json({
@@ -364,11 +365,11 @@ describe('mountFactoryAuth gate (enabled)', () => {
 });
 
 describe('mountFactoryAuth /auth routes (enabled)', () => {
-  it('redirects /auth/login to the WorkOS login URL', async () => {
+  it('redirects /auth/login to the hosted login URL', async () => {
     const { app } = buildApp();
     const res = await app.request('/auth/login?returnTo=/dashboard');
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toBe('https://workos.example/login');
+    expect(res.headers.get('location')).toBe('https://idp.example/login');
     expect(mockGetLoginUrl).toHaveBeenCalledOnce();
   });
 
@@ -408,7 +409,7 @@ describe('mountFactoryAuth /auth routes (enabled)', () => {
     const res = await app.request(`/auth/callback?code=abc&state=${state}`);
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toBe('/dashboard');
-    expect(res.headers.get('set-cookie')).toContain('wos_session=sealed');
+    expect(res.headers.get('set-cookie')).toContain('idp_session=sealed');
     // Hono percent-decodes query values, so the provider sees the raw pipe form.
     expect(mockHandleCallback).toHaveBeenCalledWith('abc', 'uuid-1|/dashboard');
   });
@@ -463,11 +464,11 @@ describe('mountFactoryAuth /auth routes (enabled)', () => {
     expect(res.headers.get('location')).toBe('/auth/login');
   });
 
-  it('logout clears the session cookie and redirects to the WorkOS logout URL', async () => {
+  it('logout clears the session cookie and redirects to the hosted logout URL', async () => {
     const { app } = buildApp();
     const res = await app.request('/auth/logout');
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toBe('https://workos.example/logout');
+    expect(res.headers.get('location')).toBe('https://idp.example/logout');
     expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
   });
 
@@ -481,13 +482,12 @@ describe('mountFactoryAuth /auth routes (enabled)', () => {
   });
 
   /**
-   * The descriptor this mocked WorkOS provider derives to: a hosted login with
-   * organizations, no credentials sign-in, and no server-side session (the mock
-   * implements neither createSession nor validateSession). Spelled out once and
-   * shared, so a change in what the provider can do shows up as one diff rather
-   * than three.
+   * The descriptor this provider derives to: a hosted login with organizations,
+   * no credentials sign-in, and no server-side session (the double implements
+   * neither createSession nor validateSession). Spelled out once and shared, so
+   * a change in what the provider can do shows up as one diff rather than three.
    */
-  const workosDescriptor = {
+  const hostedDescriptor = {
     signIn: { kind: 'hosted', providerHint: 'generic' },
     features: { logout: true, organizations: true, refresh: false, sessionRevocation: false },
   };
@@ -500,8 +500,8 @@ describe('mountFactoryAuth /auth routes (enabled)', () => {
     expect(await res.json()).toEqual({
       authenticated: false,
       user: null,
-      provider: 'workos',
-      auth: workosDescriptor,
+      provider: 'hosted',
+      auth: hostedDescriptor,
     });
   });
 
@@ -525,8 +525,8 @@ describe('mountFactoryAuth /auth routes (enabled)', () => {
         avatarUrl: 'https://avatars.example/user.png',
         organizationId: 'org_new',
       },
-      provider: 'workos',
-      auth: workosDescriptor,
+      provider: 'hosted',
+      auth: hostedDescriptor,
     });
     expect(mockEnsureOrganization).toHaveBeenCalledWith('user_me');
   });
@@ -544,14 +544,14 @@ describe('mountFactoryAuth /auth routes (enabled)', () => {
     expect(await res.json()).toEqual({
       authenticated: true,
       user: { email: 'user@example.com', name: 'User', organizationId: 'org_a', userId: 'user_1' },
-      provider: 'workos',
-      auth: workosDescriptor,
+      provider: 'hosted',
+      auth: hostedDescriptor,
     });
     expect(mockEnsureOrganization).not.toHaveBeenCalled();
   });
 
   it('/auth/me states no sign-up field for the hosted-login provider', async () => {
-    // WorkOS has no credentials sign-in, so neither the descriptor's positive
+    // A hosted login has no credentials sign-in, so neither the descriptor's positive
     // signUpEnabled nor the legacy negative signUpDisabled is claimed.
     mockAuthenticate.mockResolvedValue(null);
     const { app } = buildApp();
@@ -574,7 +574,7 @@ describe('org-tenant identity', () => {
   it('gate stashes organizationId and factoryAuthTenant returns { orgId, userId }', async () => {
     mockAuthenticate.mockResolvedValue({ id: 'user_1', organizationId: 'org_a', email: 'u@e.com' });
     const app = new Hono();
-    mountFactoryAuth(app, { provider: workosProvider() });
+    mountFactoryAuth(app, { provider: hostedProvider() });
     app.get('/web/whoami', c => c.json(factoryAuthTenant(c) ?? { tenant: null }));
 
     const res = await app.request('/web/whoami', { headers: { Accept: 'application/json' } });
@@ -587,7 +587,7 @@ describe('org-tenant identity', () => {
   it('gate bootstraps a no-org user so factoryAuthTenant yields the new org', async () => {
     mockAuthenticate.mockResolvedValue({ id: 'user_boot', email: 'boot@example.com' });
     const app = new Hono();
-    mountFactoryAuth(app, { provider: workosProvider() });
+    mountFactoryAuth(app, { provider: hostedProvider() });
     app.get('/web/whoami', c => c.json(factoryAuthTenant(c) ?? { tenant: null }));
 
     const res = await app.request('/web/whoami', { headers: { Accept: 'application/json' } });
@@ -602,7 +602,7 @@ describe('org-tenant identity', () => {
     mockEnsureOrganization.mockResolvedValue(undefined as unknown as string);
     mockAuthenticate.mockResolvedValue({ id: 'user_solo', email: 'solo@e.com' });
     const app = new Hono();
-    mountFactoryAuth(app, { provider: workosProvider() });
+    mountFactoryAuth(app, { provider: hostedProvider() });
     app.get('/web/whoami', c => {
       const tenant = factoryAuthTenant(c);
       return c.json({ orgId: tenant?.orgId ?? null, userId: tenant?.userId ?? null });
@@ -614,10 +614,10 @@ describe('org-tenant identity', () => {
   });
 
   it('a thrown bootstrap error leaves the user no-org instead of failing the request', async () => {
-    mockEnsureOrganization.mockRejectedValue(new Error('workos unavailable'));
+    mockEnsureOrganization.mockRejectedValue(new Error('identity provider unavailable'));
     mockAuthenticate.mockResolvedValue({ id: 'user_err', email: 'err@e.com' });
     const app = new Hono();
-    mountFactoryAuth(app, { provider: workosProvider() });
+    mountFactoryAuth(app, { provider: hostedProvider() });
     app.get('/web/whoami', c => {
       const tenant = factoryAuthTenant(c);
       return c.json({ orgId: tenant?.orgId ?? null, userId: tenant?.userId ?? null });
