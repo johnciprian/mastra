@@ -27,6 +27,14 @@ A numeric id is coerced to its decimal form, so a serial primary key behind a se
 
 Precedence is a documented rule, not an accident: `id`, then `uid`, then `sub`, and the `{ session, user }` wrapper is recognised before any of them so the id and the organization always come from the same subject.
 
+**A session names the organization, and nothing else does**
+
+For a `{ session, user }` wrapper the organization comes from `session.activeOrganizationId` and from nowhere else. An `organizationId` sitting on the `user` half is not read as a fallback.
+
+`user.organizationId` says the person is a member of that organization. It does not say this session was switched into it, and a session that never activated an organization must not reach that organization's shared data. A session that names no active organization resolves to no organization, and `resolveOrganizationId` then returns the private partition `` `user:${userId}` ``, the same answer any caller without an organization gets.
+
+The trade-off is worth knowing: someone who belongs to exactly one organization and has not switched into it sees their private partition rather than their team's. Set the active organization on the session when you mint it and that case does not arise.
+
 **Mapping a shape we do not know**
 
 A provider whose token shape you cannot change can map itself by implementing `toIdentity`, and `isIdentityProvider` is the structural guard for it.

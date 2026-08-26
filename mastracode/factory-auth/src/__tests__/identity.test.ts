@@ -16,6 +16,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AuthIdentity, IIdentityProvider } from '../identity.js';
 import { isIdentityProvider, toAuthIdentity } from '../identity.js';
+import { resolveOrganizationId } from '../organizations.js';
 
 /** Every key {@link AuthIdentity} declares, and nothing else. */
 const IDENTITY_KEYS = ['id', 'email', 'name', 'avatarUrl', 'organizationId'];
@@ -143,13 +144,32 @@ describe('toAuthIdentity', () => {
       expect(identity?.organizationId).toBe('org_from_session');
     });
 
-    it('falls back to the user organization when the session names none', () => {
+    it('does not fall back to the user organization when the session names none', () => {
       const identity = toAuthIdentity({
         session: { id: 'sess_abc' },
         user: { id: 'user_xyz', organizationId: 'org_from_user' },
       });
 
-      expect(identity?.organizationId).toBe('org_from_user');
+      // Activation is not membership. `user.organizationId` says this user is a
+      // member of org_from_user; it does not say this session was switched into
+      // it, and a session that never activated an organization must not reach
+      // that organization's shared data. The identity resolves to no
+      // organization, and `resolveOrganizationId` turns that into the user's
+      // private partition below.
+      expect(identity?.organizationId).toBeUndefined();
+    });
+
+    it('resolves a session with no active organization to the private partition', () => {
+      const identity = toAuthIdentity({
+        session: { id: 'sess_abc' },
+        user: { id: 'user_xyz', organizationId: 'org_from_user' },
+      });
+
+      // The accepted cost, stated as an assertion: a member of exactly one
+      // organization who has not switched into it gets their own partition
+      // rather than their team's. Confusing, and the same answer any no-org
+      // caller gets - not a reach into org_from_user's data.
+      expect(resolveOrganizationId(identity!)).toBe('user:user_xyz');
     });
 
     it('leaves the organization absent when neither half names one', () => {

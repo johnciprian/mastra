@@ -387,11 +387,14 @@ export function factoryAuthTenant(c: Context): FactoryAuthTenant | undefined {
  * - the same three keys are read inside a `{ session, user }` wrapper, where
  *   the old reader accepted only `user.id`;
  * - a numeric or bigint id is coerced to its decimal string, rather than
- *   rejected — a serial primary key behind a self-hosted provider is ordinary;
- * - in a wrapper, an absent `session.activeOrganizationId` now falls back to the
- *   `user` half's own `organizationId` instead of resolving to no org. This one
- *   *widens* org scope: a session that resolved as personal may now resolve into
- *   an organization the user does in fact belong to.
+ *   rejected — a serial primary key behind a self-hosted provider is ordinary.
+ *
+ * None of them widens organization scope. The kit briefly did, by falling back
+ * to a wrapper's `user` half for an organization the session had not activated;
+ * P12 settled that closed, so both readers now take a wrapper's organization
+ * from `session.activeOrganizationId` and from nowhere else. A session that has
+ * activated none resolves to the user's private partition under either reader,
+ * which is why no assertion in this package's suite changes when the flag does.
  *
  * Two narrow it, both fail-closed and both fixes:
  *
