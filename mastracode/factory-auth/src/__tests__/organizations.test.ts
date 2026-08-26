@@ -59,9 +59,18 @@ function provider(...capabilities: object[]): IMastraAuthProvider {
 const sso = {
   getLoginUrl: () => 'https://idp.test/authorize',
   handleCallback: async () => ({ user: {} }),
+  getLoginButtonConfig: () => ({ label: 'Sign in' }),
 };
-const session = { createSession: async () => ({}), validateSession: async () => null };
-const user = { getCurrentUser: async () => null };
+const session = {
+  createSession: async () => ({}),
+  validateSession: async () => null,
+  destroySession: async () => {},
+  refreshSession: async () => null,
+  getSessionIdFromRequest: () => null,
+  getSessionHeaders: () => ({}),
+  getClearSessionHeaders: () => ({}),
+};
+const user = { getCurrentUser: async () => null, getUser: async () => null };
 const credentials = { signIn: async () => ({ user: {} }), signUp: async () => ({ user: {} }) };
 const httpHandler = { handleAuthRequest: async () => new Response() };
 const init = { init: async () => {} };
@@ -565,6 +574,10 @@ describe('withSyntheticOrganizations: class providers', () => {
 
     async handleCallback(): Promise<{ user: object }> {
       return { user: {} };
+    }
+
+    getLoginButtonConfig(): { label: string } {
+      return { label: 'Sign in' };
     }
 
     calls(): number {

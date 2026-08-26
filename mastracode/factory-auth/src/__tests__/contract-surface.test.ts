@@ -55,16 +55,29 @@ const EXPECTED_VALUE_EXPORTS = [
  * The seven structural capability guards, with the methods each one actually
  * looks for. Note `hasAuthInit`, not `isAuthInit`.
  *
- * The method lists are read from the guards' implementations rather than
- * assumed, and pinning them here is half the point of this test: a provider
- * author's most common mistake is implementing one of a pair, and these are the
- * pairs.
+ * Each list is every member the guard's interface REQUIRES, which is what the
+ * guard tests - optional members are excluded from both. Pinning the lists here
+ * is half the point of this test: a provider author's most common mistake is
+ * implementing some of a set and stopping, and these are the sets.
+ *
+ * `@internal/auth`'s own `capability-guards.test.ts` ties these same lists to
+ * the interface declarations at compile time. This copy is the consumer's view:
+ * it asserts that what `@mastra/factory-auth/contract` re-exports behaves the
+ * same way, across the package boundary and against plain objects.
  */
 const GUARDS = {
-  isSSOProvider: ['getLoginUrl', 'handleCallback'],
-  isSessionProvider: ['validateSession', 'createSession'],
-  isUserProvider: ['getCurrentUser'],
-  isCredentialsProvider: ['signIn'],
+  isSSOProvider: ['getLoginUrl', 'handleCallback', 'getLoginButtonConfig'],
+  isSessionProvider: [
+    'createSession',
+    'validateSession',
+    'destroySession',
+    'refreshSession',
+    'getSessionIdFromRequest',
+    'getSessionHeaders',
+    'getClearSessionHeaders',
+  ],
+  isUserProvider: ['getCurrentUser', 'getUser'],
+  isCredentialsProvider: ['signIn', 'signUp'],
   isOrganizationsProvider: ['ensureOrganization', 'isOrganizationAdmin'],
   isAuthHttpHandler: ['handleAuthRequest'],
   hasAuthInit: ['init'],

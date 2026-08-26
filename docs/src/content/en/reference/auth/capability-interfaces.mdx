@@ -173,24 +173,27 @@ Fail fast here for a requirement only satisfiable at prepare time. Don't fail be
 
 ## Satisfying a guard isn't implementing the interface
 
-The guards are cheap structural checks, and four of them test fewer members than their interface declares. A provider can pass a guard and still be missing a method the interface requires.
+Each guard tests every member its interface requires, and no optional member.
 
 | Interface | Members declared | Required members | Members the guard tests |
 | - | - | - | - |
-| `ISSOProvider` | 6 | 3 | 2 |
-| `ISessionProvider` | 7 | 7 | 2 |
-| `IUserProvider` | 4 | 2 | 1 |
-| `ICredentialsProvider` | 5 | 2 | 1 |
+| `ISSOProvider` | 6 | 3 | 3 |
+| `ISessionProvider` | 7 | 7 | 7 |
+| `IUserProvider` | 4 | 2 | 2 |
+| `ICredentialsProvider` | 5 | 2 | 2 |
 | `IOrganizationsProvider` | 2 | 2 | 2 |
 | `IAuthHttpHandler` | 1 | 1 | 1 |
 | `IAuthInit` | 1 | 1 | 1 |
 
-`ISessionProvider` is the sharpest case. The guard reads `createSession` and `validateSession` and reports nothing about the other five, so a provider with no `destroySession` still passes. A surface that offered "sign out everywhere" on the strength of `isSessionProvider` alone would call a method that isn't there.
+That equality is enforced rather than maintained. Adding a required member to one of these interfaces fails the build until its guard tests the new member too.
 
-Carry both of these into your own code:
+The optional members are the gap that remains, and it is deliberate: `ISSOProvider` declares six members and requires three, so `isSSOProvider` says nothing about whether `getLogoutUrl` is there. Requiring the optional half would reject providers the interface accepts.
 
-- When you need a specific member, check for that member rather than for the guard. `toAuthDescriptor` does exactly this for `refreshSession` and `destroySession`.
-- TypeScript won't catch the gap for you. The guards are type predicates, so a narrowed provider is typed as holding every member the interface declares, whether or not it does.
+So a guard tells you the provider has the members the interface requires, and nothing more:
+
+- When you need an optional member, check for that member rather than for the guard. `toAuthDescriptor` does exactly this for `refreshSession` and `destroySession`.
+- A guard cannot tell you a member does anything. A provider can satisfy `isSessionProvider` with seven methods that return `null` and do nothing, and a surface offering "sign out everywhere" on the strength of the guard alone would call a method that runs and has no effect. Only the conformance suite, below, exercises behavior.
+- TypeScript narrows to the full interface, optional members included. Reaching for one of those on a narrowed provider compiles whether or not it is there.
 
 ## The capability descriptor
 

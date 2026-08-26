@@ -140,46 +140,62 @@ export abstract class MastraAuthProvider<TUser = unknown> extends MastraBase imp
 type PrimitiveAuthUser = string | number | boolean | bigint | symbol | null | undefined;
 
 // Type guards for interface detection
+
+/**
+ * Whether `value` is an object carrying every named member as a function.
+ *
+ * Each guard below asserts `value is I<Something>`, and that assertion licenses
+ * a caller to reach for any member the interface requires. So a guard has to
+ * test every required member: testing a subset hands back an assertion the
+ * object cannot honour, and the failure lands later, at the first call of an
+ * absent method, with the type system saying it was fine. A guard that tested
+ * `createSession` alone would let `provider.destroySession(id)` compile and
+ * throw.
+ *
+ * Optional members are deliberately not tested. An interface's optional half is
+ * the part a caller has to feature-detect for itself, and requiring it here
+ * would reject providers the interface accepts.
+ */
+function hasMethods(value: unknown, names: readonly string[]): boolean {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  return names.every(name => typeof (value as Record<string, unknown>)[name] === 'function');
+}
+
 export function isSSOProvider(p: unknown): p is ISSOProvider {
-  return (
-    p !== null &&
-    typeof p === 'object' &&
-    typeof (p as any).getLoginUrl === 'function' &&
-    typeof (p as any).handleCallback === 'function'
-  );
+  return hasMethods(p, ['getLoginUrl', 'handleCallback', 'getLoginButtonConfig']);
 }
 
 export function isSessionProvider(p: unknown): p is ISessionProvider {
-  return (
-    p !== null &&
-    typeof p === 'object' &&
-    typeof (p as any).validateSession === 'function' &&
-    typeof (p as any).createSession === 'function'
-  );
+  return hasMethods(p, [
+    'createSession',
+    'validateSession',
+    'destroySession',
+    'refreshSession',
+    'getSessionIdFromRequest',
+    'getSessionHeaders',
+    'getClearSessionHeaders',
+  ]);
 }
 
 export function isUserProvider(p: unknown): p is IUserProvider {
-  return p !== null && typeof p === 'object' && typeof (p as any).getCurrentUser === 'function';
+  return hasMethods(p, ['getCurrentUser', 'getUser']);
 }
 export function isCredentialsProvider(p: unknown): p is ICredentialsProvider {
-  return p !== null && typeof p === 'object' && typeof (p as any).signIn === 'function';
+  return hasMethods(p, ['signIn', 'signUp']);
 }
 
 export function isOrganizationsProvider(p: unknown): p is IOrganizationsProvider {
-  return (
-    p !== null &&
-    typeof p === 'object' &&
-    typeof (p as any).ensureOrganization === 'function' &&
-    typeof (p as any).isOrganizationAdmin === 'function'
-  );
+  return hasMethods(p, ['ensureOrganization', 'isOrganizationAdmin']);
 }
 
 export function isAuthHttpHandler(p: unknown): p is IAuthHttpHandler {
-  return p !== null && typeof p === 'object' && typeof (p as any).handleAuthRequest === 'function';
+  return hasMethods(p, ['handleAuthRequest']);
 }
 
 export function hasAuthInit(p: unknown): p is IAuthInit {
-  return p !== null && typeof p === 'object' && typeof (p as any).init === 'function';
+  return hasMethods(p, ['init']);
 }
 
 function isObjectLike(value: unknown): value is object {
