@@ -1,9 +1,8 @@
-import { MastraAuthWorkos } from '@mastra/auth-workos';
 import type { IMastraAuthProvider } from '@mastra/core/server';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { buildAuthRoutes, getWorkOSProvider, isWorkOSAuth, mountFactoryAuth, factoryAuthTenant } from './auth.js';
+import { buildAuthRoutes, mountFactoryAuth, factoryAuthTenant } from './auth.js';
 
 /**
  * Provider-seam behavior: the auth module operates on an explicitly-passed
@@ -84,16 +83,6 @@ describe('active provider resolution', () => {
     process.env.WORKOS_CLIENT_ID = 'client_test';
     const enabled = mountFactoryAuth(new Hono());
     expect(enabled).toBe(true);
-  });
-
-  it('a MastraAuthWorkos provider reports isWorkOSAuth and is exposed directly', () => {
-    const provider = new MastraAuthWorkos({ redirectUri: 'http://localhost:4111/auth/callback' });
-    expect(isWorkOSAuth(provider as unknown as IMastraAuthProvider)).toBe(true);
-    expect(getWorkOSProvider(provider as unknown as IMastraAuthProvider)).toBe(provider);
-  });
-
-  it('getWorkOSProvider throws when the active provider is not WorkOS', () => {
-    expect(() => getWorkOSProvider(fakeProvider())).toThrow(/not WorkOS/);
   });
 });
 
