@@ -152,6 +152,13 @@ no guard can derive. Everything else defaults. Two have no default on purpose:
   The suite replaces `fetch` to make "reached the network" observable; an SDK holding its own agent
   needs to tell it what that looks like.
 
+You do not need it for the commoner case of a `handleCallback` that reaches the exchange and then
+rethrows a flat error of its own. The suite counts calls to the stubbed `fetch` during
+`handleCallback`, so it can see that the state was accepted even when nothing in the `cause` chain
+says so. That check still fails — something is wrong and the suite cannot see what — but it tells
+you the truth about it and asks for the one-argument fix,
+`new Error('...', { cause: error })`, rather than blaming a `state` you never rejected.
+
 Run it with vitest:
 
 ```shell
@@ -219,7 +226,79 @@ HOW TO FIX IT
 
 Every failure carries those four parts and a docs link. If you would rather run the checks from a
 script, a different runner, or a CLI, `authConformanceChecks(options)` returns the same list as data
-and takes no dependency on vitest to iterate.
+and takes no dependency on vitest to iterate. `runAuthConformanceCheck(check, provider, name)` runs
+one and hands back what happened — it is the same function `describeAuthProvider` calls, so an
+adapter you write behaves identically to the vitest one, known failures included.
+
+## When your provider doesn't conform and ships anyway
+
+Some defects are real and the fix isn't small. A `validateSession` that returns `null` because the
+whole `ISessionProvider` half is a set of no-ops, a `getLoginUrl` that drops `state` — these have
+product consequences and they don't get fixed in the PR that turned conformance on.
+
+Once conformance runs in CI, that leaves three moves, and all three end with nobody knowing the
+provider is broken: weaken the suite until it passes, leave the build red until people stop reading
+it, or drop the provider from the run.
+
+`knownFailures` is the fourth. Record the failure, name which one it is, and say why:
+
+```ts
+describeAuthProvider({
+  name: '@mastra/auth-my-provider',
+  createProvider: () => createAuth(verifier),
+  token: TOKEN,
+  userId: 'user_123',
+  cookieHeader: `my_session=${TOKEN}`,
+  knownFailures: [
+    {
+      check: 'sessions/round-trip',
+      code: 'sessions/round-trip#validate-rejects-fresh-session',
+      reason:
+        'validateSession returns null unconditionally; the ISessionProvider members are no-ops ' +
+        'kept for interface compatibility. Full diagnosis in this file’s header. Tracked in #4821.',
+    },
+  ],
+});
+```
+
+The suite goes green, and it is visibly not the green of a clean provider. Run it and you get the
+test title prefixed, a line on `stderr` that the default reporter prints with the test name attached,
+and the full report as the skip note:
+
+```
+stderr | conformance.test.ts > ... > known failure: a created session validates, and names the user ...
+[factory-auth conformance] KNOWN FAILURE  @mastra/auth-my-provider  sessions/round-trip#validate-rejects-fresh-session
+  validateSession returns null unconditionally; the ISessionProvider members are no-ops kept for ...
+```
+
+**Every field is required, and each one is load-bearing.**
+
+- **`check`** is the check id. An id no check has fails at registration, listing the ids that do —
+  loudly, because a typo that was quietly ignored would be indistinguishable from an exemption that
+  works, and a renamed check must not leave a dead entry granting cover.
+- **`code`** is _which way_ that check fails. Run the check once; the red quotes the code to paste.
+  A check id alone would record only _that_ a check fails — `sessions/round-trip` has five ways to
+  go red, and two providers can fail it for genuinely different defects. An entry keyed on the id
+  alone would silently absorb the next, unrelated regression in the same check. Codes are stable
+  identifiers this package owns, so they are the thing to key on rather than the message text, which
+  is patch-level here and documented as not-to-be-asserted-on.
+- **`reason`** is why it isn't fixed. A pointer plus a sentence, not an essay. An exemption with no
+  stated reason is how four obligations went unwritten in the first place: everybody knew why at the
+  time, and the knowledge left with them.
+
+**It is not an exclusion, because it is checked in both directions on every run.** The suite fails
+if a recorded check passes, if it stops applying, or if it fails under a different code. So fixing
+the defect forces the entry to be deleted in the same change, and the list cannot quietly become
+fiction.
+
+A fault in the fixtures — a `token` the provider won't accept — is reported under a `fixture/`
+namespace and can never be recorded. `knownFailures` grants a _provider_ an exemption; "the token I
+told the suite to use doesn't work" isn't something to be exempt from.
+
+**One thing it does not do.** An entry records the failure a check produces, not the defect behind
+it. If one underlying defect can surface under two codes depending on inputs, recording one leaves
+the other uncovered — you'll see it as a `failed for a different reason` red, which is the safe
+direction but is still a red you have to think about rather than a case the kit resolves for you.
 
 ## What's in the package
 
@@ -233,7 +312,7 @@ and takes no dependency on vitest to iterate.
 | `@mastra/factory-auth/cookie`        | How does the host mint, read and clear its session cookie? | `mintSessionCookie`, `readSessionCookie`, `clearSessionCookie`, `sessionCookieName` |
 | `@mastra/factory-auth/oauth-state`   | How is the OAuth `state` parameter encoded and decoded?    | `encodeState`, `decodeState`, `parseStateId`                                        |
 | `@mastra/factory-auth/testing`       | Test doubles, for code that consumes a provider.           | `fakeProvider`, `fullyCapableFake`, `fakeViolating`, six `with*` mixins             |
-| `@mastra/factory-auth/conformance`   | The suite, for code that implements a provider.            | `describeAuthProvider`, `authConformanceChecks`                                     |
+| `@mastra/factory-auth/conformance`   | The suite, for code that implements a provider.            | `describeAuthProvider`, `authConformanceChecks`, `runAuthConformanceCheck`          |
 
 `./capabilities` answers **which** capabilities a provider has. The capability interfaces themselves
 are in `./contract`.
@@ -311,9 +390,35 @@ break you without being type errors:
   tightened existing check, turns CI red in a repository this package does not own, so it is filed as
   a major even though no signature moved. Loosening a check, adding a skip gate, or rewriting a
   message is a patch.
+- **Removing or renaming a conformance failure code.** See below: a code is a value downstream
+  suites hold, and a rename turns a valid `knownFailures` entry into a registration error.
 - **A change to the synthetic organization id format.** `user:${userId}` is a storage key. Changing
   the prefix or the derivation orphans every row written under the old one, and nothing reports an
   error when it happens, so it is a major and it ships with a migration note.
+
+### Recorded known failures are part of the contract
+
+`knownFailures` is an exemption mechanism, so what it will and will not tolerate is a promise rather
+than an implementation detail. Three things about it are stable:
+
+- **The entry shape.** `{ check, code, reason }`, all three required and all three non-empty.
+  Relaxing any of them is a minor; requiring a fourth field is a major.
+- **The four semantics.** A recorded check that fails as recorded is reported and does not fail the
+  suite. A recorded check that passes, that stops applying, or that fails under a different code
+  fails the suite. An entry naming an unknown check or an unproduceable code fails at registration.
+  Any of those going quiet is a defect here, not a convenience.
+- **Failure codes are values, not prose.** `sessions/round-trip#validate-rejects-fresh-session` is
+  the format: a check id, a `#`, and a slug. Downstream suites hold these strings, so removing or
+  renaming one is a **major** — it turns a valid entry into a registration error in a repository
+  this package does not own. Adding a code is a minor, and it has a visible edge worth naming: a
+  check that gains a way to go red can start failing under a code an existing entry does not record,
+  which surfaces as `failed for a different reason` rather than as silence. That direction is
+  deliberate. The alternative is an entry that widens to cover a defect nobody recorded.
+
+Codes in the `fixture/` namespace are the exception to all of it: they name a fault in the calling
+test file rather than in the provider, no check declares them, and an entry may never record one.
+
+Failure _text_ stays patch-level, as above. That is exactly why entries key on a code.
 
 ### What you may build on
 

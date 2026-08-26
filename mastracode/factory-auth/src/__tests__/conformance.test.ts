@@ -46,11 +46,20 @@ import {
   authConformanceChecks,
   describeAuthProvider,
   formatConformanceFailure,
+  runAuthConformanceCheck,
+  AUTH_CONFORMANCE_FIXTURE_CODE_PREFIX,
   AUTH_OBLIGATION_COUNT,
   AUTH_OBLIGATION_GUIDANCE,
   CONFORMANCE_DOCS_URL,
+  isFixtureFailureCode,
+  KNOWN_FAILURE_TITLE_PREFIX,
 } from '../conformance/index.js';
-import type { AuthConformanceCheck, AuthProviderConformanceOptions } from '../conformance/index.js';
+import type {
+  AuthConformanceCheck,
+  AuthConformanceKnownFailure,
+  AuthConformanceOutcome,
+  AuthProviderConformanceOptions,
+} from '../conformance/index.js';
 import type { IMastraAuthProvider } from '../contract.js';
 import { parseStateId } from '../oauth-state.js';
 import { withSyntheticOrganizations } from '../organizations.js';
@@ -69,15 +78,19 @@ import type { AuthObligation } from '../testing/index.js';
 // The harness
 // ============================================================================
 
-/** What one check did when it was run. */
-type CheckOutcome =
-  | { readonly status: 'passed'; readonly check: AuthConformanceCheck }
-  | { readonly status: 'skipped'; readonly check: AuthConformanceCheck; readonly reason: string }
-  | { readonly status: 'failed'; readonly check: AuthConformanceCheck; readonly message: string };
+/** What one check did when it was run, with the check it did it for attached. */
+type CheckOutcome = AuthConformanceOutcome & { readonly check: AuthConformanceCheck };
 
 /**
  * Run every check the way `describeAuthProvider` runs it, and record the result
  * instead of reporting it.
+ *
+ * It runs it that way in the strongest available sense: the loop below calls
+ * the same {@link runAuthConformanceCheck} the vitest adapter calls, so the
+ * skip rule, the failure reporting and the whole known-failure policy are
+ * proved here in the one implementation that also ships. A harness with its own
+ * copy of the rules would go on passing after the two drifted, and the thing it
+ * would stop proving is exactly the thing it exists to prove.
  *
  * A fresh provider per check, exactly as the adapter does - otherwise a check
  * that mutated the provider would change the answer for the next one and this
@@ -87,34 +100,22 @@ async function runChecks(options: AuthProviderConformanceOptions): Promise<reado
   const outcomes: CheckOutcome[] = [];
   for (const check of authConformanceChecks(options)) {
     const provider = await options.createProvider();
-    let reason: string | null;
     try {
-      reason = check.skipReason(provider);
+      outcomes.push({ ...(await runAuthConformanceCheck(check, provider, options.name)), check });
     } catch (error) {
-      // Mirrors `describeAuthProvider`, which catches a throwing gate and skips
-      // with a pointer at `contract/descriptor` rather than surfacing a raw
-      // error from whichever gate happened to touch the broken property first.
-      // If this branch is ever reached, the adapter and the real runner have
-      // drifted - the runner should have caught it - so it is recorded as a
-      // failure that names itself.
+      // `runAuthConformanceCheck` is not supposed to throw: a gate that reads a
+      // broken provider is wrapped by `authConformanceChecks`, and a check body
+      // that throws is caught and reported. Reaching here means one of those
+      // stopped being true, so it is recorded as a failure that names itself
+      // rather than aborting the run with a bare stack.
       outcomes.push({
         status: 'failed',
         check,
-        message: `the gate threw and describeAuthProvider did not catch it: ${
+        code: null,
+        message: `runAuthConformanceCheck threw instead of reporting: ${
           error instanceof Error ? error.message : String(error)
         }`,
       });
-      continue;
-    }
-    if (reason !== null) {
-      outcomes.push({ status: 'skipped', check, reason });
-      continue;
-    }
-    try {
-      await check.run(provider);
-      outcomes.push({ status: 'passed', check });
-    } catch (error) {
-      outcomes.push({ status: 'failed', check, message: error instanceof Error ? error.message : String(error) });
     }
   }
   return outcomes;
@@ -381,6 +382,158 @@ describe('a provider whose state store is keyed one way and read another', () =>
   it('leaves globalThis.fetch exactly as it found it', async () => {
     const before = globalThis.fetch;
     await runChecks(optionsFor(() => ssoWithStateStore(wholeState, wholeState)));
+    expect(globalThis.fetch).toBe(before);
+  });
+});
+
+// ============================================================================
+// The provider that reaches the network and hides that it did
+// ============================================================================
+
+/**
+ * A hosted-login provider that swallows the transport failure, which is the
+ * shape that produced this suite's one known misdiagnosis.
+ *
+ * `@mastra/auth-studio`'s `handleCallback` reaches the token exchange, catches
+ * whatever the network did, and rethrows a flat `Error('Session validation
+ * failed')` with no `cause`. The `cause`-chain recognizer therefore finds
+ * nothing, and the check used to report "handleCallback rejected a state its own
+ * getLoginUrl was just handed" - a sentence about `state`, said about a method
+ * whose `state` parameter is named `_state` and is never read. That is a false
+ * red that reads exactly like a true one, which is the specific outcome this
+ * package exists to prevent.
+ *
+ * The fix is not to pass it. The suite now separates two questions it was
+ * previously answering as one - did the provider reach the network, and did it
+ * explain what happened there - by counting calls to the stubbed `fetch` during
+ * `handleCallback`. It stays red, because something here is genuinely wrong and
+ * the suite cannot see what; it just stops naming the wrong thing.
+ *
+ * @param attachCause whether the rethrown error carries the original, which is
+ * the one-argument fix the failure recommends
+ */
+function ssoThatSwallowsTheTransportError(attachCause: boolean) {
+  const base = fullyCapableFake();
+  return {
+    ...base,
+    getLoginUrl(redirectUri: string, state: string): string {
+      const url = new URL('https://idp.test/v1/authorize');
+      url.searchParams.set('redirect_uri', redirectUri);
+      url.searchParams.set('state', state);
+      return url.toString();
+    },
+    async handleCallback(code: string, _state: string) {
+      try {
+        await fetch('https://idp.test/v1/token', { method: 'POST' });
+      } catch (error) {
+        throw new Error('Session validation failed', attachCause ? { cause: error } : undefined);
+      }
+      return base.handleCallback(code, _state);
+    },
+  };
+}
+
+/** The one outcome for the callback check. */
+function callbackOutcome(outcomes: readonly CheckOutcome[]): CheckOutcome {
+  const outcome = outcomes.find(candidate => candidate.check.id === 'obligation/stateCodec/callback');
+  expect(outcome, 'the callback check did not run').toBeDefined();
+  return outcome!;
+}
+
+describe('a provider that reaches the token exchange and rethrows without a cause', () => {
+  const swallowing = () => ssoThatSwallowsTheTransportError(false);
+
+  it('is still red, because the suite genuinely cannot tell whether it conforms', async () => {
+    const outcomes = await runChecks(optionsFor(swallowing));
+    expect(failures(outcomes).map(outcome => outcome.check.id)).toEqual(['obligation/stateCodec/callback']);
+  });
+
+  /**
+   * The misdiagnosis, asserted as absent. This is the load-bearing half: the
+   * check was already red for this provider before the change, and being red
+   * for the wrong stated reason is what sent somebody to debug `state` keying in
+   * a method that never reads `state`.
+   */
+  it('no longer claims the state was rejected', async () => {
+    const outcomes = await runChecks(optionsFor(swallowing));
+    const failed = failures(outcomes)[0]!;
+    expect(failed.message).not.toContain('rejected a state its own getLoginUrl was just handed');
+    expect(failed.message).not.toContain('the provider stopped at the state');
+  });
+
+  it('says what it actually observed: fetch was called, so the state was accepted', async () => {
+    const outcomes = await runChecks(optionsFor(swallowing));
+    const failed = failures(outcomes)[0]!;
+    expect(failed.code).toBe('obligation/stateCodec/callback#threw-without-cause-after-token-exchange');
+    expect(failed.message).toContain('called globalThis.fetch 1 time(s)');
+    expect(failed.message).toContain('accepted the state and got as far as the token exchange');
+    expect(failed.message).toContain('a diagnosis problem, not necessarily a `state` problem');
+  });
+
+  it('names the one-argument fix, and the escape hatch as the fallback', async () => {
+    const outcomes = await runChecks(optionsFor(swallowing));
+    const failed = failures(outcomes)[0]!;
+    expect(failed.message).toContain('cause: error');
+    expect(failed.message).toContain('sso.reachedTokenExchange');
+  });
+
+  it('passes once the cause is attached, with no other change', async () => {
+    const outcomes = await runChecks(optionsFor(() => ssoThatSwallowsTheTransportError(true)));
+    expect(report(outcomes)).toBe('');
+    expect(ids(outcomes, 'passed')).toContain('obligation/stateCodec/callback');
+  });
+
+  /**
+   * The pre-existing escape hatch keeps working and keeps taking precedence.
+   * A provider whose transport is not global `fetch` had no other option, and
+   * this change must not take it away from them.
+   */
+  it('still honours sso.reachedTokenExchange, which runs before any of this', async () => {
+    const outcomes = await runChecks(
+      optionsFor(swallowing, {
+        sso: { reachedTokenExchange: error => error instanceof Error && error.message.includes('Session validation') },
+      }),
+    );
+    expect(report(outcomes)).toBe('');
+  });
+
+  /**
+   * The other half of the claim, and the reason the pass condition was NOT
+   * widened to "fetch was called".
+   *
+   * A provider that stops at the state makes no network attempt, and that is now
+   * asserted rather than inferred: the message says fetch was never called. Had
+   * "fetch was called" been made to mean "conforming", a provider that fetched a
+   * discovery document and then rejected the state would go green on a check it
+   * fails - a silent false green, which is worse than a loud wrong reason.
+   */
+  it('keeps the state-rejection diagnosis for a provider that never reaches the network', async () => {
+    const outcomes = await runChecks(optionsFor(() => ssoWithStateStore(idHalfOfState, wholeState)));
+    const failed = failures(outcomes)[0]!;
+    expect(failed.code).toBe('obligation/stateCodec/callback#state-rejected');
+    expect(failed.message).toContain('rejected a state its own getLoginUrl was just handed');
+    expect(failed.message).toContain('it was never called');
+  });
+
+  it('records as a known failure like any other red, under its own code', async () => {
+    const outcomes = await runChecks(
+      optionsFor(swallowing, {
+        knownFailures: [
+          {
+            check: 'obligation/stateCodec/callback',
+            code: 'obligation/stateCodec/callback#threw-without-cause-after-token-exchange',
+            reason: 'handleCallback swallows the transport error. Tracked separately.',
+          },
+        ],
+      }),
+    );
+    expect(report(outcomes)).toBe('');
+    expect(callbackOutcome(outcomes).status).toBe('knownFailure');
+  });
+
+  it('leaves globalThis.fetch exactly as it found it', async () => {
+    const before = globalThis.fetch;
+    await runChecks(optionsFor(swallowing));
     expect(globalThis.fetch).toBe(before);
   });
 });
@@ -892,8 +1045,467 @@ describe.each(RED_CASES.map(redCase => [redCase.label, redCase] as const))(
       expect(failed!.message).toContain('HOW TO FIX IT');
       expect(failed!.message).toContain(CONFORMANCE_DOCS_URL);
     });
+
+    /**
+     * Every red carries a code, and the code is one the check admits to.
+     *
+     * This is the assertion that keeps `knownFailures` honest at the source. An
+     * entry can only name a code, so a failure that reaches a provider author
+     * with no code is a failure nobody can ever record - and a code missing from
+     * `failureCodes` is one `describeAuthProvider` would reject at registration,
+     * leaving the author with a red they are told to record and cannot.
+     *
+     * Running it over the whole red table rather than as one test is the point:
+     * these thirty-odd cases are the closest thing the package has to full
+     * coverage of the ways a check can go red, so this holds the declaration and
+     * the call sites in step without a second list to maintain.
+     */
+    it('fails with a declared code, so the failure is one that could be recorded', async () => {
+      const outcomes = await runChecks(optionsFor(redCase.provider, redCase.options));
+      for (const outcome of failures(outcomes)) {
+        const { code } = outcome;
+        expect(code, `${outcome.check.id} failed with no code:\n${outcome.message}`).not.toBeNull();
+        if (isFixtureFailureCode(code!)) continue;
+        expect(
+          outcome.check.failureCodes,
+          `${outcome.check.id} produced ${code}, which it does not declare in failureCodes`,
+        ).toContain(code);
+      }
+    });
   },
 );
+
+// ============================================================================
+// Failure codes
+// ============================================================================
+
+/**
+ * The codes are a published surface, so they are held to the shape the docs
+ * promise rather than to whatever was typed.
+ *
+ * A code is the only thing a `knownFailures` entry can key on. Message wording
+ * is patch-level in this package and is explicitly not to be asserted on, which
+ * is the whole reason these exist - so the properties that make them usable are
+ * pinned here rather than left to convention.
+ */
+describe('the failure code registry', () => {
+  const checks = authConformanceChecks(optionsFor(() => fullyCapableFake()));
+
+  it('gives every check at least one way to go red', () => {
+    for (const check of checks) {
+      expect(check.failureCodes.length, `${check.id} declares no failure codes`).toBeGreaterThan(0);
+    }
+  });
+
+  it('namespaces every code under the check that can produce it', () => {
+    for (const check of checks) {
+      for (const code of check.failureCodes) {
+        expect(code, `${check.id} declares ${code}, which is not namespaced under it`).toMatch(
+          new RegExp(`^${check.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}#[a-z0-9-]+$`),
+        );
+      }
+    }
+  });
+
+  it('never reuses a code across two checks', () => {
+    const all = checks.flatMap(check => check.failureCodes);
+    expect(new Set(all).size, 'two checks declare the same failure code').toBe(all.length);
+  });
+
+  /**
+   * Fixture faults live outside the per-check namespace on purpose, and the
+   * reason is that they are not defects of the provider at all.
+   *
+   * The same fault - a `token` the provider will not accept - surfaces from
+   * whichever check needed an authenticated payload first, so it has no natural
+   * check to be namespaced under. Keeping it out of every `failureCodes` list is
+   * what makes it unrecordable, and `readKnownFailures` refuses one outright.
+   */
+  it('keeps fixture faults out of every check’s declared codes', () => {
+    for (const check of checks) {
+      for (const code of check.failureCodes) {
+        expect(isFixtureFailureCode(code), `${check.id} declares the fixture code ${code}`).toBe(false);
+      }
+    }
+  });
+
+  it('reports a rejected token fixture under the fixture namespace, not as a provider defect', async () => {
+    const outcomes = await runChecks(optionsFor(() => fullyCapableFake(), { token: 'a-token-nothing-accepts' }));
+    const failed = failures(outcomes);
+    expect(failed.length).toBeGreaterThan(0);
+    for (const outcome of failed) {
+      expect(outcome.code).toBe(`${AUTH_CONFORMANCE_FIXTURE_CODE_PREFIX}token-rejected`);
+    }
+  });
+
+  it('quotes the code, and how to record it, in the failure a provider author reads', async () => {
+    const outcomes = await runChecks(optionsFor(() => brokenFake({ validateSession: async () => null })));
+    const failed = failures(outcomes)[0]!;
+    expect(failed.message).toContain('sessions/round-trip#validate-rejects-fresh-session');
+    // The offer has to be in the message: somebody reading a red they cannot fix
+    // today should not have to already know this option exists to find it.
+    expect(failed.message).toContain('knownFailures');
+  });
+
+  // No `from` immediately before a quote anywhere in this file: the EE boundary
+  // scanner reads that shape as an import specifier and is fail-closed about it.
+  it('makes no such offer for a fixture fault, which is not a thing anybody is owed an exemption for', async () => {
+    const outcomes = await runChecks(optionsFor(() => fullyCapableFake(), { token: 'a-token-nothing-accepts' }));
+    expect(failures(outcomes)[0]!.message).not.toContain('knownFailures');
+  });
+});
+
+// ============================================================================
+// knownFailures: the four semantics
+// ============================================================================
+
+/**
+ * A provider that ships, does not conform, and says so.
+ *
+ * The four entries this mechanism was built for are two real providers with
+ * four real defects, and the shape below is the first of them: `@mastra/auth-
+ * workos` declares `ISessionProvider` and its `validateSession` returns `null`
+ * unconditionally, so a session it just minted does not validate. The guard is
+ * structural and tests two members for existence, so it reports a capability the
+ * provider does not have - and the check catches exactly that.
+ *
+ * Nothing about the fake matters except that it fails one check, for one named
+ * reason, and passes everything else.
+ */
+const providerWithARealDefect = () => brokenFake({ validateSession: async () => null });
+
+const SESSION_DEFECT = 'sessions/round-trip#validate-rejects-fresh-session';
+
+const RECORDED: AuthConformanceKnownFailure = {
+  check: 'sessions/round-trip',
+  code: SESSION_DEFECT,
+  reason: 'validateSession returns null unconditionally. Full diagnosis in this file’s header.',
+};
+
+/** The one outcome for `sessions/round-trip`, whatever it turned out to be. */
+function sessionOutcome(outcomes: readonly CheckOutcome[]): CheckOutcome {
+  const outcome = outcomes.find(candidate => candidate.check.id === 'sessions/round-trip');
+  expect(outcome, 'sessions/round-trip did not run at all').toBeDefined();
+  return outcome!;
+}
+
+describe('knownFailures: a recorded check that fails', () => {
+  const options = optionsFor(providerWithARealDefect, { knownFailures: [RECORDED] });
+
+  it('is reported as a known failure rather than as a suite failure', async () => {
+    const outcomes = await runChecks(options);
+    expect(sessionOutcome(outcomes).status).toBe('knownFailure');
+  });
+
+  it('leaves the run with nothing red, which is the whole point of recording it', async () => {
+    const outcomes = await runChecks(options);
+    expect(report(outcomes)).toBe('');
+  });
+
+  /**
+   * Without the record, the same provider is red. Stated directly rather than
+   * implied, because "the suite is green" is only evidence about `knownFailures`
+   * if the same provider is red without it.
+   */
+  it('is a genuine failure: the identical provider goes red with no entry', async () => {
+    const outcomes = await runChecks(optionsFor(providerWithARealDefect));
+    expect(failures(outcomes).map(outcome => outcome.check.id)).toEqual(['sessions/round-trip']);
+    expect(failures(outcomes)[0]!.code).toBe(SESSION_DEFECT);
+  });
+
+  /**
+   * Visible, not silent. A recorded failure that reads like a pass would be an
+   * exclusion with extra steps, and the point of recording rather than excluding
+   * is that somebody scanning CI can see the provider does not conform.
+   */
+  it('says the provider does not conform, and quotes the reason somebody wrote', async () => {
+    const outcomes = await runChecks(options);
+    const outcome = sessionOutcome(outcomes);
+    expect(outcome.status === 'knownFailure' && outcome.message).toContain('KNOWN FAILURE');
+    expect(outcome.status === 'knownFailure' && outcome.message).toContain('does not conform');
+    expect(outcome.status === 'knownFailure' && outcome.message).toContain(RECORDED.reason);
+    expect(outcome.status === 'knownFailure' && outcome.message).toContain(SESSION_DEFECT);
+  });
+
+  it('reproduces the original failure underneath, so nothing is paraphrased away', async () => {
+    const outcomes = await runChecks(options);
+    const outcome = sessionOutcome(outcomes);
+    expect(outcome.status === 'knownFailure' && outcome.failure).toContain(
+      'rejected a session this provider had just created',
+    );
+    expect(outcome.status === 'knownFailure' && outcome.message).toContain(
+      'rejected a session this provider had just created',
+    );
+  });
+
+  it('marks the test title, so a run that prints names shows it without expanding anything', () => {
+    const [check] = authConformanceChecks(options).filter(candidate => candidate.id === 'sessions/round-trip');
+    expect(check!.knownFailure).toEqual(RECORDED);
+    // `describeAuthProvider` builds its `it` title from this; the registration at
+    // the bottom of this file is where that title actually reaches a reporter.
+    expect(KNOWN_FAILURE_TITLE_PREFIX.length).toBeGreaterThan(0);
+  });
+
+  it('touches no other check', async () => {
+    const outcomes = await runChecks(options);
+    for (const outcome of outcomes) {
+      if (outcome.check.id === 'sessions/round-trip') continue;
+      expect(outcome.status, `${outcome.check.id} changed because of an unrelated entry`).not.toBe('knownFailure');
+    }
+  });
+});
+
+describe('knownFailures: a recorded check that passes', () => {
+  /**
+   * The property that stops the list rotting.
+   *
+   * A recorded entry is an admission with an expiry date. If fixing the defect
+   * left the entry in place, the list would go on granting cover for a provider
+   * that no longer needs it, and nothing would ever report that - which is the
+   * failure mode of every exclusion list anybody has ever kept. So the suite
+   * fails, and deleting the entry is part of the fix rather than a follow-up
+   * nobody files.
+   */
+  const options = optionsFor(() => fullyCapableFake(), { knownFailures: [RECORDED] });
+
+  it('fails the suite', async () => {
+    const outcomes = await runChecks(options);
+    expect(failures(outcomes).map(outcome => outcome.check.id)).toEqual(['sessions/round-trip']);
+  });
+
+  it('says the check passed, and that the entry is what has to go', async () => {
+    const outcomes = await runChecks(options);
+    const failed = failures(outcomes)[0]!;
+    expect(failed.message).toContain('knownFailures entry is stale');
+    expect(failed.message).toContain('and it passed');
+    expect(failed.message).toContain('Delete the knownFailures entry');
+  });
+
+  it('quotes the reason back, so the reader can see what is no longer true', async () => {
+    const outcomes = await runChecks(options);
+    expect(failures(outcomes)[0]!.message).toContain(RECORDED.reason);
+  });
+
+  it('does not blame the provider, which is conforming', async () => {
+    const outcomes = await runChecks(options);
+    expect(failures(outcomes)[0]!.message).not.toContain('Auth conformance violation');
+  });
+});
+
+describe('knownFailures: a recorded check that stops applying', () => {
+  /**
+   * The other way an entry outlives its defect, and it is not hypothetical.
+   *
+   * `sessions/round-trip` is gated on `isSessionProvider`, which tests two
+   * members for existence. A provider whose session support is a set of no-ops
+   * "kept for interface compatibility" is exactly the shape this whole mechanism
+   * was built for - and the honest fix for it may well be to delete those
+   * members rather than implement them. The day somebody does, the check stops
+   * applying, and an entry left behind covers nothing while still reading as an
+   * admission of a live defect.
+   */
+  const bearerOnly = () => fakeProvider({ user: { organizationId: undefined } });
+  const options = optionsFor(() => withSyntheticOrganizations(bearerOnly()), { knownFailures: [RECORDED] });
+
+  it('fails the suite rather than skipping quietly', async () => {
+    const outcomes = await runChecks(options);
+    expect(failures(outcomes).map(outcome => outcome.check.id)).toEqual(['sessions/round-trip']);
+  });
+
+  it('says the check did not run, and repeats the gate’s own reason', async () => {
+    const outcomes = await runChecks(options);
+    const failed = failures(outcomes)[0]!;
+    expect(failed.message).toContain('did not run at all');
+    expect(failed.message).toContain('isSessionProvider is false');
+    expect(failed.message).toContain('Delete the knownFailures entry');
+  });
+
+  it('still skips that check for the same provider with no entry', async () => {
+    const outcomes = await runChecks(optionsFor(() => withSyntheticOrganizations(bearerOnly())));
+    expect(sessionOutcome(outcomes).status).toBe('skipped');
+  });
+});
+
+describe('knownFailures: a recorded check that fails for a different reason', () => {
+  /**
+   * The reason an entry names a code and not just a check id.
+   *
+   * `sessions/round-trip` has five ways to go red, and the two real providers
+   * that need entries for it fail it for genuinely different defects - one has a
+   * `validateSession` that always answers null, the other mints an id that
+   * `validateSession` can never accept. An entry keyed on the check id alone
+   * would cover both, and would go on covering a third, unrelated regression
+   * that arrived in the same check later. Matching on which failure is what
+   * keeps the record worth having.
+   */
+  const alsoBrokenElsewhere = () =>
+    brokenFake({
+      async createSession() {
+        throw new Error('session store not configured');
+      },
+    });
+  const options = optionsFor(alsoBrokenElsewhere, { knownFailures: [RECORDED] });
+
+  it('fails the suite instead of absorbing the new defect', async () => {
+    const outcomes = await runChecks(options);
+    expect(failures(outcomes).map(outcome => outcome.check.id)).toEqual(['sessions/round-trip']);
+  });
+
+  it('names both codes, so the reader can see which one moved', async () => {
+    const outcomes = await runChecks(options);
+    const failed = failures(outcomes)[0]!;
+    expect(failed.message).toContain('failed for a different reason');
+    expect(failed.message).toContain(SESSION_DEFECT);
+    expect(failed.message).toContain('sessions/round-trip#create-threw');
+  });
+
+  it('reproduces what it actually said, because that may be the new regression', async () => {
+    const outcomes = await runChecks(options);
+    expect(failures(outcomes)[0]!.message).toContain('createSession threw');
+  });
+
+  it('offers both readings: the same defect moved, or a new one arrived', async () => {
+    const outcomes = await runChecks(options);
+    const failed = failures(outcomes)[0]!;
+    expect(failed.message).toContain('surfacing at a different point');
+    expect(failed.message).toContain('a regression this');
+  });
+
+  /**
+   * A fixture fault must not be covered either, and it takes this path to get
+   * there: `fixture/...` is never a check's declared code, so it can never equal
+   * a recorded one.
+   */
+  it('does not let an entry cover a broken fixture', async () => {
+    // No `userId` option and a token nothing accepts, so `sessions/round-trip`
+    // cannot get as far as its own question: it fails under `fixture/...`
+    // instead. That is the fault of the calling file, and an entry recorded
+    // against the provider must not absorb it.
+    const outcomes = await runChecks(
+      optionsFor(providerWithARealDefect, {
+        knownFailures: [RECORDED],
+        token: 'a-token-nothing-accepts',
+        userId: undefined,
+      }),
+    );
+    const failed = failures(outcomes).find(outcome => outcome.check.id === 'sessions/round-trip');
+    expect(failed, 'the entry swallowed a fixture fault').toBeDefined();
+    expect(failed!.message).toContain('failed for a different reason');
+    expect(failed!.message).toContain(`failed with ${AUTH_CONFORMANCE_FIXTURE_CODE_PREFIX}`);
+    expect(isFixtureFailureCode(failed!.code ?? '')).toBe(true);
+  });
+});
+
+// ============================================================================
+// knownFailures: entries the caller cannot have meant
+// ============================================================================
+
+/**
+ * Every one of these is a mistake in the calling test file rather than a defect
+ * in the provider, so every one of them is a `TypeError` at registration - which
+ * fails the whole file before any suite exists to report it as something else.
+ *
+ * That is the loudest volume available, and loud is the requirement. An
+ * exemption that is quietly ignored is indistinguishable from one that works,
+ * and it goes on being indistinguishable for as long as nobody re-derives it by
+ * hand.
+ */
+describe('knownFailures: an entry that names nothing', () => {
+  const build = (knownFailures: readonly AuthConformanceKnownFailure[]) =>
+    authConformanceChecks(optionsFor(providerWithARealDefect, { knownFailures }));
+
+  it('refuses a check id no check has', () => {
+    expect(() => build([{ ...RECORDED, check: 'sessions/roundtrip' }])).toThrow(TypeError);
+    expect(() => build([{ ...RECORDED, check: 'sessions/roundtrip' }])).toThrow(/which does not exist/);
+  });
+
+  it('suggests the id the author probably meant', () => {
+    expect(() => build([{ ...RECORDED, check: 'sessions/roundtrip' }])).toThrow(/Closest ids: sessions\/round-trip/);
+  });
+
+  it('lists every real id, because a rename is the other way to get here', () => {
+    expect(() => build([{ ...RECORDED, check: 'sessions/roundtrip' }])).toThrow(/All \d+ ids:/);
+  });
+
+  it('says why a dead entry is not harmless', () => {
+    expect(() => build([{ ...RECORDED, check: 'sessions/roundtrip' }])).toThrow(/nothing ever re-examines/);
+  });
+
+  it('refuses a code the named check cannot produce', () => {
+    expect(() => build([{ ...RECORDED, code: 'sessions/round-trip#validate-rejects-frsh-session' }])).toThrow(
+      /cannot produce it/,
+    );
+  });
+
+  it('lists the codes that check can produce', () => {
+    expect(() => build([{ ...RECORDED, code: 'sessions/round-trip#nope' }])).toThrow(
+      /sessions\/round-trip#destroyed-session-still-validates/,
+    );
+  });
+
+  it('refuses a code that belongs to a different check than the entry names', () => {
+    expect(() => build([{ ...RECORDED, code: 'sso/login-button#threw' }])).toThrow(/cannot produce it/);
+  });
+});
+
+describe('knownFailures: an entry with no stated reason', () => {
+  const build = (knownFailures: readonly AuthConformanceKnownFailure[]) =>
+    authConformanceChecks(optionsFor(providerWithARealDefect, { knownFailures }));
+
+  it.each([
+    ['missing', undefined],
+    ['empty', ''],
+    ['whitespace', '   \n  '],
+  ])('refuses a reason that is %s', (_label, reason) => {
+    expect(() => build([{ ...RECORDED, reason: reason as unknown as string }])).toThrow(TypeError);
+    expect(() => build([{ ...RECORDED, reason: reason as unknown as string }])).toThrow(/must be a non-empty/);
+  });
+
+  /**
+   * The reason the reason is required, said in the message rather than only in
+   * the docs. This package exists because four obligations went unwritten while
+   * everybody involved knew what they were.
+   */
+  it('says why, in the message', () => {
+    expect(() => build([{ ...RECORDED, reason: '' }])).toThrow(/knowledge leaves with them/);
+  });
+
+  it.each([
+    ['a missing code', { code: undefined }],
+    ['an empty code', { code: '' }],
+    ['a missing check id', { check: undefined }],
+    ['an empty check id', { check: '  ' }],
+  ])('refuses %s', (_label, override) => {
+    expect(() => build([{ ...RECORDED, ...override } as unknown as AuthConformanceKnownFailure])).toThrow(TypeError);
+  });
+
+  it('explains that a code is what keeps the entry from spreading', () => {
+    expect(() => build([{ ...RECORDED, code: '' }])).toThrow(/second, unrelated defect/);
+  });
+
+  it('refuses a fixture code, which is not a provider defect anybody is owed an exemption for', () => {
+    expect(() =>
+      build([{ check: 'obligation/cookieAuth', code: 'fixture/cookie-header-missing', reason: 'later' }]),
+    ).toThrow(/fix the fixture instead/);
+  });
+
+  it('refuses two entries for one check, because only one of them could ever fire', () => {
+    expect(() =>
+      build([RECORDED, { ...RECORDED, code: 'sessions/round-trip#create-threw', reason: 'also this' }]),
+    ).toThrow(/second entry/);
+  });
+
+  it('refuses something that is not an array, and something that is not an entry', () => {
+    expect(() => build('sessions/round-trip' as unknown as AuthConformanceKnownFailure[])).toThrow(/must be an array/);
+    expect(() => build([null as unknown as AuthConformanceKnownFailure])).toThrow(/not a \{ check, code, reason \}/);
+  });
+
+  it('accepts no knownFailures at all, and an empty list, as meaning the same thing', () => {
+    expect(() => authConformanceChecks(optionsFor(() => fullyCapableFake()))).not.toThrow();
+    expect(() => build([])).not.toThrow();
+    for (const check of build([])) expect(check.knownFailure).toBeNull();
+  });
+});
 
 /**
  * The two halves of this package have to agree about the same provider, and
@@ -1029,6 +1641,52 @@ describe('a provider that cannot be asked anything', () => {
     const failed = failures(outcomes).find(outcome => outcome.check.id === 'contract/authorize-user');
     expect(failed?.message).toContain('is not offline');
     expect(failed?.message).toContain('ENOTFOUND');
+  });
+});
+
+/**
+ * A provider that throws something that is not an `Error`.
+ *
+ * `throw 'unauthorized'` is legal JavaScript and does happen. The runner reads a
+ * message off whatever came out, so a bare string has to survive that with the
+ * string intact - and it must arrive with no failure code, because it did not
+ * come from a `fail` site. That second half is what stops a `knownFailures`
+ * entry from ever covering it: an uncoded failure can equal no recorded code.
+ */
+describe('a provider that throws a value that is not an Error', () => {
+  const throwsAString = () => {
+    const provider = brokenFake({});
+    Object.defineProperty(provider, 'authenticateToken', {
+      get() {
+        // eslint-disable-next-line no-throw-literal -- the point of the test
+        throw 'authenticateToken is not available on this instance';
+      },
+      configurable: true,
+    });
+    return provider;
+  };
+
+  it('reports the thrown value as its own message', async () => {
+    const outcomes = await runChecks(optionsFor(throwsAString));
+    const failed = failures(outcomes).find(outcome => outcome.check.id === 'contract/shape');
+    expect(failed, 'contract/shape did not fail').toBeDefined();
+    expect(failed!.message).toBe('authenticateToken is not available on this instance');
+  });
+
+  it('carries no failure code, so no entry can ever cover it', async () => {
+    const outcomes = await runChecks(optionsFor(throwsAString));
+    expect(failures(outcomes).find(outcome => outcome.check.id === 'contract/shape')!.code).toBeNull();
+  });
+
+  it('fails a recorded entry rather than being absorbed by it', async () => {
+    const outcomes = await runChecks(
+      optionsFor(throwsAString, {
+        knownFailures: [{ check: 'contract/shape', code: 'contract/shape#missing-required-member', reason: 'not yet' }],
+      }),
+    );
+    const failed = failures(outcomes).find(outcome => outcome.check.id === 'contract/shape');
+    expect(failed, 'the entry swallowed an uncoded throw').toBeDefined();
+    expect(failed!.message).toContain('the failure did not come from a check assertion');
   });
 });
 
@@ -1180,4 +1838,41 @@ describeAuthProvider({
   createProvider: () => withSyntheticOrganizations(fakeProvider({ user: { organizationId: undefined } })),
   token: FAKE_TOKEN,
   userId: 'fake-user',
+});
+
+/**
+ * The same adapter again, on a provider that does not conform and says so.
+ *
+ * Everything above drives the outcomes as data, which proves the policy and
+ * proves nothing about how a known failure actually *reads* in a run. This
+ * registration is the run: it goes green, and it is visibly not the green of a
+ * clean provider.
+ *
+ * **The `stderr` line this prints during `pnpm test` is the feature working, not
+ * noise to tidy away.** A recorded failure that produced no output would be an
+ * exclusion with extra steps - the thing this mechanism exists to be an
+ * alternative to. It is printed by the default reporter with the file and test
+ * name attached, so it survives a CI run nobody opens in verbose mode; the test
+ * title carries `known failure:`; and the skip note carries the full report. A
+ * reader gets the same answer at every level of detail they choose to read.
+ *
+ * If the fake below is ever fixed so `sessions/round-trip` passes, this
+ * registration goes red and the entry has to be deleted with it. That is the
+ * anti-rot property, running against the real adapter rather than the harness.
+ */
+describeAuthProvider({
+  name: '@mastra/auth-fake (a provider with one recorded known failure)',
+  createProvider: () => brokenFake({ validateSession: async () => null }),
+  token: FAKE_TOKEN,
+  userId: 'fake-user',
+  cookieHeader: `${FAKE_COOKIE_NAME}=${FAKE_TOKEN}`,
+  knownFailures: [
+    {
+      check: 'sessions/round-trip',
+      code: 'sessions/round-trip#validate-rejects-fresh-session',
+      reason:
+        'validateSession answers null for a session it just minted. Stands in here for the real case: ' +
+        'a provider whose ISessionProvider members are no-ops kept for interface compatibility.',
+    },
+  ],
 });
