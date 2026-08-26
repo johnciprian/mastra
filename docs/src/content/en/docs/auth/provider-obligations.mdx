@@ -205,7 +205,7 @@ On the host side, `resolveOrganizationId(identity)` answers the same question fo
 
 ### Where a session-shaped payload's organization comes from
 
-If your `authenticateToken` returns a `{ session, user }` wrapper, `toAuthIdentity` takes the organization from `session.activeOrganizationId` and from nowhere else. An `organizationId` sitting on the `user` half is not read as a fallback.
+If your `authenticateToken` returns a `{ session, user }` wrapper, `toAuthIdentity` takes the organization from `session.activeOrganizationId` and from nowhere else. An `organizationId` sitting on the `user` half isn't read as a fallback.
 
 That's deliberate, and it's the one rule to know if your provider has organizations a person can belong to several of. `user.organizationId` says the person is a _member_ of that organization. It doesn't say this session was switched into it, and a session that never activated an organization must not reach that organization's shared data. Membership isn't activation.
 

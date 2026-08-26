@@ -18,12 +18,14 @@ A host detects capabilities with structural guards rather than `instanceof`, so 
 
 `@mastra/core/server` exports seven guards. Each answers one question: does this provider declare this capability?
 
+Each guard tests every member its interface requires, and no optional one.
+
 | Guard | Narrows to | Methods it tests |
 | - | - | - |
-| `isSSOProvider` | `ISSOProvider` | `getLoginUrl`, `handleCallback` |
-| `isSessionProvider` | `ISessionProvider` | `createSession`, `validateSession` |
-| `isUserProvider` | `IUserProvider` | `getCurrentUser` |
-| `isCredentialsProvider` | `ICredentialsProvider` | `signIn` |
+| `isSSOProvider` | `ISSOProvider` | `getLoginUrl`, `handleCallback`, `getLoginButtonConfig` |
+| `isSessionProvider` | `ISessionProvider` | `createSession`, `validateSession`, `destroySession`, `refreshSession`, `getSessionIdFromRequest`, `getSessionHeaders`, `getClearSessionHeaders` |
+| `isUserProvider` | `IUserProvider` | `getCurrentUser`, `getUser` |
+| `isCredentialsProvider` | `ICredentialsProvider` | `signIn`, `signUp` |
 | `isOrganizationsProvider` | `IOrganizationsProvider` | `ensureOrganization`, `isOrganizationAdmin` |
 | `isAuthHttpHandler` | `IAuthHttpHandler` | `handleAuthRequest` |
 | `hasAuthInit` | `IAuthInit` | `init` |
@@ -187,13 +189,13 @@ Each guard tests every member its interface requires, and no optional member.
 
 That equality is enforced rather than maintained. Adding a required member to one of these interfaces fails the build until its guard tests the new member too.
 
-The optional members are the gap that remains, and it is deliberate: `ISSOProvider` declares six members and requires three, so `isSSOProvider` says nothing about whether `getLogoutUrl` is there. Requiring the optional half would reject providers the interface accepts.
+The optional members are the gap that remains, and it's deliberate: `ISSOProvider` declares six members and requires three, so `isSSOProvider` says nothing about whether `getLogoutUrl` is there. Requiring the optional half would reject providers the interface accepts.
 
-So a guard tells you the provider has the members the interface requires, and nothing more:
+A guard therefore tells you the provider has the members the interface requires, and nothing more:
 
 - When you need an optional member, check for that member rather than for the guard. `toAuthDescriptor` does exactly this for `refreshSession` and `destroySession`.
-- A guard cannot tell you a member does anything. A provider can satisfy `isSessionProvider` with seven methods that return `null` and do nothing, and a surface offering "sign out everywhere" on the strength of the guard alone would call a method that runs and has no effect. Only the conformance suite, below, exercises behavior.
-- TypeScript narrows to the full interface, optional members included. Reaching for one of those on a narrowed provider compiles whether or not it is there.
+- A guard can't tell you a member does anything. A provider can satisfy `isSessionProvider` with seven methods that return `null` and do nothing, and a surface offering "sign out everywhere" on the strength of the guard alone would call a method that runs and has no effect. Only the conformance suite, below, exercises behavior.
+- TypeScript narrows to the full interface, optional members included. Reaching for one of those on a narrowed provider compiles whether or not it's there.
 
 ## The capability descriptor
 
@@ -337,7 +339,7 @@ Reaching the exchange is what proves the verifier survived. The outcomes below i
 
 ### When a check can't pass yet
 
-Pass `knownFailures` to record a failure you can't fix now, naming the check, its failure code, and why. The suite then stays green while reporting the entry on every run. The record is checked in both directions. A failure that stops happening turns the suite red, and so does one that begins failing for a different reason, which keeps an entry from quietly becoming a permanent exemption. Twenty such records exist today across seven packages: Auth0, Clerk, Cloud, Google, Neon, Studio, and WorkOS.
+Pass `knownFailures` to record a failure you can't fix now, naming the check, its failure code, and why. The suite then stays green while reporting the entry on every run. The record is checked in both directions. A failure that stops happening turns the suite red, and so does one that begins failing for a different reason, which keeps an entry from quietly becoming a permanent exemption. Sixteen such records exist today across six packages: Auth0, Clerk, Cloud, Google and Neon carry three each, and WorkOS one. Studio carried four and now carries none.
 
 For setup, fixtures, and the failure messages the suite emits, see the [`@mastra/factory-auth` README](https://github.com/mastra-ai/mastra/blob/main/mastracode/factory-auth/README.md).
 

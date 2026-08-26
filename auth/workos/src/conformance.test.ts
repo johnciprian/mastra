@@ -33,22 +33,76 @@
  * `knownFailures` below: the suite goes green and says on every run that it is
  * not the green of a clean provider.
  *
+ * THE FINDING
+ *
  * `MastraAuthWorkos` declares `ISessionProvider` and implements all seven of
  * its members as no-ops: `validateSession` returns `null` unconditionally,
  * `refreshSession` returns `null`, `getSessionIdFromRequest` returns `null`,
  * and `destroySession` does nothing (see the "kept for interface
  * compatibility" comments in `./auth-provider`). AuthKit really does keep the
- * session in an encrypted cookie, so there is nothing server-side to look up —
- * but `isSessionProvider` tests only `createSession` and `validateSession` for
- * existence, so the guard reports a capability the provider does not have.
- * Everything downstream believes it: `toAuthDescriptor` reports
- * `features.sessionRevocation: true` on the strength of `destroySession`
- * existing, and a UI will offer "sign out everywhere" on a provider that
- * cannot revoke anything. The defect is the declaration, not the design.
+ * session in an encrypted cookie, so there is nothing server-side to look up.
  *
- * Both ways out are provider decisions rather than test ones — give the
- * provider a real session store, or stop declaring `ISessionProvider`, which
- * is a breaking change to a published package — so neither is taken here.
+ * No structural guard can see this, and a narrower one does not help: since all
+ * seven members exist, `isSessionProvider` — which now tests all seven —
+ * reports the capability just as the looser two-member version did. Everything
+ * downstream believes it. `toAuthDescriptor` on a provider built the way
+ * `createProvider` below builds one answers
+ * `{ logout: true, organizations: true, refresh: true, sessionRevocation: true }`,
+ * both session features on the strength of a method that does nothing. Nothing
+ * renders `sessionRevocation` today — `mastracode/factory-ui` carries it into
+ * its descriptor model and no component reads it yet — so the harm is a
+ * descriptor that lies rather than a button that lies, and the first UI to
+ * offer "sign out everywhere" from it would inherit the lie.
+ *
+ * The seven members are also unreachable on every host path in this
+ * repository. `handleCallback` seals its own AuthKit cookie and returns it as
+ * `cookies` (always: `cookiePassword` falls back to a generated development
+ * one, `./auth-provider` in the constructor), and both hosts branch on
+ * `result.cookies?.length` before they consider `createSession`
+ * (`mastracode/factory/src/auth.ts`,
+ * `packages/server/src/server/handlers/auth.ts`). So the declaration produces a
+ * descriptor that is read, and members that are not.
+ *
+ * WHY IT IS NOT FIXED HERE, AND WHAT A FIX WOULD BE
+ *
+ * `createSession(userId)` cannot be made to mint anything `validateSession`
+ * could accept. A WorkOS session is created by an authenticated token
+ * exchange, not from a user id: the material AuthKit seals is an access token,
+ * a refresh token and a user, and `@workos-inc/node` 8.13.0 has no call that
+ * mints a session — `userManagement` offers `listSessions(userId)` and
+ * `revokeSession({ sessionId })`, both of which read or end sessions that
+ * authentication already created. So this check cannot go green on the
+ * strength of a correct implementation.
+ *
+ * It could go green on an incorrect one, which is the option not taken. An
+ * in-memory map behind `createSession`/`validateSession`/`destroySession`
+ * would satisfy the round trip while leaving the advertised capability exactly
+ * as hollow: destroying a record this provider invented revokes nothing, and
+ * the browser's sealed cookie would keep authenticating afterwards. That shape
+ * is honest in `@mastra/auth-studio`, whose `destroySession` posts to the
+ * shared API's logout and really ends the session; here it would be a green
+ * that means less than the red does.
+ *
+ * The two real remedies, for whoever decides:
+ *
+ * 1. **Stop declaring `ISessionProvider`** — remove the seven members. The
+ *    descriptor then tells the truth (`refresh` and `sessionRevocation` both
+ *    become false, and `logout` stays true through `getClearSessionHeaders`,
+ *    which is kept). Nothing in this repository calls them, so the runtime
+ *    blast radius here is nil, but they are public API on a published package:
+ *    this is a major bump for `@mastra/auth-workos`, and the recorded failure
+ *    goes away with the declaration rather than with a fix.
+ * 2. **Implement the four readable members against AuthKit**, which is not
+ *    breaking and is worth doing on its own: `getSessionIdFromRequest` can
+ *    return the sealed cookie, `validateSession` can unseal it through
+ *    `AuthService.withAuth`, and `destroySession` can pull the `sid` claim out
+ *    of the access token — `getLogoutUrl` in `./auth-provider` already does
+ *    exactly that — and call `userManagement.revokeSession({ sessionId })`,
+ *    which makes `features.sessionRevocation` true in fact. It does not make
+ *    `createSession(userId)` mintable, so this entry survives it; the reason
+ *    below would narrow to `createSession` alone.
+ *
+ * Neither is a test's decision, so neither is taken here.
  */
 import { describeAuthProvider } from '@mastra/factory-auth/conformance';
 import type { AuthService } from '@workos/authkit-session';
@@ -365,10 +419,14 @@ const knownFailures = [
     check: 'sessions/round-trip',
     code: 'sessions/round-trip#validate-rejects-fresh-session',
     reason:
-      'validateSession returns null unconditionally; all seven ISessionProvider members are no-ops ' +
-      'kept for interface compatibility, so isSessionProvider reports a capability this provider does ' +
-      'not have and toAuthDescriptor then advertises features.sessionRevocation. Full diagnosis in ' +
-      'this file’s header.',
+      'createSession(userId) cannot mint a session validateSession could accept: a WorkOS session is ' +
+      'created by an authenticated token exchange, and the SDK has no call that mints one from a user ' +
+      'id. All seven ISessionProvider members are no-ops, so toAuthDescriptor advertises ' +
+      'features.sessionRevocation on a provider that revokes nothing. Not fixed because both remedies ' +
+      'are provider decisions: drop ISessionProvider (breaking, major) or back the readable members ' +
+      'with AuthKit (non-breaking, and leaves this entry standing). An in-memory store would turn this ' +
+      'green without making the capability real, so it is not taken. Full diagnosis, with both ' +
+      'remedies spelled out, in this file’s header.',
   },
 ];
 
