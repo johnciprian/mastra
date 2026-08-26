@@ -291,7 +291,15 @@ export class MastraAuthWorkos
   /**
    * Get the current user from the request using AuthKit session.
    */
-  async getCurrentUser(request: Request): Promise<EEUser | null> {
+  /**
+   * Declared as `WorkOSUser`, matching what the body builds and what the
+   * sibling `getUser` has always declared. It used to say `EEUser`, which hid
+   * `workosId`, `organizationId` and `memberships` from every caller - the
+   * fields this provider exists to supply. Widening a return type is safe for
+   * callers: `WorkOSUser extends EEUser`, so the class still satisfies
+   * `IUserProvider<EEUser>`.
+   */
+  async getCurrentUser(request: Request): Promise<WorkOSUser | null> {
     try {
       const { auth, refreshedSessionData } = await this.authService.withAuth(request);
 

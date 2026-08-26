@@ -9,6 +9,7 @@ import type {
   MastraFGAPermissionInput,
   RoleMapping,
 } from '@internal/auth/ee';
+import type { MastraAuthProviderOptions } from '@internal/auth/provider';
 import type { JwtPayload } from '@mastra/auth';
 import type { User, OrganizationMembership } from '@workos-inc/node';
 
@@ -108,8 +109,15 @@ export interface WorkOSJwtClaimsConfig {
 
 /**
  * Options for MastraAuthWorkos.
+ *
+ * Extends `MastraAuthProviderOptions` because the constructor passes this whole
+ * object to `registerOptions`, which binds `authorizeUser`,
+ * `mapUserToResourceId`, `protected` and `public`. Those four were honoured at
+ * run time and impossible to type: the `as MastraAuthProviderOptions<WorkOSUser>`
+ * cast at the call site satisfied the compiler and hid the gap. Nine of the
+ * eleven providers here have always declared it this way.
  */
-export interface MastraAuthWorkosOptions {
+export interface MastraAuthWorkosOptions extends MastraAuthProviderOptions<WorkOSUser> {
   /** WorkOS API key (defaults to WORKOS_API_KEY env var) */
   apiKey?: string;
   /** WorkOS Client ID (defaults to WORKOS_CLIENT_ID env var) */

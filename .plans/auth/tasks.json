@@ -1496,7 +1496,7 @@
     },
     {
       "id": "P30",
-      "status": "pending",
+      "status": "done",
       "title": "Two published providers cannot type the options they honour",
       "lane": "C",
       "size": "M",
@@ -1508,7 +1508,7 @@
         "auth/okta/src/types.ts",
         "auth/workos/src/auth-provider.ts"
       ],
-      "detail": "Found by P21 once the provider test files were typechecked, and asserted around there rather than fixed, because a test may not change a published provider. (1) `MastraAuthWorkosOptions` does not declare `authorizeUser`, and the option works: the constructor passes the options through `registerOptions`, which binds `authorizeUser`, `mapUserToResourceId`, `protected` and `public`. So three options are honoured at run time and untypeable for a caller. Nine of the eleven providers declare `Options extends MastraAuthProviderOptions<TUser>` and have none of this. The two that do not - workos and okta - are exactly the two whose `registerOptions` call carries an `as MastraAuthProviderOptions<TUser>` cast, which is what hid it. Okta has the identical defect and no test exercised it, so it produced no error. The fix is `src/types.ts` in both packages. (2) `MastraAuthWorkos.getCurrentUser` declares `Promise<EEUser | null>` while its body builds and returns a `WorkOSUser`, and the sibling `getUser` on the same class declares `WorkOSUser` correctly. `organizationId`, `memberships`, `organizationMembershipId` and `workosId` - the fields this provider exists to supply - are invisible to every caller of `getCurrentUser`.",
+      "detail": "Found by P21 once the provider test files were typechecked, and asserted around there rather than fixed, because a test may not change a published provider. (1) `MastraAuthWorkosOptions` does not declare `authorizeUser`, and the option works: the constructor passes the options through `registerOptions`, which binds `authorizeUser`, `mapUserToResourceId`, `protected` and `public`. So three options are honoured at run time and untypeable for a caller. Nine of the eleven providers declare `Options extends MastraAuthProviderOptions<TUser>` and have none of this. The two that do not - workos and okta - are exactly the two whose `registerOptions` call carries an `as MastraAuthProviderOptions<TUser>` cast, which is what hid it. Okta has the identical defect and no test exercised it, so it produced no error. The fix is `src/types.ts` in both packages. (2) `MastraAuthWorkos.getCurrentUser` declares `Promise<EEUser | null>` while its body builds and returns a `WorkOSUser`, and the sibling `getUser` on the same class declares `WorkOSUser` correctly. `organizationId`, `memberships`, `organizationMembershipId` and `workosId` - the fields this provider exists to supply - are invisible to every caller of `getCurrentUser`. DONE. Both option types now extend MastraAuthProviderOptions, and getCurrentUser declares WorkOSUser. Proved as a consumer would hit it, against the package source rather than by reading: a scratch file passing authorizeUser, protected and public to each constructor failed TS2353 before and compiles after. Widening the return is safe for callers because WorkOSUser extends EEUser, so the class still satisfies IUserProvider<EEUser>. Nothing changes at run time - registerOptions was already binding all four.",
       "doneWhen": "A caller can type `authorizeUser`, `protected` and `public` on both workos and okta, and `getCurrentUser`'s declared return type matches what it returns."
     }
   ],
