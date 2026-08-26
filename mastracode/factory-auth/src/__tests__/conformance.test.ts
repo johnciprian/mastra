@@ -60,6 +60,7 @@ import type {
   AuthConformanceOutcome,
   AuthProviderConformanceOptions,
 } from '../conformance/index.js';
+import { isUserProvider } from '../contract.js';
 import type { IMastraAuthProvider } from '../contract.js';
 import { parseStateId } from '../oauth-state.js';
 import { withSyntheticOrganizations } from '../organizations.js';
@@ -733,6 +734,192 @@ describe('a provider that carries a PKCE verifier in a login cookie', () => {
 });
 
 // ============================================================================
+// The guard that narrows on half an interface
+// ============================================================================
+
+function usersOutcome(outcomes: readonly CheckOutcome[], id: string): CheckOutcome {
+  return outcomes.find(outcome => outcome.check.id === id)!;
+}
+
+describe('a provider that satisfies isUserProvider with half of IUserProvider', () => {
+  /**
+   * `getCurrentUser` and no `getUser`, which every structural guard calls a
+   * complete `IUserProvider`.
+   *
+   * This is the shape the check exists for and the reason the missing member is
+   * asked about in the check body rather than in the gate. `isUserProvider`
+   * reads `getCurrentUser` and stops, while `IUserProvider` requires both - so
+   * the guard hands a host a narrowed type that promises a method that is not
+   * there, and `auth.getUser(id)` compiles and throws at run time. A gate can
+   * only ask the guard, so gating on `getUser` would skip exactly this provider.
+   */
+  const halfAUserProvider = () => brokenFake({ getUser: undefined });
+
+  it('is still a user provider as far as the guard is concerned', () => {
+    expect(isUserProvider(halfAUserProvider())).toBe(true);
+  });
+
+  it('fails rather than skipping, because it declared the capability and did not deliver it', async () => {
+    const outcomes = await runChecks(optionsFor(halfAUserProvider));
+    const outcome = usersOutcome(outcomes, 'users/get-user');
+    expect(outcome.status).toBe('failed');
+    expect(outcome.status === 'failed' && outcome.code).toBe('users/get-user#not-declared');
+  });
+
+  it('names the guard, and says why a passing guard was not enough', async () => {
+    const outcomes = await runChecks(optionsFor(halfAUserProvider));
+    const outcome = usersOutcome(outcomes, 'users/get-user');
+    expect(outcome.status === 'failed' && outcome.message).toContain('isUserProvider(provider) is true');
+    expect(outcome.status === 'failed' && outcome.message).toContain('provider.getUser        is undefined');
+    expect(outcome.status === 'failed' && outcome.message).toContain('auth.getUser is not a function');
+  });
+
+  /** One defect, one failure: the other half of the section still runs. */
+  it('leaves getCurrentUser’s own check able to pass', async () => {
+    const outcomes = await runChecks(optionsFor(halfAUserProvider));
+    expect(usersOutcome(outcomes, 'users/current-user').status).toBe('passed');
+  });
+
+  /**
+   * The skip, and why it is a skip rather than a red.
+   *
+   * A provider with no `getCurrentUser` declares no user directory at all, and
+   * nothing in a host asks it who is signed in. `supabase` and `firebase` are
+   * that shape today. Failing them for a capability they never claimed is the
+   * false red the skip rule exists to prevent.
+   */
+  it('skips both checks for a provider that declares no user directory', async () => {
+    const outcomes = await runChecks(optionsFor(() => withSyntheticOrganizations(fakeProvider())));
+    for (const id of ['users/current-user', 'users/get-user']) {
+      const outcome = usersOutcome(outcomes, id);
+      expect(outcome.status, id).toBe('skipped');
+      expect(outcome.status === 'skipped' && outcome.reason).toContain('isUserProvider is false');
+    }
+  });
+
+  /**
+   * And the answer that is a pass rather than a red, for the same reason
+   * `sso/pkce-round-trip` passes a provider that hands back no cookies.
+   *
+   * `null` is what `IUserProvider` documents for a user who is not found, and
+   * for `getCurrentUser` it is the ordinary answer on a request with no
+   * session. Four providers in this repository return it from `getUser`
+   * unconditionally because they have no directory to search. The check applied
+   * and ran; there was no user to hold anybody to.
+   */
+  it('passes a provider whose lookups resolve null, rather than demanding a user', async () => {
+    const outcomes = await runChecks(
+      optionsFor(() => brokenFake({ getCurrentUser: async () => null, getUser: async () => null })),
+    );
+    expect(report(outcomes)).toBe('');
+    expect(usersOutcome(outcomes, 'users/current-user').status).toBe('passed');
+    expect(usersOutcome(outcomes, 'users/get-user').status).toBe('passed');
+  });
+
+  /**
+   * The security half of the user section, kept separate because it is the one
+   * failure here that is not about a wrong name on a screen.
+   *
+   * A provider that answers `getCurrentUser` off a field cached on the instance
+   * rather than off the request answers it for everybody. The credentialled
+   * probe cannot see that - it gets the right user - so the check asks a second
+   * time with a request carrying nothing at all.
+   */
+  it('fails a getCurrentUser that answers for a request carrying no credentials', async () => {
+    const outcomes = await runChecks(
+      optionsFor(() => brokenFake({ getCurrentUser: async () => ({ id: 'fake-user' }) })),
+    );
+    const outcome = usersOutcome(outcomes, 'users/current-user');
+    expect(outcome.status).toBe('failed');
+    expect(outcome.status === 'failed' && outcome.code).toBe('users/current-user#authenticated-anonymous-request');
+    expect(outcome.status === 'failed' && outcome.message).toContain('no headers at all');
+    expect(outcome.status === 'failed' && outcome.message).toContain('cached on the instance');
+  });
+});
+
+// ============================================================================
+// The one answer whose wrong value is a grant of rights
+// ============================================================================
+
+function adminOutcome(outcomes: readonly CheckOutcome[]): CheckOutcome {
+  return outcomes.find(outcome => outcome.check.id === 'organizations/is-admin')!;
+}
+
+describe('a provider that answers isOrganizationAdmin for an organization it never created', () => {
+  /**
+   * The direction the whole check exists for, and the only one in this suite
+   * where a green would hand somebody rights over another user's data.
+   *
+   * `admin: true` is a provider whose membership lookup finds nothing and falls
+   * through to a default of yes. Every structural guard passes it, obligation 4
+   * passes it - `ensureOrganization` is perfectly correct - and it makes the
+   * organization id in a URL into an administrator role in that organization.
+   */
+  const alwaysAdmin = () => fullyCapableFake({ organizations: { admin: true } });
+
+  it('fails, with the invented id quoted so the reader can see it was invented', async () => {
+    const outcomes = await runChecks(optionsFor(alwaysAdmin));
+    const outcome = adminOutcome(outcomes);
+    expect(outcome.status).toBe('failed');
+    expect(outcome.status === 'failed' && outcome.code).toBe('organizations/is-admin#admin-of-an-unknown-organization');
+    expect(outcome.status === 'failed' && outcome.message).toContain('conformance-organization-nobody-created');
+    expect(outcome.status === 'failed' && outcome.message).toContain('The suite made it up');
+  });
+
+  it('fails nothing else, so the red is evidence about the admin answer alone', async () => {
+    const outcomes = await runChecks(optionsFor(alwaysAdmin));
+    expect(failures(outcomes).map(outcome => outcome.check.id)).toEqual(['organizations/is-admin']);
+  });
+
+  /**
+   * The direction that must stay green, and the reason this check does not
+   * simply assert `true` for the provider's own organization.
+   *
+   * `@mastra/auth-studio` answers `false` on a cold cache: it has no session
+   * cookie for the user yet, so it cannot know their role, and it says no. That
+   * is the correct answer to "cannot tell" and it must not be a conformance
+   * failure - a check that demanded `true` would turn every fail-closed
+   * provider red and teach the fix "return true when you are not sure".
+   */
+  it('passes a provider that answers false for its own organization', async () => {
+    const outcomes = await runChecks(optionsFor(() => fullyCapableFake({ organizations: { admin: false } })));
+    expect(report(outcomes)).toBe('');
+    expect(adminOutcome(outcomes).status).toBe('passed');
+  });
+
+  /**
+   * The wrapper is the recommended fix, so it has to survive the check that
+   * recommends it. `withSyntheticOrganizations` decides both directions itself
+   * for ids in its own namespace and never delegates them, which is exactly the
+   * behaviour asked for here.
+   */
+  it('passes a bearer-token validator wrapped with withSyntheticOrganizations', async () => {
+    const outcomes = await runChecks(optionsFor(() => withSyntheticOrganizations(fakeProvider())));
+    expect(adminOutcome(outcomes).status).toBe('passed');
+  });
+
+  /**
+   * And the wrapper still refuses when the provider underneath it is the
+   * fail-open one, because it never asks about an id it minted. This is the
+   * assertion that says the recommended fix is a fix rather than a way to get
+   * the check to stop asking.
+   */
+  it('passes once a fail-open provider is wrapped, because synthetic ids are never delegated', async () => {
+    const outcomes = await runChecks(
+      optionsFor(() => withSyntheticOrganizations(fakeProvider({ user: { organizationId: undefined } }))),
+    );
+    expect(adminOutcome(outcomes).status).toBe('passed');
+  });
+
+  /** The obligation-4 fake still reports one defect, and it is obligation 4's. */
+  it('does not add a second red to a provider that resolves no organization at all', async () => {
+    const outcomes = await runChecks(optionsFor(() => fakeViolating('organizationId')));
+    expect(failures(outcomes).map(outcome => outcome.check.id)).toEqual(['obligation/organizationId/deterministic']);
+    expect(adminOutcome(outcomes).status).toBe('passed');
+  });
+});
+
+// ============================================================================
 // The skip rule
 // ============================================================================
 
@@ -749,11 +936,17 @@ describe('a bearer-token validator', () => {
         'obligation/cookieAuth',
         'obligation/stateCodec/callback',
         'obligation/stateCodec/login-url',
+        // Not `obligation/organizationId/declared`, which is the check that
+        // reports the absence of organizations and is deliberately ungated.
+        // This one is about the answer a provider with organizations gives.
+        'organizations/is-admin',
         'routes/answers-a-response',
         'sessions/round-trip',
         'sso/login-button',
         'sso/logout-url',
         'sso/pkce-round-trip',
+        'users/current-user',
+        'users/get-user',
       ].sort(),
     );
   });
@@ -1231,6 +1424,95 @@ const RED_CASES: readonly RedCase[] = [
       }),
     fails: ['obligation/stateCodec/login-url'],
     says: /did not return an absolute URL/,
+  },
+  // ------------------------------------------------------------------
+  // The user directory, one broken member at a time
+  // ------------------------------------------------------------------
+  {
+    label: 'getCurrentUser throws instead of answering a user or null',
+    provider: () =>
+      brokenFake({
+        getCurrentUser: () => {
+          throw new Error('session store unreachable');
+        },
+      }),
+    fails: ['users/current-user'],
+    says: /getCurrentUser threw instead of answering a user or null/,
+  },
+  {
+    // Obligation 1's payload shape, arriving through the other door. The id is
+    // present and readable by anything that knows this provider, and
+    // `toAuthIdentity` does not look there - so a host has a user object it
+    // cannot key anything on.
+    label: 'getCurrentUser answers a user whose id is nested where nothing looks for it',
+    provider: () => brokenFake({ getCurrentUser: async () => ({ profile: { id: 'fake-user' } }) }),
+    fails: ['users/current-user'],
+    says: /answered with something that names nobody/,
+  },
+  {
+    label: 'getCurrentUser names a different person than authenticateToken does',
+    provider: () => brokenFake({ getCurrentUser: async () => ({ id: 'somebody-else' }) }),
+    fails: ['users/current-user'],
+    says: /name two different people for one credential/,
+  },
+  {
+    label: 'getUser throws for the provider’s own user id',
+    provider: () =>
+      brokenFake({
+        getUser: () => {
+          throw new Error('directory lookup failed');
+        },
+      }),
+    fails: ['users/get-user'],
+    says: /getUser threw for this provider’s own user id/,
+  },
+  {
+    // The method that ignores its argument. It looks right against a fixture
+    // with one user in it, which is why the fake's directory has two.
+    label: 'getUser ignores the id it was handed and answers whoever is signed in',
+    provider: () => brokenFake({ getUser: async () => ({ id: 'somebody-else' }) }),
+    fails: ['users/get-user'],
+    says: /answered with a different user than the id it was asked about/,
+  },
+  {
+    label: 'getUser answers a record with no id anywhere in it',
+    provider: () => brokenFake({ getUser: async () => ({ email: 'nobody@example.test' }) }),
+    fails: ['users/get-user'],
+    says: /toAuthIdentity found no id in it/,
+  },
+  // ------------------------------------------------------------------
+  // The organization administrator answer
+  // ------------------------------------------------------------------
+  {
+    label: 'isOrganizationAdmin throws rather than resolving false',
+    provider: () =>
+      brokenFake({
+        async isOrganizationAdmin() {
+          throw new Error('role service unavailable');
+        },
+      }),
+    fails: ['organizations/is-admin'],
+    says: /threw for this provider’s own organization/,
+  },
+  {
+    // Truthy at the call site, which is the whole defect: `if (await
+    // isOrganizationAdmin(...))` reads "member" as yes.
+    label: 'isOrganizationAdmin answers the role string rather than a boolean',
+    provider: () => brokenFake({ isOrganizationAdmin: async () => 'member' }),
+    fails: ['organizations/is-admin'],
+    says: /answered with something that is not a boolean/,
+  },
+  {
+    label: 'isOrganizationAdmin throws for an organization id it does not recognize',
+    provider: () =>
+      brokenFake({
+        async isOrganizationAdmin(organizationId: string) {
+          if (organizationId === 'fake-org') return true;
+          throw new Error(`unknown organization: ${organizationId}`);
+        },
+      }),
+    fails: ['organizations/is-admin'],
+    says: /threw for an organization id it does not recognize/,
   },
   {
     label: 'isSignUpEnabled answers a truthy string rather than a boolean',

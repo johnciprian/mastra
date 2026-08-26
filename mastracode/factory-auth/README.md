@@ -265,6 +265,55 @@ Three outcomes, and the middle one is the one to read twice:
 The same cookie hand-back happens before `obligation/stateCodec/callback` too, so a correct PKCE
 provider is not told it "rejected a state" about a call that threw for a missing verifier.
 
+### If your provider implements IUserProvider
+
+Two checks, and between them they cover a gap in the guard you are probably relying on.
+
+`isUserProvider` tests `getCurrentUser` and stops. `IUserProvider` requires `getUser` as well — so a
+provider with one of the two required members passes the guard, and a host that writes
+`if (isUserProvider(auth)) auth.getUser(id)` compiles against a narrowed type and throws
+`auth.getUser is not a function` on a request. That is why `users/get-user` reports a missing
+`getUser` as a **failure** rather than skipping: the gate can only ask the guard, and gating on the
+member would skip exactly the provider the check is looking for.
+
+`users/current-user` asks whether your two identity paths agree. It sends one request carrying every
+credential the suite holds — the bearer token, and your `cookieHeader` if you supplied one — and
+compares what `getCurrentUser` resolves against the id `authenticateToken` resolves for the same
+credential. Hosts use both: enforcement goes through `authenticateToken`, and the profile on screen
+comes out of `getCurrentUser`. When they disagree, somebody is shown one identity while their work is
+stored under another, and nothing anywhere reports an error. It then asks a second time with a
+request carrying **nothing at all**, which must not resolve a user — a `currentUser` cached on a
+long-lived provider instance answers that one, and then every visitor is the last person to sign in.
+
+Neither check demands a non-`null` answer. `null` is what the interface documents for a user who is
+not found, and a provider whose directory needs a live vendor cannot answer offline: six of the nine
+`IUserProvider` implementations in this repository resolve `null` from `getUser` under conformance
+and pass. What is checked is that an answer you _do_ give names the person who was asked about.
+
+### If your provider implements IOrganizationsProvider
+
+`organizations/is-admin` is the only check in this suite whose wrong answer hands somebody rights
+over another user's data, so it is worth knowing exactly what it demands and what it does not.
+
+It asks twice. First about the organization your own `ensureOrganization` just returned, where the
+requirement is only that you answer a **literal boolean** without throwing. Answering `false` there
+is fine — `@mastra/auth-studio` does, on a cold cache, because it cannot know the role yet and says
+no. A check that demanded `true` would turn every fail-closed provider red and teach exactly the
+wrong fix.
+
+Then it asks about `conformance-organization-nobody-created`, an id the suite invented. `true` is a
+failure. Organization ids arrive from requests, which means they arrive from whoever made the
+request, and a provider that answers `true` for ids it does not recognize turns "guess an
+organization id" into an administrator role in it. The usual cause is not a decision to fail open —
+it is a membership lookup that finds no row and falls through to a default, or a check that asks "is
+this user an admin anywhere" and ignores the organization it was handed. Throwing for that id is a
+failure too: `IOrganizationsProvider` says provider errors here should resolve to `false`, and a
+host cannot tell a throw apart from a refusal.
+
+If your provider has no organizations of its own, `withSyntheticOrganizations` passes this check by
+construction — it answers for ids in its own namespace itself, in both directions, and never
+delegates them.
+
 ## When your provider doesn't conform and ships anyway
 
 Some defects are real and the fix isn't small. A `validateSession` that returns `null` because the
@@ -426,8 +475,9 @@ break you without being type errors:
   this package does not own, so it is filed as a major even though no signature moved. That holds
   however narrow the gate is: `sso/pkce-round-trip` skips for every provider that sets no login
   cookie, and it still shipped as a major, because "no provider in _this_ repository goes red" is a
-  fact about this repository. Loosening a check, adding a skip gate, or rewriting a message is a
-  patch.
+  fact about this repository. `users/current-user`, `users/get-user` and `organizations/is-admin`
+  shipped as a major on the same reasoning, and none of the eleven providers here goes red on them
+  either. Loosening a check, adding a skip gate, or rewriting a message is a patch.
 - **Removing or renaming a conformance failure code.** See below: a code is a value downstream
   suites hold, and a rename turns a valid `knownFailures` entry into a registration error.
 - **A change to the synthetic organization id format.** `user:${userId}` is a storage key. Changing

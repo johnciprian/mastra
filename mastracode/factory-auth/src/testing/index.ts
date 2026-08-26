@@ -63,6 +63,7 @@ import type {
   IOrganizationsProvider,
   ISessionProvider,
   ISSOProvider,
+  IUserProvider,
   MastraAuthRequest,
 } from '../contract.js';
 import { toAuthIdentity } from '../identity.js';
@@ -216,6 +217,8 @@ export type FakeMethod =
   | 'requestPasswordReset'
   | 'resetPassword'
   | 'handleAuthRequest'
+  | 'getCurrentUser'
+  | 'getUser'
   | 'ensureOrganization'
   | 'isOrganizationAdmin'
   | 'createSession'
@@ -717,6 +720,83 @@ export function withHttpHandler<T extends FakeProvider>(
   return { ...provider, ...capability };
 }
 
+/** Options for {@link withUser}. */
+export interface FakeUserOptions {
+  /**
+   * Other users `getUser` can find, beyond the fake's own {@link FakeProvider.user}.
+   *
+   * Directory lookup is what `getUser` is for, and a fake with a directory of
+   * exactly one user cannot tell "looked the id up" from "returned whoever is
+   * signed in". Ids not in here and not the fake's own resolve to `null`, which
+   * is what the interface documents for a user who does not exist.
+   */
+  directory?: readonly FakeUser[];
+}
+
+/** What {@link withUser} adds. Satisfies `isUserProvider`. */
+export type FakeUserCapability = IUserProvider<FakeUser>;
+
+/**
+ * Add the user directory: `getCurrentUser` and `getUser`.
+ *
+ * ```ts
+ * const provider = withUser(fakeProvider());
+ * isUserProvider(provider); // true, and the type says so
+ * await provider.getCurrentUser(new Request(url, { headers: { authorization: `Bearer ${FAKE_TOKEN}` } }));
+ * ```
+ *
+ * BOTH MEMBERS, BECAUSE THE GUARD ONLY READS ONE
+ *
+ * `isUserProvider` tests `getCurrentUser` and nothing else, while
+ * `IUserProvider` requires `getUser` as well - so the guard narrows a provider
+ * that has one of the two required members to a type that promises both, and
+ * `provider.getUser(id)` then typechecks and is `undefined` at runtime. This is
+ * the same optimism `withSession` documents for `isSessionProvider`, and it gets
+ * the same answer: install everything the interface requires, so a fake cannot
+ * let a host pass a test it should fail.
+ *
+ * `getCurrentUser` recognizes the same credentials `authenticateToken` does -
+ * the bearer token in `Authorization`, and the fake's session cookie - because
+ * the two are two views of one signed-in person. A fake whose user path
+ * answered somebody else, or answered somebody for a request carrying no
+ * credentials at all, would be a fake modelling a defect rather than a
+ * provider.
+ */
+export function withUser<T extends FakeProvider>(provider: T, options: FakeUserOptions = {}): T & FakeUserCapability {
+  const { calls, user, tokens } = provider;
+  const accepted = new Set(tokens);
+  const directory = new Map<string, FakeUser>([
+    [user.id, user],
+    ...(options.directory ?? []).map((entry): [string, FakeUser] => [entry.id, entry]),
+  ]);
+
+  function presents(request: Request): boolean {
+    let authorization: string | null;
+    try {
+      authorization = getRequestHeader(request, 'authorization');
+    } catch {
+      authorization = null;
+    }
+    const bearer = typeof authorization === 'string' ? authorization.replace(/^Bearer\s+/i, '') : '';
+    if (bearer !== '' && accepted.has(bearer)) return true;
+    return cookieValues(request).some(value => accepted.has(value));
+  }
+
+  const capability: FakeUserCapability = {
+    async getCurrentUser(request) {
+      calls.record('getCurrentUser', request);
+      return presents(request) ? user : null;
+    },
+
+    async getUser(userId) {
+      calls.record('getUser', userId);
+      return directory.get(userId) ?? null;
+    },
+  };
+
+  return { ...provider, ...capability };
+}
+
 /** Options for {@link withOrganizations}. */
 export interface FakeOrganizationsOptions {
   /**
@@ -729,7 +809,18 @@ export interface FakeOrganizationsOptions {
    */
   organizationId?: string;
 
-  /** What `isOrganizationAdmin` answers. Defaults to `true`. */
+  /**
+   * What `isOrganizationAdmin` answers.
+   *
+   * Defaults to answering `true` for the organization this fake bootstraps for
+   * that user, and `false` for every other id - which is the answer a correct
+   * provider gives and is not the same thing as `true`. A fake that answered
+   * `true` for any id at all would model a provider handing out administrator
+   * rights over an organization it has never heard of, and `organizations/is-
+   * admin` exists to find exactly that.
+   *
+   * Pass `true` to build that provider on purpose.
+   */
   admin?: boolean | ((organizationId: string, userId: string) => boolean);
 }
 
@@ -760,14 +851,18 @@ export function withOrganizations<T extends FakeProvider>(
   options: FakeOrganizationsOptions = {},
 ): T & FakeOrganizationsCapability {
   const { calls, violates, user } = provider;
-  const admin = options.admin ?? true;
   const configured = options.organizationId ?? user.organizationId;
+  const bootstrapped = (userId: string): string => configured ?? `org_${userId}`;
+  // Not `true`. See `admin` on the options: an id this fake never bootstrapped
+  // belongs to somebody else, and the honest answer about somebody else's
+  // organization is `false`.
+  const admin = options.admin ?? ((organizationId: string, userId: string) => organizationId === bootstrapped(userId));
 
   const capability: FakeOrganizationsCapability = {
     async ensureOrganization(userId) {
       calls.record('ensureOrganization', userId);
       if (violates === 'organizationId') return undefined;
-      return configured ?? `org_${userId}`;
+      return bootstrapped(userId);
     },
 
     async isOrganizationAdmin(organizationId, userId) {
@@ -941,6 +1036,7 @@ export type FullyCapableFake = FakeProvider &
   FakeSSOCapability &
   FakeCredentialsCapability &
   FakeHttpHandlerCapability &
+  FakeUserCapability &
   FakeOrganizationsCapability &
   FakeSessionCapability &
   FakeInitCapability;
@@ -953,6 +1049,8 @@ export interface FullyCapableFakeOptions extends FakeProviderOptions {
   credentials?: FakeCredentialsOptions;
   /** Passed to {@link withHttpHandler}. */
   httpHandler?: FakeHttpHandlerOptions;
+  /** Passed to {@link withUser}. */
+  users?: FakeUserOptions;
   /** Passed to {@link withOrganizations}. */
   organizations?: FakeOrganizationsOptions;
   /** Passed to {@link withSession}. */
@@ -972,9 +1070,12 @@ export function fullyCapableFake(options: FullyCapableFakeOptions = {}): FullyCa
   return withInit(
     withSession(
       withOrganizations(
-        withHttpHandler(
-          withCredentials(withSSO(fakeProvider(options), options.sso), options.credentials),
-          options.httpHandler,
+        withUser(
+          withHttpHandler(
+            withCredentials(withSSO(fakeProvider(options), options.sso), options.credentials),
+            options.httpHandler,
+          ),
+          options.users,
         ),
         options.organizations,
       ),
@@ -1050,6 +1151,7 @@ export type FakeGuardNarrowing = {
   sso: Proves<FakeSSOCapability extends ISSOProvider ? true : false>;
   credentials: Proves<FakeCredentialsCapability extends ICredentialsProvider ? true : false>;
   httpHandler: Proves<FakeHttpHandlerCapability extends IAuthHttpHandler ? true : false>;
+  users: Proves<FakeUserCapability extends IUserProvider ? true : false>;
   organizations: Proves<FakeOrganizationsCapability extends IOrganizationsProvider ? true : false>;
   session: Proves<FakeSessionCapability extends ISessionProvider ? true : false>;
   init: Proves<FakeInitCapability extends IAuthInit ? true : false>;
@@ -1061,6 +1163,7 @@ export type FakeGuardNarrowing = {
   baseIsNotSSO: Proves<FakeProvider extends ISSOProvider ? false : true>;
   baseIsNotCredentials: Proves<FakeProvider extends ICredentialsProvider ? false : true>;
   baseIsNotHttpHandler: Proves<FakeProvider extends IAuthHttpHandler ? false : true>;
+  baseIsNotUser: Proves<FakeProvider extends IUserProvider ? false : true>;
   baseIsNotOrganizations: Proves<FakeProvider extends IOrganizationsProvider ? false : true>;
   baseIsNotSession: Proves<FakeProvider extends ISessionProvider ? false : true>;
   baseIsNotInit: Proves<FakeProvider extends IAuthInit ? false : true>;
@@ -1070,6 +1173,7 @@ export type FakeGuardNarrowing = {
   fullIsSSO: Proves<FullyCapableFake extends ISSOProvider ? true : false>;
   fullIsCredentials: Proves<FullyCapableFake extends ICredentialsProvider ? true : false>;
   fullIsHttpHandler: Proves<FullyCapableFake extends IAuthHttpHandler ? true : false>;
+  fullIsUser: Proves<FullyCapableFake extends IUserProvider ? true : false>;
   fullIsOrganizations: Proves<FullyCapableFake extends IOrganizationsProvider ? true : false>;
   fullIsSession: Proves<FullyCapableFake extends ISessionProvider ? true : false>;
   fullIsInit: Proves<FullyCapableFake extends IAuthInit ? true : false>;
