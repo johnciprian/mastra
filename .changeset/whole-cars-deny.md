@@ -1,9 +1,5 @@
 ---
 '@mastra/auth-firebase': minor
-'@mastra/factory-auth': patch
-'@mastra/factory': patch
-'@mastra/auth-better-auth': patch
-'@mastra/auth-supabase': patch
 ---
 
 Changed how `@mastra/auth-firebase` authenticates and authorizes, and documented what it can and cannot do.

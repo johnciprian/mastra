@@ -1,8 +1,5 @@
 ---
 '@mastra/auth-supabase': minor
-'@mastra/factory-auth': patch
-'@mastra/factory': patch
-'@mastra/auth-better-auth': patch
 ---
 
 Changed how `@mastra/auth-supabase` authorizes users, and documented what it can and cannot do.

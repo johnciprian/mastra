@@ -16,8 +16,12 @@ const { id, returnTo } = decodeState(callbackQuery.state);
 // { id: '3f2b8c1e-...-9a7d', returnTo: '/agents/42' }
 ```
 
-**The format is now written down.** An id, a `|`, and a percent-encoded `returnTo`. Only the first `|` is significant, so a `returnTo` that itself contains one round trips unchanged.
+**The format is now written down.** An id, a `|`, and a percent-encoded `returnTo`. Only the first `|` is significant, so a `returnTo` that itself contains one — `/search?q=a|b` — round trips unchanged.
 
-**`decodeState` treats its input as hostile, because it is a query parameter.** It never throws and always returns a `returnTo` that is safe to redirect to: absolute URLs, protocol-relative `//evil.com`, backslash variants, control characters and malformed percent escapes all resolve to `/`. It does not check authenticity or freshness. `state` is unsigned, so use `parseStateId` to compare against a value you stored at login time if you want CSRF protection.
+**`decodeState` treats its input as hostile, because it is a query parameter.** It never throws and always returns a `returnTo` that is safe to redirect to: absolute URLs, protocol-relative `//evil.com`, backslash variants, control characters and malformed percent escapes all resolve to `/`. Anything outside printable ASCII is percent-encoded, so a destination like `/日本` reaches a `Location` header intact instead of throwing there.
+
+**`decodeState` and `parseStateId` guard their input type.** Express's `qs` turns `?state=a&state=b` into an array and `?state[x]=y` into an object. Both are handled rather than reaching string methods, so a query parser cannot turn a callback into a 500.
+
+**It does not check authenticity or freshness.** `state` is unsigned. Use `parseStateId` to compare against a value you stored at login time if you want CSRF protection.
 
 **A `state` this package did not mint still decodes.** Providers that generate their own get read as an opaque id with no destination, rather than failing the callback.
