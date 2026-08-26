@@ -12,7 +12,6 @@
  */
 import { describeAuthProvider } from '@mastra/factory-auth/conformance';
 import { betterAuth } from 'better-auth';
-import type { BetterAuthOptions } from 'better-auth';
 import { memoryAdapter } from 'better-auth/adapters/memory';
 import { makeSignature } from 'better-auth/crypto';
 import { organization } from 'better-auth/plugins';
@@ -72,34 +71,35 @@ function seedDatabase() {
  * Bring-your-own-instance mode, which is what the README documents and what a
  * host that owns its better-auth configuration uses.
  *
- * The `BetterAuthOptions` annotation is load-bearing for the typechecker and
- * changes nothing at runtime. `betterAuth()` is generic over the *exact*
- * options object it is handed, so an inline literal produces
- * `Auth<{ baseURL: string; ... }>`, and `Auth<T>` is invariant in `T` —
- * `DBAdapter<T>` sits in both a covariant and a contravariant position. That
- * makes it unassignable to the bare `Auth` that `MastraAuthBetterAuthOptions`
- * declares for its `auth` option. Widening the options first pins `T` to
- * `BetterAuthOptions` and the instance fits.
+ * The options are written inline, exactly as this package's README, both docs
+ * pages and the class JSDoc show them, and that is the point of writing them
+ * this way here: this file is typechecked (see `vitest.config.ts`), so the
+ * documented call is now compiled rather than only prose.
  *
- * This is the same widening `src/index.ts` already performs on the instance it
- * builds for itself (see the comment above `const options: BetterAuthOptions`
- * in `init()`) — the provider knows about this, it just never applied it to the
- * public `auth` option. So `betterAuth({ ... })` passed straight in, which is
- * what this package's README, both docs pages and the class JSDoc all show,
- * does not typecheck. That is a finding about the provider, recorded here
- * rather than worked around with a cast; fixing it means widening the declared
- * option type, which is a change to a published package's API.
+ * It did not always compile. `betterAuth()` is generic over the *exact* options
+ * object it is handed, so an inline literal produces `Auth<{ baseURL: string;
+ * ... }>`, and `Auth<T>` is invariant in `T` — `AuthContext<T>` reaches
+ * `DBAdapter<T>`, whose `createSchema(options: T)` puts `T` in a contravariant
+ * position. Against the bare `Auth` the `auth` option used to declare, no
+ * concrete instance fit, and this function had to hoist the literal into a
+ * `const options: BetterAuthOptions` to pin `T` first. The option is now
+ * generic over the caller's options type, so the workaround is gone.
+ *
+ * The return annotation is deliberate too: it proves an instance built from a
+ * literal is still assignable to a plain `MastraAuthBetterAuth`, which is what
+ * keeps the widening backwards compatible for code that annotates the type.
  */
 function createProvider(): MastraAuthBetterAuth {
-  const options: BetterAuthOptions = {
-    baseURL: 'http://localhost:3000',
-    basePath: '/auth/api',
-    secret: SECRET,
-    database: memoryAdapter(seedDatabase()),
-    emailAndPassword: { enabled: true },
-    plugins: [organization()],
-  };
-  return new MastraAuthBetterAuth({ auth: betterAuth(options) });
+  return new MastraAuthBetterAuth({
+    auth: betterAuth({
+      baseURL: 'http://localhost:3000',
+      basePath: '/auth/api',
+      secret: SECRET,
+      database: memoryAdapter(seedDatabase()),
+      emailAndPassword: { enabled: true },
+      plugins: [organization()],
+    }),
+  });
 }
 
 /**

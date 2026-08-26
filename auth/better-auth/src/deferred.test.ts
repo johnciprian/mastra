@@ -91,6 +91,26 @@ describe('deferred instance mode', () => {
     warn.mockRestore();
   });
 
+  it('handleAuthRequest 503s before init() instead of throwing the not-initialized error', async () => {
+    // Same operator-visible situation as a failed migration — "auth isn't ready
+    // yet" — so it must produce the same 503 shape on this unauthenticated
+    // endpoint rather than an uncaught throw the host turns into a 500.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const provider = new MastraAuthBetterAuth({ secret: SECRET });
+
+    const res = await provider.handleAuthRequest(new Request('http://localhost:3000/auth/api/get-session'));
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'auth_unavailable' });
+    expect(runMigrations).not.toHaveBeenCalled();
+
+    // The route is unauthenticated: a persistent misconfiguration must not let
+    // anonymous traffic write a log line per request.
+    await provider.handleAuthRequest(new Request('http://localhost:3000/auth/api/get-session'));
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
   it('bring-your-own instances never trigger provider-owned migrations', async () => {
     const auth = betterAuth({
       baseURL: 'http://localhost:3000',
