@@ -751,10 +751,76 @@ describe('GitHub session workspace preparation', () => {
     // request can reach. Left asserting the shipped behaviour on purpose: the
     // flag defaults off, and reversing a deliberate refusal is a product call,
     // not a fixture update. Settle it before the flag is turned on.
+    //
+    // B13 CHANGED WHICH REFUSAL FIRES, NOT WHETHER ONE DOES.
+    // The caller here has an identity and no organization. That used to trip the
+    // identity guard, which reported "no caller identity" about a caller who
+    // plainly had one — the same misleading-diagnostic shape B12 removed at the
+    // route layer, where "no organization" surfaced as "not allowed". The two
+    // conditions are now separate: no id at all is still an identity error, and
+    // a caller who has an id but does not own this session is an ownership
+    // error. Access is unchanged — refused before, refused now — so the
+    // unsettled question above is untouched.
     const requestContext = createGithubRequestContext('project-1', 'session-a', {
       session: {},
       user: { id: 'user-1', organizationId: 'org-1' },
     });
+
+    await expect(workspace({ requestContext })).rejects.toThrow(
+      'Factory session session-a is not available to the current user',
+    );
+  });
+
+  it('opens a session for a caller whose provider has no organization of its own', async () => {
+    // B13's doneWhen. Such a caller used to trip the identity guard and never
+    // reach their own work. They now resolve to a private organization, and a
+    // session created under it is theirs to open.
+    const { workspace } = await createLocalFactory();
+    // The repository link and the session both live in the caller's own
+    // private organization, which is what a no-org user's work looks like.
+    addProject({ orgId: 'user:user-solo' });
+    addSession({ id: 'session-solo', orgId: 'user:user-solo', userId: 'user-solo' });
+    const requestContext = createGithubRequestContext('project-1', 'session-solo', { id: 'user-solo' });
+
+    await expect(workspace({ requestContext })).resolves.toBeDefined();
+  });
+
+  it('still refuses a caller with no organization reaching somebody else’s session', async () => {
+    // The refusal B13 must not remove: a synthetic organization matches only
+    // the sessions created under it, so resolving one is not a way into org-1.
+    const { workspace } = await createLocalFactory();
+    addProject();
+    addSession({ id: 'session-a' });
+    const requestContext = createGithubRequestContext('project-1', 'session-a', { id: 'user-solo' });
+
+    await expect(workspace({ requestContext })).rejects.toThrow(
+      'Factory session session-a is not available to the current user',
+    );
+  });
+
+  it('still throws for the identity-less server-side caller the guard exists for', async () => {
+    // A webhook or cron that forgot to seed an identity. This is the case the
+    // guard's comment describes, and it is the one B13 keeps.
+    const { workspace } = await createLocalFactory();
+    addProject();
+    addSession({ id: 'session-a' });
+    const requestContext = createGithubRequestContext('project-1', 'session-a', {});
+
+    await expect(workspace({ requestContext })).rejects.toThrow(
+      'Factory session session-a was resolved without a caller identity',
+    );
+  });
+
+  it('treats a blank caller id as no identity rather than crashing on it', async () => {
+    // The pre-kit identity reader hands a whitespace-only id straight back, so
+    // this is reachable with the compat flag off. Without the guard it reaches
+    // resolveOrganizationId, which refuses to derive an organization from blank
+    // and throws a TypeError about identity shapes — replacing a message that
+    // names the mistake with one that does not.
+    const { workspace } = await createLocalFactory();
+    addProject();
+    addSession({ id: 'session-a' });
+    const requestContext = createGithubRequestContext('project-1', 'session-a', { id: '   ' });
 
     await expect(workspace({ requestContext })).rejects.toThrow(
       'Factory session session-a was resolved without a caller identity',

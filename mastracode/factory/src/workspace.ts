@@ -10,6 +10,8 @@ import type { MastraCodeState } from '@mastra/code-sdk/schema';
 import type { AgentControllerRequestContext } from '@mastra/core/agent-controller';
 import { LocalSandbox, LocalSkillSource, Workspace } from '@mastra/core/workspace';
 import type { SkillSource, SkillSourceEntry, SkillSourceStat } from '@mastra/core/workspace';
+import { resolveOrganizationId } from '@mastra/factory-auth/organizations';
+
 import { getFactoryAuthUserFromContext, getFactoryAuthUserId } from './auth.js';
 import type { MastraFactorySandboxConfig } from './factory.js';
 import type { GithubIntegration } from './integrations/github/integration.js';
@@ -313,12 +315,24 @@ export function createWorkspaceFactory(options: CreateWorkspaceFactoryOptions = 
     const userId = getFactoryAuthUserId(user);
     // No identity at all is a server-side caller that forgot to seed one
     // (webhook, cron), not someone reaching for another user's session.
-    if (!user?.organizationId || !userId) {
+    //
+    // Blank counts as none. The pre-kit identity reader hands a whitespace-only
+    // id straight back, so this is reachable with the compat flag off, and
+    // `resolveOrganizationId` refuses to derive an organization from one — it
+    // would throw a TypeError about identity shapes here, replacing a message
+    // that names the actual mistake with one that does not.
+    if (!userId || userId.trim() === '') {
       throw new Error(`Factory session ${session.sessionId} was resolved without a caller identity`);
     }
+    // A caller whose provider has no organizations resolves to a private one of
+    // their own, so "you have no organization" stops being a separate refusal
+    // and the ownership check below becomes the only thing that decides. The
+    // refusal is not removed: a synthetic organization matches only sessions
+    // created under it, which are that user's own.
+    const callerOrgId = resolveOrganizationId({ id: userId, organizationId: user?.organizationId });
     // Org-visible sessions open to any member of the owning organization;
     // only private sessions stay owner-only. Cross-org access never passes.
-    if (user.organizationId !== session.orgId || (session.visibility === 'private' && userId !== session.userId)) {
+    if (callerOrgId !== session.orgId || (session.visibility === 'private' && userId !== session.userId)) {
       throw new Error(`Factory session ${session.sessionId} is not available to the current user`);
     }
     if (!sandboxConfig || !github || !fleet) {
