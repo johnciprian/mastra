@@ -10,6 +10,8 @@ packages:
 
 Custom auth providers allow you to implement authentication for identity systems that aren't covered by the built-in providers. Extend the `MastraAuthProvider` base class to integrate with any authentication system.
 
+`authenticateToken` and `authorizeUser` are the whole base contract. To add a hosted login, server-side sessions, an email and password form, or organization membership, implement one of the optional capability interfaces described in [Auth capability interfaces](/reference/auth/capability-interfaces).
+
 ## Overview
 
 Auth providers handle authentication and authorization for incoming requests:
@@ -516,4 +518,5 @@ See the [source code](https://github.com/mastra-ai/mastra/tree/main/auth) for im
 ## Related
 
 - [Auth Overview](/docs/auth/overview): Authentication concepts and configuration
+- [Auth capability interfaces](/reference/auth/capability-interfaces): The optional interfaces beyond the base contract
 - [Custom API Routes](/docs/server/custom-api-routes): Controlling authentication on custom endpoints
