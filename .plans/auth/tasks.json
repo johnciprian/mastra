@@ -683,7 +683,7 @@
     },
     {
       "id": "U3",
-      "status": "pending",
+      "status": "done",
       "title": "SPA reads the descriptor",
       "lane": "U",
       "size": "S",
@@ -698,7 +698,7 @@
     },
     {
       "id": "U4",
-      "status": "pending",
+      "status": "done",
       "title": "SignInPage branches on capability",
       "lane": "U",
       "size": "M",
@@ -921,7 +921,7 @@
     },
     {
       "id": "D2",
-      "status": "pending",
+      "status": "done",
       "title": "The four obligations, promoted to documented contract",
       "lane": "D",
       "size": "M",
@@ -938,7 +938,7 @@
     },
     {
       "id": "D3",
-      "status": "pending",
+      "status": "done",
       "title": "Write-a-provider guide, end to end",
       "lane": "D",
       "size": "L",
@@ -970,7 +970,7 @@
     },
     {
       "id": "D5",
-      "status": "pending",
+      "status": "ran-found-defects",
       "title": "Validate the guide on a real reader",
       "lane": "D",
       "size": "M",
@@ -984,7 +984,7 @@
     },
     {
       "id": "D6",
-      "status": "pending",
+      "status": "done",
       "title": "Update the mastracode READMEs",
       "lane": "D",
       "size": "S",
@@ -1074,6 +1074,7 @@
     "done": "merged and pushed on claude/k1-k6-agent-team-tqgv8e",
     "pending": "not started, or in flight",
     "note": "Update this field when a task merges. Nothing else records progress.",
-    "held": "implemented but deliberately not merged - see README"
+    "held": "implemented but deliberately not merged - see README",
+    "ran-found-defects": "gate executed; it failed usefully - fixes dispatched, re-validate after"
   }
 }

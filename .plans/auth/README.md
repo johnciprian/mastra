@@ -145,3 +145,29 @@ conformance test.
   method, and the conformance check silently skips. Fix belongs in `_internals/auth`.
 - **The conformance suite never exercises `IUserProvider` or `isOrganizationAdmin`.**
   Adding checks is a **major** under the kit's semver policy, so it needs scheduling.
+- **No way to clear a provider-owned session cookie.** `ISSOProvider` has `getLogoutUrl`
+  but nothing that returns clear-cookie headers, and `getClearSessionHeaders` lives on
+  `ISessionProvider`, whose guard and interface demand all seven members. A hosted-login
+  provider that mints its own cookie therefore has no supported way to clear it on logout.
+- **PKCE has a mechanism but no contract.** `CompositeAuth.setCallbackCookieHeader` is
+  documented in a `.d.ts` comment as "forward cookie header to SSO provider for PKCE
+  validation", and `getLoginCookies` is plainly the channel for the verifier — but neither
+  appears in any interface doc, and the conformance suite has no check for it. A provider
+  can pass conformance with no PKCE at all.
+
+### D5 gate result
+
+The guide was validated by an engineer with no prior knowledge of this project, building a
+generic OIDC provider from the docs alone. It reached `13 passed | 5 skipped`, zero
+failures — but the exercise found the guide's own provider **does not compile** (six
+`TS2339`s), that the token-exchange example posts JSON where RFC 6749 requires form
+encoding, and that `verifyJwks` — the one-liner an OIDC provider most needs — is mentioned
+only in a "Next steps" link at the bottom of the page, after the reader has hand-written
+100 lines of WebCrypto.
+
+Verdict: **yes-with-caveats for a bearer or vanilla hosted-login provider; no for a
+production OIDC provider**, because a green conformance run tells you you are done while
+PKCE and cookie cleanup are both absent and unchecked.
+
+What held up: every numeric claim in the guide was exact, and four providers each built to
+commit one mistake the docs warn about were all caught by exactly the named check.
