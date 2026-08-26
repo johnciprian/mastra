@@ -722,9 +722,15 @@ describe('identity resolution under the compat flag', () => {
       v2: '7',
     },
     {
+      // The one row where the tenant no longer matches the legacy *reader*.
+      // That reader still hands back '   ' verbatim, but `factoryAuthTenant`
+      // refuses to build a tenant from it on either path: since B12 the
+      // organization is derived from the user id, and deriving one from
+      // whitespace throws — a 500 on a gated route where a 401 belongs.
+      // Treating blank as absent keeps the refusal and drops the crash.
       what: 'a blank id, which is a storage key every user would share',
       payload: { id: '   ' },
-      legacy: '   ',
+      legacy: null,
       v2: null,
     },
     {
@@ -765,10 +771,11 @@ describe('identity resolution under the compat flag', () => {
     // own because it changes which org-scoped data a request can reach.
     const payload = { session: {}, user: { id: 'u1', organizationId: 'org_u' } };
 
-    // This provider does no organization bootstrap, so legacy leaves the user
-    // personal: the org sitting on the user half is simply never read.
+    // This provider does no organization bootstrap, so legacy never reads the
+    // org sitting on the user half. Since B12 the tenant still resolves an
+    // organization for that user — their own private one — rather than none.
     const off = await tenantFor(await importAuthWith(undefined), payload);
-    expect(off).toEqual({ userId: 'u1' });
+    expect(off).toEqual({ userId: 'u1', orgId: 'user:u1' });
 
     const on = await tenantFor(await importAuthWith('true'), payload);
     expect(on).toEqual({ userId: 'u1', orgId: 'org_u' });
@@ -1340,5 +1347,87 @@ describe('session refresh', () => {
 
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toContain('/signin?returnTo=');
+  });
+});
+
+/**
+ * B12: a signed-in user always has an organization.
+ *
+ * Seven org-gated route groups each had the same decision to make when a user
+ * resolved to no organization, and each made the safe-looking one: refuse. The
+ * result was a user who had authenticated, held a valid session, and got a 403
+ * that is indistinguishable from "you are not allowed" — with nothing anywhere
+ * saying "your provider has no organizations".
+ */
+describe('tenant organization resolution', () => {
+  function tenantApp(provider: IMastraAuthProvider): Hono {
+    const app = new Hono();
+    mountFactoryAuth(app, { provider });
+    app.get('/web/whoami', c => c.json(factoryAuthTenant(c) ?? { tenant: null }));
+    return app;
+  }
+
+  async function tenantOf(provider: IMastraAuthProvider): Promise<Record<string, unknown>> {
+    const res = await tenantApp(provider).request('/web/whoami', { headers: { Accept: 'application/json' } });
+    return (await res.json()) as Record<string, unknown>;
+  }
+
+  it('resolves a private organization for a provider that has none', async () => {
+    // The doneWhen: a no-org provider reaches the board rather than 403ing.
+    const tenant = await tenantOf(
+      fakeProvider({ authenticateToken: vi.fn(async () => ({ id: 'u1', email: 'u1@example.com' })) }),
+    );
+    expect(tenant).toEqual({ orgId: 'user:u1', userId: 'u1' });
+  });
+
+  it('keeps a declared organization rather than deriving one', async () => {
+    // Preferring a derived id over the provider's answer would move a member of
+    // a real organization into a private one, where their team's data is not.
+    const tenant = await tenantOf(
+      fakeProvider({ authenticateToken: vi.fn(async () => ({ id: 'u1', organizationId: 'org_real' })) }),
+    );
+    expect(tenant).toEqual({ orgId: 'org_real', userId: 'u1' });
+  });
+
+  it('gives two no-org users two different organizations', async () => {
+    // The synthetic id is derived from the user's own id, so it is a private
+    // organization of one rather than a shared bucket. If these collided, the
+    // change would be a data leak instead of a fix.
+    const first = await tenantOf(fakeProvider({ authenticateToken: vi.fn(async () => ({ id: 'u1' })) }));
+    const second = await tenantOf(fakeProvider({ authenticateToken: vi.fn(async () => ({ id: 'u2' })) }));
+
+    expect(first.orgId).not.toBe(second.orgId);
+    expect(first).toEqual({ orgId: 'user:u1', userId: 'u1' });
+    expect(second).toEqual({ orgId: 'user:u2', userId: 'u2' });
+  });
+
+  it('is stable across requests, because it is a storage key', async () => {
+    const provider = fakeProvider({ authenticateToken: vi.fn(async () => ({ id: 'u1' })) });
+    const app = tenantApp(provider);
+    const first = await (await app.request('/web/whoami', { headers: { Accept: 'application/json' } })).json();
+    const second = await (await app.request('/web/whoami', { headers: { Accept: 'application/json' } })).json();
+    expect(first).toEqual(second);
+  });
+
+  it('still prefers a bootstrapped organization over a derived one', async () => {
+    // ensureOrganization runs first; the derived id is the fallback for when it
+    // yields nothing, not a replacement for it.
+    const tenant = await tenantOf(
+      fakeProvider({
+        authenticateToken: vi.fn(async () => ({ id: 'u1' })),
+        ensureOrganization: vi.fn(async () => 'org_boot'),
+        isOrganizationAdmin: vi.fn(async () => false),
+      }),
+    );
+    expect(tenant).toEqual({ orgId: 'org_boot', userId: 'u1' });
+  });
+
+  it('does not invent an organization for a request with no user', async () => {
+    // The gate refuses before the route runs, so there is no identity to derive
+    // one from. Resolving an organization is for signed-in users; it is not a
+    // way in.
+    const app = tenantApp(fakeProvider({ authenticateToken: vi.fn(async () => null) }));
+    const res = await app.request('/web/whoami', { headers: { Accept: 'application/json' } });
+    expect(res.status).toBe(401);
   });
 });

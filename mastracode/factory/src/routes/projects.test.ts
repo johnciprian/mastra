@@ -62,7 +62,7 @@ describe('ProjectRoutes', () => {
     expect((await app.request(`/web/factory/projects/${created.project.id}`)).status).toBe(404);
   });
 
-  it('requires an organization and scopes project access by organization', async () => {
+  it('requires a signed-in user and scopes project access by organization', async () => {
     const seed = await createFactoryStorageForTests();
     const project = await seed.projects.create({ orgId: 'org-1', userId: 'user-1', input: { name: 'Private' } });
     const buildApp = (user?: { id: string; organizationId?: string }) => {
@@ -75,8 +75,19 @@ describe('ProjectRoutes', () => {
       return app;
     };
 
+    // No signed-in user is still refused.
     expect((await buildApp().request('/web/factory/projects')).status).toBe(401);
-    expect((await buildApp({ id: 'user-1' }).request('/web/factory/projects')).status).toBe(403);
+
+    // A signed-in user whose provider has no organization used to 403 here,
+    // which was indistinguishable from "not allowed". They now resolve to their
+    // own private organization and reach the route — and see nothing belonging
+    // to org-1, which is the property that makes this safe rather than a
+    // loosening.
+    const noOrg = await buildApp({ id: 'user-1' }).request('/web/factory/projects');
+    expect(noOrg.status).toBe(200);
+    expect(await noOrg.json()).toEqual({ projects: [] });
+
+    // Cross-organization scoping is untouched.
     expect(
       (await buildApp({ id: 'user-2', organizationId: 'org-2' }).request(`/web/factory/projects/${project.id}`)).status,
     ).toBe(404);

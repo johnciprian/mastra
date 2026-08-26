@@ -123,8 +123,10 @@ describe('WorkOSAuditIntegration', () => {
     });
 
     expect((await makeApp(integration).request('/web/audit/portal-link')).status).toBe(401);
-    expect((await makeApp(integration, { id: 'user-1' }).request('/web/audit/portal-link')).status).toBe(403);
-    expect(generateLink).not.toHaveBeenCalled();
+    // A user with no provider organization used to 403 here. They now resolve
+    // to their own, and the portal link is generated for that organization.
+    expect((await makeApp(integration, { id: 'user-1' }).request('/web/audit/portal-link')).status).toBe(200);
+    expect(generateLink).toHaveBeenCalled();
   });
 
   it('returns 502 when portal-link generation fails', async () => {

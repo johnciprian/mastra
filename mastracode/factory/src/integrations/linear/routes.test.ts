@@ -161,9 +161,12 @@ describe('status route', () => {
     });
   });
 
-  it('requires an organization', async () => {
+  it('reports not connected, not organization_required, for a user with no provider organization', async () => {
+    // Such a user now resolves to their own private organization, so the honest
+    // answer is "you have not connected Linear" rather than "you have no
+    // organization" — which read as a dead end nobody could act on.
     const res = await buildApp({ id: 'u1' }).request('/web/linear/status');
-    expect(await res.json()).toMatchObject({ enabled: true, connected: false, reason: 'organization_required' });
+    expect(await res.json()).toMatchObject({ enabled: true, connected: false, reason: 'not_connected' });
   });
 });
 

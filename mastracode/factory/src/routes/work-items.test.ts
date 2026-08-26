@@ -133,9 +133,13 @@ describe('auth and scoping', () => {
     expect(res.status).toBe(401);
   });
 
-  it('403s without an organization', async () => {
+  it('404s a project outside the private organization of a user with none of their own', async () => {
+    // Used to 403 for having no organization at all. The user now has one -
+    // their own - and this project is not in it, so the answer is the same 404
+    // any other cross-organization request gets. The refusal is preserved; only
+    // its reason changed.
     const res = await buildApp({ id: 'u1' }).request(`/web/factory/projects/${PROJECT_ID}/work-items`);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('404s when the project belongs to another org', async () => {

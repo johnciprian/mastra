@@ -596,9 +596,11 @@ describe('org-tenant identity', () => {
     expect(mockEnsureOrganization).toHaveBeenCalledWith('user_boot');
   });
 
-  it('factoryAuthTenant omits orgId for personal (no-org) users but keeps userId', async () => {
-    // Bootstrap is best-effort: when org creation fails, the user genuinely
-    // stays no-org, so the tenant must still expose a userId without an orgId.
+  it('factoryAuthTenant falls back to a private organization when bootstrap yields none', async () => {
+    // Bootstrap is best-effort. When org creation yields nothing the user has
+    // no provider organization, and the tenant resolves a deterministic private
+    // one from their id rather than leaving orgId absent for every org-gated
+    // route to refuse.
     mockEnsureOrganization.mockResolvedValue(undefined as unknown as string);
     mockAuthenticate.mockResolvedValue({ id: 'user_solo', email: 'solo@e.com' });
     const app = new Hono();
@@ -610,10 +612,10 @@ describe('org-tenant identity', () => {
 
     const res = await app.request('/web/whoami', { headers: { Accept: 'application/json' } });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ orgId: null, userId: 'user_solo' });
+    expect(await res.json()).toEqual({ orgId: 'user:user_solo', userId: 'user_solo' });
   });
 
-  it('a thrown bootstrap error leaves the user no-org instead of failing the request', async () => {
+  it('a thrown bootstrap error still yields a usable tenant instead of failing the request', async () => {
     mockEnsureOrganization.mockRejectedValue(new Error('identity provider unavailable'));
     mockAuthenticate.mockResolvedValue({ id: 'user_err', email: 'err@e.com' });
     const app = new Hono();
@@ -625,6 +627,6 @@ describe('org-tenant identity', () => {
 
     const res = await app.request('/web/whoami', { headers: { Accept: 'application/json' } });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ orgId: null, userId: 'user_err' });
+    expect(await res.json()).toEqual({ orgId: 'user:user_err', userId: 'user_err' });
   });
 });

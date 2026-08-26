@@ -174,8 +174,11 @@ describe('AuditDomain', () => {
     const domain = auditDomain(seed);
 
     expect((await buildApp(domain).request(`/web/factory/projects/${project.id}/audit`)).status).toBe(401);
+    // Used to 403 for having no organization. The user now has a private one,
+    // and this project belongs to other-org, so it is simply not theirs to see
+    // — the same 404 any cross-organization request gets.
     expect((await buildApp(domain, { id: 'user-1' }).request(`/web/factory/projects/${project.id}/audit`)).status).toBe(
-      403,
+      404,
     );
     expect(
       (
