@@ -709,6 +709,7 @@ export class MastraFactory {
                     'factory',
                     await createFactoryTransitionTools({
                       requestContext,
+                      auth: routeAuth,
                       storage: workItemsStorage,
                       transitionService,
                       // Heals crash-resumed sessions: recovered addresses re-seed

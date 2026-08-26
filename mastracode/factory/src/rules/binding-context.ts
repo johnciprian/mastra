@@ -1,7 +1,7 @@
 import type { AgentControllerRequestContext } from '@mastra/core/agent-controller';
 import type { RequestContext } from '@mastra/core/request-context';
 
-import { getFactoryAuthOrgId, getFactoryAuthUserFromContext } from '../auth.js';
+import type { RouteAuth } from '../routes/route.js';
 import type {
   FactoryRunBindingAddress,
   FactoryRunBindingRecord,
@@ -39,11 +39,22 @@ export function getFactorySessionCoordinates(
   };
 }
 
-export function getFactorySessionAddress(requestContext: RequestContext | undefined): FactoryRunBindingAddress | null {
+/**
+ * The identity port, narrowed to the one method this module needs.
+ *
+ * Taken as an argument rather than imported: identity has exactly one source,
+ * and a module that reaches for it directly is a module that can disagree with
+ * the rest of the app about who is calling.
+ */
+export type RunTenantResolver = Pick<RouteAuth, 'runTenant'>;
+
+export function getFactorySessionAddress(
+  requestContext: RequestContext | undefined,
+  auth: RunTenantResolver,
+): FactoryRunBindingAddress | null {
   const coordinates = getFactorySessionCoordinates(requestContext);
-  if (!coordinates || !requestContext || typeof requestContext.get !== 'function') return null;
-  const user = getFactoryAuthUserFromContext(requestContext);
-  const orgId = getFactoryAuthOrgId(user);
+  if (!coordinates) return null;
+  const orgId = auth.runTenant(requestContext)?.orgId;
   if (!orgId) return null;
   return { orgId, ...coordinates };
 }
@@ -65,18 +76,18 @@ export interface FactorySessionAddressResolution {
  */
 export async function resolveFactorySessionAddress(options: {
   requestContext: RequestContext | undefined;
+  auth: RunTenantResolver;
   storage: Pick<WorkItemsStorage, 'findActiveRunBindingByThread' | 'get'>;
   sessions?: FactorySessionSourceLookup;
 }): Promise<FactorySessionAddressResolution | null> {
-  const direct = getFactorySessionAddress(options.requestContext);
+  const direct = getFactorySessionAddress(options.requestContext, options.auth);
   if (direct) return { address: direct };
 
   const requestContext = options.requestContext;
   if (!requestContext || typeof requestContext.get !== 'function') return null;
   const context = requestContext.get('controller') as FactorySessionControllerContext | undefined;
   if (!context?.threadId || !context.resourceId) return null;
-  const user = getFactoryAuthUserFromContext(requestContext);
-  const orgId = getFactoryAuthOrgId(user);
+  const orgId = options.auth.runTenant(requestContext)?.orgId;
   if (!orgId) return null;
 
   const binding = await options.storage.findActiveRunBindingByThread({

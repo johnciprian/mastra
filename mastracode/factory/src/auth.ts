@@ -778,8 +778,35 @@ export function createFactoryRouteAuth(provider: IMastraAuthProvider | undefined
     enabled: () => provider !== undefined,
     ensureUser: (c: Context) => ensureFactoryAuthUser(provider, c),
     tenant: (c: Context) => factoryAuthTenant(c),
+    runTenant: (requestContext: RequestContextLike | undefined) => factoryRunTenant(requestContext),
     isOrganizationAdmin: (c: Context, organizationId: string) => isOrganizationAdmin(provider, c, organizationId),
   };
+}
+
+/** The only shape {@link factoryRunTenant} needs from a request context. */
+export interface RequestContextLike {
+  get: (key: string) => unknown;
+}
+
+/**
+ * Tenant identity for an agent-run request context, rather than an HTTP one.
+ *
+ * The same answer {@link factoryAuthTenant} gives, reached from the other
+ * direction. Agent runs — dynamic workspace resolution, rule tools, session
+ * subscriptions — execute under a `RequestContext` and never see the Hono
+ * `Context` the rest of the seam takes, which is why those three modules
+ * historically read identity out of the raw context themselves and were the
+ * only callers left bypassing this port.
+ *
+ * The org resolution and the blank-id guard are identical on purpose: two
+ * entry points that disagreed about who a caller is would be worse than the
+ * bypass they replace.
+ */
+export function factoryRunTenant(requestContext: RequestContextLike | undefined): FactoryAuthTenant | undefined {
+  const user = getFactoryAuthUserFromContext(requestContext);
+  const userId = getFactoryAuthUserId(user);
+  if (!userId || userId.trim() === '') return undefined;
+  return { orgId: resolveOrganizationId({ id: userId, organizationId: user?.organizationId }), userId };
 }
 
 /**

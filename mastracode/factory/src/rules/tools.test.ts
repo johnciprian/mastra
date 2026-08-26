@@ -1,11 +1,17 @@
 import { RequestContext } from '@mastra/core/request-context';
 import { describe, expect, it, vi } from 'vitest';
 
+import { factoryRunTenant } from '../auth.js';
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
 import { defaultFactoryRules } from './defaults.js';
 import { createFactoryTransitionTools } from './tools.js';
 import { FactoryTransitionService } from './transition-service.js';
+
+// The identity port, resolved through the real implementation: these tests are
+// about transition authority, and a hand-rolled tenant here could disagree with
+// the one the app actually computes.
+const auth = { runTenant: factoryRunTenant };
 
 const PROJECT_ID = '11111111-2222-4333-8444-555555555555';
 
@@ -98,10 +104,11 @@ describe('factory_transition_work_item', () => {
     });
 
     await expect(
-      createFactoryTransitionTools({ requestContext: requestContext(), storage, transitionService: service }),
+      createFactoryTransitionTools({ auth, requestContext: requestContext(), storage, transitionService: service }),
     ).resolves.toHaveProperty('factory_transition_work_item');
     await expect(
       createFactoryTransitionTools({
+        auth,
         requestContext: requestContext({ threadId: 'other-thread' }),
         storage,
         transitionService: service,
@@ -109,6 +116,7 @@ describe('factory_transition_work_item', () => {
     ).resolves.toEqual({});
     await expect(
       createFactoryTransitionTools({
+        auth,
         requestContext: requestContext({ resourceId: 'other-resource' }),
         storage,
         transitionService: service,
@@ -116,6 +124,7 @@ describe('factory_transition_work_item', () => {
     ).resolves.toEqual({});
     await expect(
       createFactoryTransitionTools({
+        auth,
         requestContext: requestContext({ orgId: 'other-org' }),
         storage,
         transitionService: service,
@@ -129,6 +138,7 @@ describe('factory_transition_work_item', () => {
     await prepareBoundItem(storage);
 
     const tools = await createFactoryTransitionTools({
+      auth,
       requestContext: requestContext(),
       storage,
       transitionService: service,
@@ -150,6 +160,7 @@ describe('factory_transition_work_item', () => {
     }));
     const context = requestContext();
     const tools = await createFactoryTransitionTools({
+      auth,
       requestContext: context,
       storage,
       transitionService: { transition },
@@ -189,6 +200,7 @@ describe('factory_transition_work_item', () => {
     }));
     const context = requestContext();
     const tools = await createFactoryTransitionTools({
+      auth,
       requestContext: context,
       storage,
       transitionService: { transition },
@@ -232,6 +244,7 @@ describe('factory_transition_work_item', () => {
     }));
     const context = requestContext();
     const tools = await createFactoryTransitionTools({
+      auth,
       requestContext: context,
       storage,
       transitionService: { transition },
@@ -268,6 +281,7 @@ describe('factory_transition_work_item', () => {
     }));
     const context = requestContext();
     const tools = await createFactoryTransitionTools({
+      auth,
       requestContext: context,
       storage,
       transitionService: { transition },
@@ -293,6 +307,7 @@ describe('factory_transition_work_item', () => {
     }));
     const context = requestContext();
     const tools = await createFactoryTransitionTools({
+      auth,
       requestContext: context,
       storage,
       transitionService: { transition: transition as never },
@@ -329,6 +344,7 @@ describe('factory_transition_work_item', () => {
     }));
     const context = requestContext();
     const tools = await createFactoryTransitionTools({
+      auth,
       requestContext: context,
       storage,
       transitionService: { transition },
@@ -364,7 +380,12 @@ describe('factory_transition_work_item', () => {
     const prepared = await prepareBoundItem(storage);
     const service = new FactoryTransitionService({ storage, rules: defaultFactoryRules({ version: 'rules-v1' }) });
     const context = requestContext();
-    const tools = await createFactoryTransitionTools({ requestContext: context, storage, transitionService: service });
+    const tools = await createFactoryTransitionTools({
+      auth,
+      requestContext: context,
+      storage,
+      transitionService: service,
+    });
     await expect(
       execute(tools.factory_transition_work_item as ExecutableTool, requestContext({ threadId: 'other-thread' }), {
         stage: 'planning',
@@ -402,6 +423,7 @@ describe('factory_transition_work_item', () => {
     }));
     const context = requestContext();
     const tools = await createFactoryTransitionTools({
+      auth,
       requestContext: context,
       storage,
       transitionService: { transition },
@@ -450,7 +472,12 @@ describe('factory_transition_work_item', () => {
     await prepareBoundItem(storage);
     const service = new FactoryTransitionService({ storage, rules: defaultFactoryRules({ version: 'rules-v1' }) });
     const context = requestContext();
-    const tools = await createFactoryTransitionTools({ requestContext: context, storage, transitionService: service });
+    const tools = await createFactoryTransitionTools({
+      auth,
+      requestContext: context,
+      storage,
+      transitionService: service,
+    });
 
     await storage.prepareRunStart({
       orgId: 'org-1',
@@ -498,7 +525,12 @@ describe('factory_transition_work_item', () => {
       }),
     });
     const context = requestContext();
-    const tools = await createFactoryTransitionTools({ requestContext: context, storage, transitionService: service });
+    const tools = await createFactoryTransitionTools({
+      auth,
+      requestContext: context,
+      storage,
+      transitionService: service,
+    });
     const tool = tools.factory_transition_work_item as ExecutableTool;
 
     await expect(
@@ -521,7 +553,12 @@ describe('factory_transition_work_item', () => {
       }),
     });
     const context = requestContext();
-    const tools = await createFactoryTransitionTools({ requestContext: context, storage, transitionService: service });
+    const tools = await createFactoryTransitionTools({
+      auth,
+      requestContext: context,
+      storage,
+      transitionService: service,
+    });
     const tool = tools.factory_transition_work_item as ExecutableTool;
     const input = { stage: 'planning', expectedRevision: 1, rationale: 'Investigation complete.' };
 
@@ -538,6 +575,7 @@ describe('factory_transition_work_item', () => {
     const transition = vi.fn(async () => ({ status: 'accepted' as const }));
     const context = requestContext();
     const tools = await createFactoryTransitionTools({
+      auth,
       requestContext: context,
       storage,
       transitionService: { transition } as never,
@@ -562,6 +600,7 @@ describe('factory_transition_work_item', () => {
     };
 
     const tools = await createFactoryTransitionTools({
+      auth,
       requestContext: context,
       storage,
       transitionService: { transition } as never,
@@ -595,6 +634,7 @@ describe('factory_transition_work_item', () => {
     vi.spyOn(storage, 'get').mockRejectedValue(new Error('transient storage outage'));
 
     const tools = await createFactoryTransitionTools({
+      auth,
       requestContext: crashResumedContext(setState),
       storage,
       transitionService: { transition: vi.fn(async () => ({ status: 'accepted' as const })) } as never,
@@ -616,6 +656,7 @@ describe('factory_transition_work_item', () => {
     const getBySessionId = vi.fn(async () => Promise.reject(new Error('sessions down')));
 
     const tools = await createFactoryTransitionTools({
+      auth,
       requestContext: crashResumedContext(setState),
       storage,
       transitionService: { transition: vi.fn(async () => ({ status: 'accepted' as const })) } as never,
@@ -638,6 +679,7 @@ describe('factory_transition_work_item', () => {
     const setState = vi.fn(async () => {});
 
     const tools = await createFactoryTransitionTools({
+      auth,
       requestContext: crashResumedContext(setState),
       storage,
       transitionService: service,
@@ -655,6 +697,7 @@ describe('factory_transition_work_item', () => {
 
     await expect(
       createFactoryTransitionTools({
+        auth,
         requestContext: crashResumedContext(setState, { threadId: 'other-thread' }),
         storage,
         transitionService: service,
@@ -689,6 +732,7 @@ describe('factory_transition_work_item', () => {
 
     await expect(
       createFactoryTransitionTools({
+        auth,
         requestContext: crashResumedContext(vi.fn(async () => {})),
         storage,
         transitionService: service,
@@ -701,6 +745,7 @@ describe('factory_transition_work_item', () => {
     await prepareBoundItem(storage);
     const service = new FactoryTransitionService({ storage, rules: defaultFactoryRules({ version: 'rules-v1' }) });
     const tools = await createFactoryTransitionTools({
+      auth,
       requestContext: requestContext(),
       storage,
       transitionService: service,
@@ -721,6 +766,7 @@ describe('factory_transition_work_item', () => {
     await prepareBoundItem(storage);
     const service = new FactoryTransitionService({ storage, rules: defaultFactoryRules({ version: 'rules-v1' }) });
     const tools = await createFactoryTransitionTools({
+      auth,
       requestContext: requestContext(),
       storage,
       transitionService: service,

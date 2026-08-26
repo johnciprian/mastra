@@ -4,7 +4,7 @@ import { z } from 'zod';
 
 import type { IntegrationTools } from '../integrations/base.js';
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
-import type { FactorySessionSourceLookup } from './binding-context.js';
+import type { FactorySessionSourceLookup, RunTenantResolver } from './binding-context.js';
 import { resolveFactorySessionAddress } from './binding-context.js';
 import type { FactoryTransitionService } from './transition-service.js';
 import { currentStage } from './transition-service.js';
@@ -35,12 +35,15 @@ function boardForSource(type: string | undefined): FactoryRuleBoard {
 
 export async function createFactoryTransitionTools(options: {
   requestContext: RequestContext;
+  /** Identity port. See `RunTenantResolver` for why it is passed, not imported. */
+  auth: RunTenantResolver;
   storage: WorkItemsStorage;
   transitionService: Pick<FactoryTransitionService, 'transition'>;
   sessions?: FactorySessionSourceLookup;
 }): Promise<IntegrationTools> {
   const resolution = await resolveFactorySessionAddress({
     requestContext: options.requestContext,
+    auth: options.auth,
     storage: options.storage,
     sessions: options.sessions,
   });
@@ -58,6 +61,7 @@ export async function createFactoryTransitionTools(options: {
       execute: async ({ stage, expectedRevision, rationale }, execution) => {
         const currentResolution = await resolveFactorySessionAddress({
           requestContext: execution.requestContext,
+          auth: options.auth,
           storage: options.storage,
           sessions: options.sessions,
         });
