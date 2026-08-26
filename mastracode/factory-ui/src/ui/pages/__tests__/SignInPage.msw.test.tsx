@@ -1,10 +1,15 @@
 /**
- * BDD coverage for the provider-aware /signin page.
+ * BDD coverage for the capability-driven /signin page.
  *
- * Drives the real route table (SignInGate → SignInPage) through a memory
- * router with MSW stubbing `/auth/me` and the better-auth credential
- * endpoints. WorkOS deploys keep the hosted-login redirect button; better-auth
- * deploys get the email/password form posting to `/auth/api/*`.
+ * Drives the real route table (SignInGate → SignInPage) through a memory router
+ * with MSW stubbing `/auth/me` and the credential endpoints. The page renders
+ * from the capability descriptor: `signIn.kind` decides which controls exist and
+ * `providerHint` decides how the hosted one looks. A separate block covers the
+ * labelled legacy path, for servers that send no descriptor at all.
+ *
+ * Colocated with the page under `src/ui/pages/__tests__/`, alongside the other
+ * page suites. It previously sat under `domains/auth/components/__tests__/`,
+ * which was the odd one out — it tests a route, not a domain component.
  */
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -12,17 +17,17 @@ import { http, HttpResponse } from 'msw';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { server } from '../../../../../../e2e/ui/msw-server';
-import { renderWithProviders, TEST_BASE_URL } from '../../../../../../e2e/ui/render';
-import { navigateAfterSignIn, redirectToLogin } from '../../services/auth';
-import type * as AuthService from '../../services/auth';
-import { createAppRoutes } from '../../../../router';
-import { safeReturnTo } from '../../../../pages/SignInPage';
+import { server } from '../../../../e2e/ui/msw-server';
+import { renderWithProviders, TEST_BASE_URL } from '../../../../e2e/ui/render';
+import { navigateAfterSignIn, redirectToLogin } from '../../domains/auth/services/auth';
+import type * as AuthService from '../../domains/auth/services/auth';
+import { createAppRoutes } from '../../router';
+import { safeReturnTo } from '../SignInPage';
 
 // jsdom's `window.location.assign` is unforgeable (cannot be spied on), so the
 // service-level navigation helpers are stubbed instead; `fetchAuthState` and
 // the credential POST helpers stay real so MSW sees the actual requests.
-vi.mock('../../services/auth', async importOriginal => {
+vi.mock('../../domains/auth/services/auth', async importOriginal => {
   const actual = await importOriginal<typeof AuthService>();
   return { ...actual, redirectToLogin: vi.fn(), navigateAfterSignIn: vi.fn() };
 });
@@ -54,118 +59,128 @@ describe('SignInPage', () => {
     expect(screen.queryByRole('banner')).not.toBeInTheDocument();
   });
 
-  describe('given Studio auth', () => {
-    it('renders the Mastra Platform sign-in action', async () => {
-      stubAuthMe({ provider: 'mastra-studio' });
-      renderSignIn('/signin?returnTo=%2Ffactory%2Fboard');
+  /**
+   * LEGACY: servers that predate the capability descriptor.
+   *
+   * These are the only cases in this file that name a provider, and they exist
+   * only to pin what such a server renders today. They go when the legacy
+   * branch does. Everything the page does from here on is decided by the
+   * descriptor instead — see the block below.
+   */
+  describe('given a server that predates the descriptor', () => {
+    describe('given Studio auth', () => {
+      it('renders the Mastra Platform sign-in action', async () => {
+        stubAuthMe({ provider: 'mastra-studio' });
+        renderSignIn('/signin?returnTo=%2Ffactory%2Fboard');
 
-      const button = await screen.findByRole('button', { name: 'Sign in with Mastra Platform' });
-      expect(screen.queryByRole('button', { name: 'Continue with GitHub' })).not.toBeInTheDocument();
+        const button = await screen.findByRole('button', { name: 'Sign in with Mastra Platform' });
+        expect(screen.queryByRole('button', { name: 'Continue with GitHub' })).not.toBeInTheDocument();
 
-      await userEvent.click(button);
-      expect(button).toBeDisabled();
-      expect(button).toHaveTextContent('Opening Mastra Platform…');
-      expect(redirectToLogin).toHaveBeenCalledWith(TEST_BASE_URL, '/factory/board');
-    });
-  });
-
-  describe('given a WorkOS (hosted-login) deploy', () => {
-    it('renders the GitHub sign-in action and redirects to the login route', async () => {
-      stubAuthMe({ provider: 'workos' });
-      renderSignIn('/signin?returnTo=%2Ffactory%2Fboard');
-
-      const button = await screen.findByRole('button', { name: 'Continue with GitHub' });
-      expect(screen.queryByLabelText('Email')).not.toBeInTheDocument();
-
-      await userEvent.click(button);
-      expect(button).toBeDisabled();
-      expect(button).toHaveTextContent('Opening GitHub…');
-      expect(redirectToLogin).toHaveBeenCalledWith(TEST_BASE_URL, '/factory/board');
-    });
-  });
-
-  describe('given a better-auth (self-hosted) deploy', () => {
-    it('renders the email/password form instead of the hosted button', async () => {
-      stubAuthMe({ provider: 'better-auth' });
-      renderSignIn();
-
-      expect(await screen.findByLabelText('Email')).toBeInTheDocument();
-      expect(screen.getByLabelText('Password')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'New here? Sign up' })).toBeInTheDocument();
+        await userEvent.click(button);
+        expect(button).toBeDisabled();
+        expect(button).toHaveTextContent('Opening Mastra Platform…');
+        expect(redirectToLogin).toHaveBeenCalledWith(TEST_BASE_URL, '/factory/board');
+      });
     });
 
-    it('signs in with credentials and navigates to returnTo', async () => {
-      stubAuthMe({ provider: 'better-auth' });
-      const posted = vi.fn();
-      server.use(
-        http.post(`${TEST_BASE_URL}/auth/api/sign-in/email`, async ({ request }) => {
-          posted(await request.json());
-          return HttpResponse.json({ user: { id: 'user_1' } });
-        }),
-      );
-      renderSignIn('/signin?returnTo=%2Ffactory%2Fboard');
+    describe('given a WorkOS (hosted-login) deploy', () => {
+      it('renders the GitHub sign-in action and redirects to the login route', async () => {
+        stubAuthMe({ provider: 'workos' });
+        renderSignIn('/signin?returnTo=%2Ffactory%2Fboard');
 
-      await userEvent.type(await screen.findByLabelText('Email'), 'ada@example.com');
-      await userEvent.type(screen.getByLabelText('Password'), 'hunter22!');
-      await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+        const button = await screen.findByRole('button', { name: 'Continue with GitHub' });
+        expect(screen.queryByLabelText('Email')).not.toBeInTheDocument();
 
-      await waitFor(() => expect(navigateAfterSignIn).toHaveBeenCalledWith('/factory/board'));
-      expect(posted).toHaveBeenCalledWith({ email: 'ada@example.com', password: 'hunter22!' });
+        await userEvent.click(button);
+        expect(button).toBeDisabled();
+        expect(button).toHaveTextContent('Opening GitHub…');
+        expect(redirectToLogin).toHaveBeenCalledWith(TEST_BASE_URL, '/factory/board');
+      });
     });
 
-    it('surfaces the server error message on failed sign-in', async () => {
-      stubAuthMe({ provider: 'better-auth' });
-      server.use(
-        http.post(`${TEST_BASE_URL}/auth/api/sign-in/email`, () =>
-          HttpResponse.json({ message: 'Invalid email or password' }, { status: 401 }),
-        ),
-      );
-      renderSignIn();
+    describe('given a better-auth (self-hosted) deploy', () => {
+      it('renders the email/password form instead of the hosted button', async () => {
+        stubAuthMe({ provider: 'better-auth' });
+        renderSignIn();
 
-      await userEvent.type(await screen.findByLabelText('Email'), 'ada@example.com');
-      await userEvent.type(screen.getByLabelText('Password'), 'wrong');
-      await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+        expect(await screen.findByLabelText('Email')).toBeInTheDocument();
+        expect(screen.getByLabelText('Password')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'New here? Sign up' })).toBeInTheDocument();
+      });
 
-      expect(await screen.findByRole('alert')).toHaveTextContent('Invalid email or password');
-      expect(navigateAfterSignIn).not.toHaveBeenCalled();
-    });
+      it('signs in with credentials and navigates to returnTo', async () => {
+        stubAuthMe({ provider: 'better-auth' });
+        const posted = vi.fn();
+        server.use(
+          http.post(`${TEST_BASE_URL}/auth/api/sign-in/email`, async ({ request }) => {
+            posted(await request.json());
+            return HttpResponse.json({ user: { id: 'user_1' } });
+          }),
+        );
+        renderSignIn('/signin?returnTo=%2Ffactory%2Fboard');
 
-    it('signs up with name + credentials through the sign-up endpoint', async () => {
-      stubAuthMe({ provider: 'better-auth' });
-      const posted = vi.fn();
-      server.use(
-        http.post(`${TEST_BASE_URL}/auth/api/sign-up/email`, async ({ request }) => {
-          posted(await request.json());
-          return HttpResponse.json({ user: { id: 'user_2' } });
-        }),
-      );
-      renderSignIn();
+        await userEvent.type(await screen.findByLabelText('Email'), 'ada@example.com');
+        await userEvent.type(screen.getByLabelText('Password'), 'hunter22!');
+        await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
 
-      await userEvent.click(await screen.findByRole('button', { name: 'New here? Sign up' }));
-      await userEvent.type(screen.getByLabelText('Name'), 'Ada Lovelace');
-      await userEvent.type(screen.getByLabelText('Email'), 'ada@example.com');
-      await userEvent.type(screen.getByLabelText('Password'), 'hunter22!');
-      await userEvent.click(screen.getByRole('button', { name: 'Create account' }));
+        await waitFor(() => expect(navigateAfterSignIn).toHaveBeenCalledWith('/factory/board'));
+        expect(posted).toHaveBeenCalledWith({ email: 'ada@example.com', password: 'hunter22!' });
+      });
 
-      await waitFor(() => expect(navigateAfterSignIn).toHaveBeenCalledWith('/'));
-      expect(posted).toHaveBeenCalledWith({ name: 'Ada Lovelace', email: 'ada@example.com', password: 'hunter22!' });
-    });
+      it('surfaces the server error message on failed sign-in', async () => {
+        stubAuthMe({ provider: 'better-auth' });
+        server.use(
+          http.post(`${TEST_BASE_URL}/auth/api/sign-in/email`, () =>
+            HttpResponse.json({ message: 'Invalid email or password' }, { status: 401 }),
+          ),
+        );
+        renderSignIn();
 
-    it('hides the sign-up affordance when the server disables sign-up', async () => {
-      stubAuthMe({ provider: 'better-auth', signUpDisabled: true });
-      renderSignIn();
+        await userEvent.type(await screen.findByLabelText('Email'), 'ada@example.com');
+        await userEvent.type(screen.getByLabelText('Password'), 'wrong');
+        await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
 
-      expect(await screen.findByLabelText('Email')).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'New here? Sign up' })).not.toBeInTheDocument();
+        expect(await screen.findByRole('alert')).toHaveTextContent('Invalid email or password');
+        expect(navigateAfterSignIn).not.toHaveBeenCalled();
+      });
+
+      it('signs up with name + credentials through the sign-up endpoint', async () => {
+        stubAuthMe({ provider: 'better-auth' });
+        const posted = vi.fn();
+        server.use(
+          http.post(`${TEST_BASE_URL}/auth/api/sign-up/email`, async ({ request }) => {
+            posted(await request.json());
+            return HttpResponse.json({ user: { id: 'user_2' } });
+          }),
+        );
+        renderSignIn();
+
+        await userEvent.click(await screen.findByRole('button', { name: 'New here? Sign up' }));
+        await userEvent.type(screen.getByLabelText('Name'), 'Ada Lovelace');
+        await userEvent.type(screen.getByLabelText('Email'), 'ada@example.com');
+        await userEvent.type(screen.getByLabelText('Password'), 'hunter22!');
+        await userEvent.click(screen.getByRole('button', { name: 'Create account' }));
+
+        await waitFor(() => expect(navigateAfterSignIn).toHaveBeenCalledWith('/'));
+        expect(posted).toHaveBeenCalledWith({ name: 'Ada Lovelace', email: 'ada@example.com', password: 'hunter22!' });
+      });
+
+      it('hides the sign-up affordance when the server disables sign-up', async () => {
+        stubAuthMe({ provider: 'better-auth', signUpDisabled: true });
+        renderSignIn();
+
+        expect(await screen.findByLabelText('Email')).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'New here? Sign up' })).not.toBeInTheDocument();
+      });
     });
   });
 
   /**
    * The capability-driven page: `signIn.kind` decides which controls exist and
    * `providerHint` decides how the hosted one looks, so a provider this SPA has
-   * never heard of still gets a correct screen. The exhaustive matrix lands with
-   * the descriptor-only tests; these pin the behaviour the branch is for.
+   * never heard of still gets a correct screen. Every kind is covered here, plus
+   * the hint treatments, the credentials mount, and both sign-up fields together.
    */
   describe('given a server that sends the capability descriptor', () => {
     function stubDescriptor(signIn: Record<string, unknown>, rest: Record<string, unknown> = {}) {
@@ -325,6 +340,34 @@ describe('SignInPage', () => {
         expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument();
         expect(screen.getByRole('button', { name: 'Continue with single sign-on' })).toBeInTheDocument();
       });
+
+      it('drives each route independently — the hosted button still redirects', async () => {
+        stubDescriptor({ kind: 'both', providerHint: 'sso', signUpEnabled: true });
+        renderSignIn('/signin?returnTo=%2Ffactory%2Fboard');
+
+        await userEvent.click(await screen.findByRole('button', { name: 'Continue with single sign-on' }));
+
+        expect(redirectToLogin).toHaveBeenCalledWith(TEST_BASE_URL, '/factory/board');
+      });
+
+      it('and the credential form still posts', async () => {
+        stubDescriptor({ kind: 'both', providerHint: 'sso', signUpEnabled: true });
+        const posted = vi.fn();
+        server.use(
+          http.post(`${TEST_BASE_URL}/auth/api/sign-in/email`, async ({ request }) => {
+            posted(await request.json());
+            return HttpResponse.json({ user: { id: 'user_12' } });
+          }),
+        );
+        renderSignIn();
+
+        await userEvent.type(await screen.findByLabelText('Email'), 'ada@example.com');
+        await userEvent.type(screen.getByLabelText('Password'), 'hunter22!');
+        await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+
+        await waitFor(() => expect(navigateAfterSignIn).toHaveBeenCalledWith('/'));
+        expect(posted).toHaveBeenCalledWith({ email: 'ada@example.com', password: 'hunter22!' });
+      });
     });
 
     describe('kind: none', () => {
@@ -349,6 +392,48 @@ describe('SignInPage', () => {
         expect(screen.queryByRole('button', { name: /^Continue/ })).not.toBeInTheDocument();
         expect(screen.queryByRole('button', { name: /^Sign in/ })).not.toBeInTheDocument();
         expect(redirectToLogin).not.toHaveBeenCalled();
+      });
+    });
+
+    /**
+     * The shape that is on the wire for one whole release: a single response
+     * describing sign-up twice, in opposite directions. It is the combination
+     * nobody exercises until it breaks, and when it breaks it is silent — a
+     * sign-up link on a deployment that disabled sign-up looks like a working
+     * page, not a bug. Every combination gets a case, agreeing and contradicting
+     * alike, driven end to end through the page rather than through the resolver.
+     */
+    describe('given both sign-up fields on one payload', () => {
+      it.each([
+        // label, signUpEnabled (positive), signUpDisabled (legacy negative), sign-up offered?
+        ['agreeing that sign-up is off', false, true, false],
+        ['agreeing that sign-up is on', true, false, true],
+        ['contradicting: descriptor on, legacy says off', true, true, true],
+        ['contradicting: descriptor off, legacy says on', false, false, false],
+      ])('resolves %s', async (_label, signUpEnabled, signUpDisabled, offered) => {
+        stubDescriptor({ kind: 'credentials', signUpEnabled }, { signUpDisabled });
+        renderSignIn();
+
+        // The form itself is unaffected either way; only the affordance moves.
+        expect(await screen.findByLabelText('Email')).toBeInTheDocument();
+        const signUp = screen.queryByRole('button', { name: 'New here? Sign up' });
+        if (offered) {
+          expect(signUp).toBeInTheDocument();
+        } else {
+          expect(signUp).not.toBeInTheDocument();
+          expect(screen.getByText('Account creation is managed by your administrator.')).toBeInTheDocument();
+        }
+      });
+
+      it('falls through to the legacy field when the descriptor omits the positive one', async () => {
+        // Not what the Factory emits for a credentials provider, but a
+        // hand-rolled server can omit it. Absent must read as "not stated", so
+        // the legacy field is what decides — not a default of "enabled".
+        stubDescriptor({ kind: 'credentials' }, { signUpDisabled: true });
+        renderSignIn();
+
+        expect(await screen.findByLabelText('Email')).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'New here? Sign up' })).not.toBeInTheDocument();
       });
     });
 
