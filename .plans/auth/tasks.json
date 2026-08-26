@@ -1357,7 +1357,7 @@
     },
     {
       "id": "P21",
-      "status": "pending",
+      "status": "done",
       "title": "Typecheck the remaining auth/* test files",
       "lane": "C",
       "size": "M",
@@ -1368,7 +1368,7 @@
         "auth/*/tsconfig.conformance.json",
         "auth/*/vitest.config.ts"
       ],
-      "detail": "P19 scoped to conformance.test.ts and measured the rest: 66 errors across 7 files in 5 packages -- workos/fga-provider (23), neon/index (20), better-auth/index (15), workos/index (4), cloud/index (2), google/index (1), better-auth/deferred (1). Mostly partial object literals standing in for full SDK types (WorkOSUser, RoleMapping), plus one that looks like real drift: authorizeUser does not exist in MastraAuthWorkosOptions. Widening the file list is mechanical; fixing 66 errors is not, and some may be provider findings rather than test bugs.",
+      "detail": "P19 scoped to conformance.test.ts and measured the rest: 66 errors across 7 files in 5 packages -- workos/fga-provider (23), neon/index (20), better-auth/index (15), workos/index (4), cloud/index (2), google/index (1), better-auth/deferred (1). Mostly partial object literals standing in for full SDK types (WorkOSUser, RoleMapping), plus one that looks like real drift: authorizeUser does not exist in MastraAuthWorkosOptions. Widening the file list is mechanical; fixing 66 errors is not, and some may be provider findings rather than test bugs. DONE at 807651b5. THE COUNTS IN THIS TEXT WERE STALE: measured 64 errors across 7 files in 6 packages, not 66 across 5. better-auth/index was 12 not 15, better-auth/deferred was already clean, and studio/index had 2 nobody had counted. All eleven packages now typecheck `src/**/*.test.ts` - the `files` list and the `**/*.test.ts` re-exclusion are gone, so a test file added later is covered the day it lands. 11 checked files became 25; the sweep went from 36 files to 50 and 1294 passing. Proved per package with a probe in a NEWLY covered file, red then green, and re-proved on auth/firebase afterwards. 61 of 64 were test bugs; two of those hid something real - auth/cloud's unannotated roleMapping fixture was masking `studio:*`, which is not a permission and which a test asserted on, and the unchecked `mock.calls[0][0]` indexing in better-auth and neon was a runtime hazard as well as a type one. The other 3 are provider findings, asserted around with a reason rather than fixed, and filed as P30.",
       "doneWhen": "Every test file under auth/* is typechecked in CI, and each error fixed was classified as a test bug or a provider finding."
     },
     {
@@ -1387,7 +1387,7 @@
     },
     {
       "id": "P23",
-      "status": "pending",
+      "status": "done",
       "title": "A blessed partial capability, and a check that finds the unblessed ones",
       "lane": "K",
       "size": "M",
@@ -1398,7 +1398,7 @@
         "mastracode/factory-auth/src/conformance/index.ts",
         "packages/_internals/auth/src/session/index.ts"
       ],
-      "detail": "P9 made every guard test its interface’s full required set, which turns a provider carrying SOME of a set from \"passes the guard\" into \"has no capability at all\" - silent, where it used to be a run-time throw. P9 restored the reporting for `IUserProvider` only, by gating that section on carrying either member. The general check - fail any provider holding some but not all of an interface’s required members - was written up and rejected, because @mastra/auth-better-auth implements `getClearSessionHeaders` alone and that is a legitimate pattern the Factory already honours through a structural `Partial<ISessionProvider>` read. It cannot be told from a half-finished interface until P11 declares it as its own member with its own guard. Once P11 lands, the general check becomes writable and should replace the ad-hoc user-section gate.",
+      "detail": "P9 made every guard test its interface’s full required set, which turns a provider carrying SOME of a set from \"passes the guard\" into \"has no capability at all\" - silent, where it used to be a run-time throw. P9 restored the reporting for `IUserProvider` only, by gating that section on carrying either member. The general check - fail any provider holding some but not all of an interface’s required members - was written up and rejected, because @mastra/auth-better-auth implements `getClearSessionHeaders` alone and that is a legitimate pattern the Factory already honours through a structural `Partial<ISessionProvider>` read. It cannot be told from a half-finished interface until P11 declares it as its own member with its own guard. Once P11 lands, the general check becomes writable and should replace the ad-hoc user-section gate. DONE at ea86778c, and it could not have been written before P11. `contract/whole-capabilities` asks every capability interface whether the provider carries all of its required members or none. Four codes - #partial-sso, #partial-sessions, #partial-credentials, #partial-organizations. The three one-member interfaces have no part to carry, and `IUserProvider` stays with `users/current-user` and `users/get-user`, which own a member each and can say what the absent one costs. The blessed shape is exempted BY RULE rather than by name: any member set that is exactly a declared sub-interface's required set counts as whole, which is what makes `getClearSessionHeaders` alone the whole of `ISessionClearer` rather than a seventh of `ISessionProvider`. Verified after a container restart killed the agent mid-flight: all eleven providers still pass, and adding one `createSession` to better-auth - one step past the blessed subset - fails with #partial-sessions.",
       "doneWhen": "A provider holding part of a capability interface either satisfies a declared narrower interface, or fails conformance naming the members it is missing."
     },
     {
@@ -1493,6 +1493,23 @@
       ],
       "detail": "Found twice during this work, from opposite directions, and it wastes real time both times. `packages/core/turbo.json` gives `build:lib` outputs `[\"dist/**\"]` and `build:patch-commonjs` outputs `[\"./**/*.d.ts\"]`, which overlap. A cache-restored build can leave `packages/core/dist` with ZERO `.d.ts` files while reporting success, and the symptom is indistinguishable from having broken the types: every consumer fails with \"has no exported member\", and `@mastra/core/server` appears to have lost exports it still declares in source. `pnpm turbo build --filter ./packages/core --force` restores all of them. Both P11 and P26 lost cycles to this, P11 while also blaming a concurrent agent. Narrow the globs so the two tasks do not claim the same files. DONE at 0a14ce30. It was not only packages/core: packages/server and client-sdks/ai-sdk declare the identical glob, so all three are fixed. Measured, excluding node_modules - core claimed 1084 files and writes 84, server claimed 286 and writes 7, ai-sdk claimed 23 and writes 1. The explanation lives in scripts/commonjs-tsc-fixer.js because turbo rejects an unknown `//` key inside a task definition.",
       "doneWhen": "The two build tasks declare disjoint outputs, and a cache-restored core build always leaves a complete dist."
+    },
+    {
+      "id": "P30",
+      "status": "pending",
+      "title": "Two published providers cannot type the options they honour",
+      "lane": "C",
+      "size": "M",
+      "deps": [
+        "P21"
+      ],
+      "files": [
+        "auth/workos/src/types.ts",
+        "auth/okta/src/types.ts",
+        "auth/workos/src/auth-provider.ts"
+      ],
+      "detail": "Found by P21 once the provider test files were typechecked, and asserted around there rather than fixed, because a test may not change a published provider. (1) `MastraAuthWorkosOptions` does not declare `authorizeUser`, and the option works: the constructor passes the options through `registerOptions`, which binds `authorizeUser`, `mapUserToResourceId`, `protected` and `public`. So three options are honoured at run time and untypeable for a caller. Nine of the eleven providers declare `Options extends MastraAuthProviderOptions<TUser>` and have none of this. The two that do not - workos and okta - are exactly the two whose `registerOptions` call carries an `as MastraAuthProviderOptions<TUser>` cast, which is what hid it. Okta has the identical defect and no test exercised it, so it produced no error. The fix is `src/types.ts` in both packages. (2) `MastraAuthWorkos.getCurrentUser` declares `Promise<EEUser | null>` while its body builds and returns a `WorkOSUser`, and the sibling `getUser` on the same class declares `WorkOSUser` correctly. `organizationId`, `memberships`, `organizationMembershipId` and `workosId` - the fields this provider exists to supply - are invisible to every caller of `getCurrentUser`.",
+      "doneWhen": "A caller can type `authorizeUser`, `protected` and `public` on both workos and okta, and `getCurrentUser`'s declared return type matches what it returns."
     }
   ],
   "criticalPath": [

@@ -14,7 +14,7 @@ external assets beyond web fonts).
 | [`swappability-audit.html`](./swappability-audit.html) | Audit of how pluggable, compartmentalized and testable auth is today. Includes a capability matrix for all 11 `auth/*` provider packages and letter grades for five seams. |
 | [`remediation-plan.html`](./remediation-plan.html) | Four-phase plan to take every seam to A−, built on a fork-owned Apache-2.0 auth kit. States the EE licence boundary precisely. |
 | [`task-graph.html`](./task-graph.html) | The plan decomposed into 65 dependency-linked tasks across six lanes, with seven hard gates, the critical path, and scheduling scenarios. Not updated with the `P` follow-ups; `tasks.json` is authoritative. |
-| [`tasks.json`](./tasks.json) | 94 tasks, machine-readable — `id`, `lane`, `size`, `deps`, `files`, `detail`, `doneWhen`. The original 65, plus `P1`–`P29`: `P1`–`P18` filed by the re-grade, `P19`–`P29` filed by the work since. Import into a tracker or feed to a script. |
+| [`tasks.json`](./tasks.json) | 95 tasks, machine-readable — `id`, `lane`, `size`, `deps`, `files`, `detail`, `doneWhen`. The original 65, plus `P1`–`P30`: `P1`–`P18` filed by the re-grade, `P19`–`P30` filed by the work since. Import into a tracker or feed to a script. |
 
 **Start at [Final grades](#final-grades-r2)** if you want the current state rather than the
 original diagnosis. The two HTML documents describe the problem and the plan as of the
@@ -68,8 +68,8 @@ so the boundary is a build error rather than a code-review habit.
 
 ## Status
 
-**62 of 65 original tasks done**, plus **29 post-plan follow-ups** (`P1`–`P29`) filed by
-the re-grade and by the work since, of which **23 are done and 6 pending**. Each task in
+**62 of 65 original tasks done**, plus **30 post-plan follow-ups** (`P1`–`P30`) filed by
+the re-grade and by the work since, of which **25 are done and 5 pending**. Each task in
 `tasks.json` carries a `status` field (`done` / `pending` / `held`) — that file is the
 source of truth for progress; update it when a task merges.
 
@@ -98,7 +98,7 @@ under v2 lives in the host's signed cookie, and the legacy path never reads it. 
 tokens-only providers with a session secret configured, and only them. Worth knowing
 before anyone reaches for `=false` under pressure.
 
-The kit ships as `@mastra/factory-auth@0.1.0`: nine entry points, 910 tests, an enforced
+The kit ships as `@mastra/factory-auth@0.1.0`: nine entry points, 965 tests, an enforced
 Apache-2.0/EE boundary, and a `describeAuthProvider` conformance suite. See
 `mastracode/factory-auth/README.md` for the package itself and its semver policy.
 
