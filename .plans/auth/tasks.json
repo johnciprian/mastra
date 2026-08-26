@@ -1141,7 +1141,7 @@
     },
     {
       "id": "P7",
-      "status": "pending",
+      "status": "done",
       "title": "Correct two factual defects in the capability reference",
       "lane": "D",
       "size": "S",
@@ -1154,7 +1154,7 @@
     },
     {
       "id": "P8",
-      "status": "pending",
+      "status": "done",
       "title": "Document PKCE end to end, once it works",
       "lane": "D",
       "size": "S",
