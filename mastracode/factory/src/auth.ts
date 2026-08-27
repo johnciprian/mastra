@@ -616,26 +616,135 @@ async function revokeProviderSession(provider: IMastraAuthProvider, c: Context):
 }
 
 /**
- * Whether a GET `/auth/logout` came from a real browser navigation rather than
- * a sub-resource load on somebody else's page.
+ * The origins a state-changing request is allowed to come from: this
+ * deployment's own, plus every cross-origin SPA host it declares.
  *
- * A GET that signs the caller out is CSRF-triggerable: `<img src="/auth/logout">`
- * on any page silently ends the visitor's session. `Sec-Fetch-Dest` is what
- * separates the two — a top-level navigation sends `document`, an `<img>` sends
- * `image`, a `<script>` sends `script`. It is a forbidden header name, so a
- * page cannot set it, which is what makes it usable as a defence rather than a
- * hint.
- *
- * A request with no `Sec-Fetch-Dest` is allowed through: browsers that predate
- * the header exist, and refusing them would break sign-out for those people
- * rather than protecting them. That is the residual gap, and it is why this is
- * a shim on a deprecated route rather than the answer — `POST /auth/logout`
- * needs no such inference.
+ * Read from the environment rather than passed in, because the auth routes are
+ * mounted without the Factory config — the same reason {@link isCrossSiteAuth}
+ * reads it, and the two must agree: an origin trusted enough to be sent a
+ * `SameSite=None` cookie is exactly an origin trusted enough to spend it.
  */
-function isLogoutNavigation(c: Context): boolean {
-  const destination = c.req.header('Sec-Fetch-Dest');
-  if (!destination) return true;
-  return destination === 'document';
+function allowedRequestOrigins(c: Context): Set<string> {
+  const origins = new Set<string>();
+  try {
+    origins.add(new URL(c.req.url).origin);
+  } catch {
+    // An unparseable request URL matches nothing, which fails closed below.
+  }
+  for (const configured of (process.env.MASTRACODE_ALLOWED_ORIGINS ?? '').split(',')) {
+    const trimmed = configured.trim().replace(/\/+$/, '');
+    if (trimmed) origins.add(trimmed);
+  }
+  return origins;
+}
+
+/**
+ * Whether a state-changing request came from this deployment's own front end
+ * rather than from somebody else's page.
+ *
+ * `SameSite` does most of this work already, but only in the same-origin
+ * deployment: there the session cookie is `SameSite=Lax`, which a cross-site
+ * POST cannot carry at all. A deployment that sets `MASTRACODE_ALLOWED_ORIGINS`
+ * hosts the SPA separately, and the cookie becomes `SameSite=None; Secure` so
+ * the real SPA can use it — at which point every cross-site POST carries it
+ * too. CORS does not cover the gap: it withholds the *response* from a
+ * disallowed origin, it does not stop the *request*, and a request whose
+ * `Content-Type` is one of the three CORS-simple values is never preflighted.
+ * So the check has to be made here.
+ *
+ * `Origin` is the primary signal because it is the one a browser always sends
+ * on a cross-origin POST and a page cannot forge — it is a forbidden header
+ * name. `Sec-Fetch-Site` is the fallback for the same-origin POST that some
+ * older browsers send without an `Origin`, and `none` is included because it
+ * means the person typed the URL or used a bookmark, which no other page can
+ * cause.
+ *
+ * A request carrying neither header is allowed: that is not a browser, so
+ * there is no ambient cookie for anyone to spend. The residual gap is a browser
+ * that omits `Origin` on a cross-site POST, which in practice means IE11 —
+ * materially narrower than the `Sec-Fetch-Dest` shim this replaced, since
+ * Safari sent no `Sec-Fetch-*` header at all before 16.4.
+ */
+export function isAllowedRequestOrigin(c: Context): boolean {
+  const origin = c.req.header('Origin');
+  if (origin) return allowedRequestOrigins(c).has(origin.replace(/\/+$/, ''));
+  const site = c.req.header('Sec-Fetch-Site');
+  if (site) return site === 'same-origin' || site === 'none';
+  return true;
+}
+
+/**
+ * Refuse a state-changing request that came from another site. Answers 403
+ * rather than redirecting: the caller is either an attacker's page, which
+ * cannot read this response anyway, or a misconfigured deployment, which is
+ * owed something it can find in a log.
+ */
+function refuseForeignOrigin(c: Context): Response {
+  return c.json({ error: 'Request origin is not allowed' }, 403);
+}
+
+/** Methods that change something, and therefore need to have been asked for. */
+const STATE_CHANGING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/**
+ * Whether this request would spend a credential the browser attached by itself.
+ *
+ * That is the entire precondition for CSRF, and keying on it rather than on
+ * which route is being called is what makes the guard below both complete and
+ * safe. Complete, because a route added tomorrow is covered without anyone
+ * remembering to list it. Safe, because the three kinds of caller that must not
+ * be refused all fail this test on their own merits:
+ *
+ * - An inbound webhook (GitHub, Slack) sends no cookies and authenticates by
+ *   HMAC over its body. `createFactoryAuthGate` has to name those paths one by
+ *   one because it runs before route matching and cannot read `requiresAuth`;
+ *   this needs no such list, because a signature is not ambient authority.
+ * - An API client sending `Authorization` is not spending anything ambient —
+ *   and a cross-site page cannot set that header without a preflight the
+ *   deployment's CORS policy has to allow first.
+ * - A signed-out browser has no session cookie to spend.
+ *
+ * `Cookie` in general rather than the session cookie in particular, because the
+ * name is not always ours to know: only the host-owned cookie has a name this
+ * package chose, and a provider-minted one is whatever the provider called it.
+ * The cost of the broader test is refusing a cross-site POST that carried some
+ * unrelated cookie and would have failed authentication anyway.
+ */
+function spendsAmbientCredential(c: Context): boolean {
+  if (!STATE_CHANGING_METHODS.has(c.req.method.toUpperCase())) return false;
+  if (getBearerToken(c.req.header('Authorization'))) return false;
+  return c.req.header('Cookie') !== undefined;
+}
+
+/**
+ * Refuse any state-changing request that spends the browser's session cookie on
+ * behalf of another site.
+ *
+ * `SameSite` covers this on a same-origin deployment and only there. Setting
+ * `MASTRACODE_ALLOWED_ORIGINS` moves the session cookie to
+ * `SameSite=None; Secure` so a separately hosted SPA can use it, and from that
+ * moment every cross-site request carries it too. CORS does not stand in the
+ * way: it withholds the response from a disallowed origin, it does not stop the
+ * request, and a request whose `Content-Type` is one of the three CORS-simple
+ * values is never preflighted at all.
+ *
+ * Nor does requiring JSON help, which is the assumption worth naming because it
+ * is the one most people stop at. `c.req.json()` parses the body it is given
+ * without consulting `Content-Type`, so `text/plain` carrying JSON reaches every
+ * route that reads a JSON body — measured, not assumed. A cross-site page can
+ * therefore drive any mutating route with the victim's cookie attached.
+ *
+ * Mounted ahead of {@link createFactoryAuthGate}, so a refused request never
+ * reaches authentication and cannot be counted, logged, or rate-limited as a
+ * real attempt.
+ */
+export function createCsrfGuard() {
+  return async (c: Context, next: () => Promise<void>): Promise<Response | void> => {
+    if (spendsAmbientCredential(c) && !isAllowedRequestOrigin(c)) {
+      return refuseForeignOrigin(c);
+    }
+    return next();
+  };
 }
 
 /**
@@ -901,10 +1010,14 @@ interface AuthRouteSpec {
  *   surface (better-auth sign-in/up/out/session — what the SPA's
  *   email/password form posts to).
  * - `ISSOProvider` → hosted-login `GET /auth/login` / `GET /auth/callback` /
- *   `GET /auth/logout` (returnTo preserved through the OAuth `state` param).
+ *   `POST /auth/logout` (returnTo preserved through the OAuth `state` param).
  * - handler-shaped, non-SSO providers → `GET /auth/login` redirects to the
- *   SPA's `/signin` form, `GET /auth/logout` revokes via the provider's
+ *   SPA's `/signin` form, `POST /auth/logout` revokes via the provider's
  *   sign-out endpoint and clears the session cookie.
+ *
+ * Sign-out is POST-only. Nothing that ends a session answers a GET, so no page
+ * can end a visitor's session by loading a sub-resource, and the POST is
+ * origin-checked on top — see {@link isAllowedRequestOrigin}.
  */
 function providerAuthRoutes(provider: IMastraAuthProvider, publicUrl?: string): AuthRouteSpec[] {
   const routes: AuthRouteSpec[] = [];
@@ -1050,18 +1163,7 @@ function providerAuthRoutes(provider: IMastraAuthProvider, publicUrl?: string): 
       {
         path: '/auth/logout',
         method: 'POST',
-        handler: c => ssoLogout(provider, c),
-      },
-      {
-        // Deprecated for one release: the SPA and any bookmarked link still
-        // navigate here with GET. See `isLogoutNavigation` for what this
-        // refuses, and `ssoLogout` for what it does otherwise.
-        path: '/auth/logout',
-        method: 'GET',
-        handler: c => {
-          if (!isLogoutNavigation(c)) return c.redirect('/');
-          return ssoLogout(provider, c);
-        },
+        handler: c => (isAllowedRequestOrigin(c) ? ssoLogout(provider, c) : refuseForeignOrigin(c)),
       },
     );
   } else if (isAuthHttpHandler(provider)) {
@@ -1079,16 +1181,7 @@ function providerAuthRoutes(provider: IMastraAuthProvider, publicUrl?: string): 
       {
         path: '/auth/logout',
         method: 'POST',
-        handler: c => handlerLogout(provider, c),
-      },
-      {
-        // Deprecated for one release; see the SSO branch above.
-        path: '/auth/logout',
-        method: 'GET',
-        handler: c => {
-          if (!isLogoutNavigation(c)) return c.redirect('/');
-          return handlerLogout(provider, c);
-        },
+        handler: c => (isAllowedRequestOrigin(c) ? handlerLogout(provider, c) : refuseForeignOrigin(c)),
       },
     );
   }

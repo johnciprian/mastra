@@ -120,6 +120,7 @@ import { describe, expect, it } from 'vitest';
 import { toAuthDescriptor } from '../capabilities.js';
 import {
   canClearSession,
+  canManageSessions,
   hasAuthInit,
   isAuthHttpHandler,
   isCredentialsProvider,
@@ -1154,6 +1155,41 @@ const ISESSION_CLEARER: CapabilityInterface = {
 };
 
 /**
+ * Everything you can do with a session except mint one.
+ *
+ * The second rung of the session chain, declared here so `ISessionProvider` can
+ * name it as a legitimate whole subset — the same job {@link ISESSION_CLEARER}
+ * does one rung down. A provider whose identity service issues sessions only in
+ * exchange for a real credential lands here and nowhere else.
+ */
+const ISESSION_MANAGER: CapabilityInterface = {
+  name: 'ISessionManager',
+  guardName: 'canManageSessions',
+  guard: canManageSessions,
+  required: [
+    'validateSession',
+    'destroySession',
+    'refreshSession',
+    'getSessionIdFromRequest',
+    'getSessionHeaders',
+    'getClearSessionHeaders',
+  ],
+  wholeSubsets: [ISESSION_CLEARER],
+  // Reported as `partial-sessions`, not under a slug of its own. Half an
+  // `ISessionManager` is necessarily half an `ISessionProvider` too, since the
+  // wider interface requires every member this one does, so a slug here would
+  // report one defect twice under two names. The third reason for `null` after
+  // "cannot be carried in part" and `IUserProvider`, and the only one that comes
+  // from the roster nesting rather than from the interface.
+  slug: null,
+  reportedBy: ['contract/whole-capabilities (as ISessionProvider#partial-sessions)'],
+  section: null,
+  lost:
+    'sign-out revokes nothing server-side and an expired session is never refreshed, so the person is ' +
+    'signed out at the moment their token lapses',
+};
+
+/**
  * The user directory, and the one interface whose partiality is reported
  * somewhere better than here.
  *
@@ -1183,7 +1219,7 @@ const IUSER_PROVIDER: CapabilityInterface = {
 /**
  * Every optional capability interface in the contract, and what each requires.
  *
- * All eight, including the three that have one member and therefore cannot be
+ * All nine, including the three that have one member and therefore cannot be
  * carried in part. They are here so that the roster is the contract's roster
  * rather than a list of the interesting cases, and so the test that holds it in
  * step with `./contract` has something to compare against.
@@ -1213,20 +1249,24 @@ const CAPABILITY_INTERFACES: readonly CapabilityInterface[] = [
       'getSessionHeaders',
       'getClearSessionHeaders',
     ],
-    wholeSubsets: [ISESSION_CLEARER],
+    wholeSubsets: [ISESSION_CLEARER, ISESSION_MANAGER],
     slug: 'partial-sessions',
     reportedBy: [],
     section: SECTION_SESSIONS,
     lost: 'the host mints no session on sign-in and validates none on the requests after it',
     instead:
-      'If the only session thing this provider owns is the cookie it set on the way in, there is a\n' +
-      'declared interface for exactly that. `ISessionClearer` requires `getClearSessionHeaders` and\n' +
-      'nothing else, `canClearSession` reports it, and `ISessionProvider` extends it - so implementing\n' +
-      'that one member and no other is a whole capability rather than a seventh of a bigger one. It is\n' +
-      'the shape a provider that mints its own cookie on callback and creates no addressable session\n' +
-      'wants, and this check passes it.',
+      'There are two smaller declared interfaces on this chain, and a provider that fits one of them\n' +
+      'is whole rather than partial. `ISessionClearer` requires `getClearSessionHeaders` and nothing\n' +
+      'else - the shape of a provider that mints its own cookie on callback and creates no addressable\n' +
+      'session. `ISessionManager` requires the other five as well, everything except `createSession` -\n' +
+      'the shape of a provider whose identity service issues a session only in exchange for a real\n' +
+      'credential, so nothing can be minted from a user id. `canClearSession` and `canManageSessions`\n' +
+      'report them, `ISessionProvider` extends both, and this check passes either. Stubbing\n' +
+      '`createSession` to reach the widest interface is the thing to avoid: it makes every guard report\n' +
+      'a capability the provider does not have.',
   },
   ISESSION_CLEARER,
+  ISESSION_MANAGER,
   IUSER_PROVIDER,
   {
     name: 'ICredentialsProvider',
@@ -1392,8 +1432,14 @@ function requiresCredentials(provider: IMastraAuthProvider): string | null {
 }
 
 function requiresSessions(provider: IMastraAuthProvider): string | null {
-  return isSessionProvider(provider)
-    ? null
+  if (isSessionProvider(provider)) return null;
+  // Every check in this section starts by minting a session, so a provider that
+  // manages sessions without being able to create one skips it too - and would
+  // read the general message as "no sessions at all", which is wrong about the
+  // five members it does have. Say which member is missing instead.
+  return canManageSessions(provider)
+    ? 'This provider manages sessions but cannot mint one (canManageSessions is true, isSessionProvider ' +
+        'is false, so it is an ISessionManager). Every check here begins with createSession.'
     : 'This provider declares no server-side sessions (isSessionProvider is false).';
 }
 

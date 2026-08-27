@@ -81,7 +81,7 @@ describe('AccountSettingsSection', () => {
       it('hides it for a provider with nothing to sign out of', async () => {
         // `features.logout: false` means a pure bearer-token validator: no
         // hosted login, no session, no auth routes of its own. The host mounts
-        // `/auth/logout` for neither, so the button would have navigated to a
+        // `/auth/logout` for neither, so the button would have posted to a
         // route that was never registered.
         stubAuthenticatedAccount(descriptorWithFeatures({ logout: false }));
 

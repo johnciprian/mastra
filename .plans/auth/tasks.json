@@ -1239,7 +1239,7 @@
     },
     {
       "id": "P13",
-      "status": "pending",
+      "status": "wont-do",
       "title": "Make both auth CI gates required, and unconditional",
       "lane": "C",
       "size": "S",
@@ -1249,7 +1249,7 @@
         ".github/workflows/lint.yml",
         ".github/workflows/auth-conformance.yml"
       ],
-      "detail": "Two gates run and neither can block a merge. `auth-conformance.yml` is already built to be requirable - no path filter, no repository condition, its header explains that a skipped check cannot be a required one - so it needs only the repo setting. `factory-auth-ee-boundary` in lint.yml:111 is not: it carries `if: needs.changes.outputs.has_code == 'true' && github.repository == 'mastra-ai/mastra'`, so it reports skipped on a fork and on any PR that touches no code, and a skipped check cannot be required. That job is also the ONLY thing running mastracode/factory-auth's 833 tests in CI (`pnpm --filter ./mastracode/factory-auth test` at lint.yml:141), so its conditions gate the whole kit suite, not just the boundary test. Drop the conditions the way auth-conformance.yml does, then add both to the required checks in repo settings. Branch protection is repo settings rather than a file, so the second half cannot be verified from the tree and has to be confirmed in the GitHub UI. Once P1 lands, the mastracode unit job wants the same treatment.",
+      "detail": "Two gates run and neither can block a merge. `auth-conformance.yml` is already built to be requirable - no path filter, no repository condition, its header explains that a skipped check cannot be a required one - so it needs only the repo setting. `factory-auth-ee-boundary` in lint.yml:111 is not: it carries `if: needs.changes.outputs.has_code == 'true' && github.repository == 'mastra-ai/mastra'`, so it reports skipped on a fork and on any PR that touches no code, and a skipped check cannot be required. That job is also the ONLY thing running mastracode/factory-auth's 833 tests in CI (`pnpm --filter ./mastracode/factory-auth test` at lint.yml:141), so its conditions gate the whole kit suite, not just the boundary test. Drop the conditions the way auth-conformance.yml does, then add both to the required checks in repo settings. Branch protection is repo settings rather than a file, so the second half cannot be verified from the tree and has to be confirmed in the GitHub UI. Once P1 lands, the mastracode unit job wants the same treatment. WILL NOT DO, by the owner's decision. Branch protection and required status checks need an upgraded GitHub plan; this is a free account. The two gates still RUN on every pull request and still fail loudly - what is missing is only the enforcement that would stop a merge past a red one. Recorded as a decision rather than a gap so nobody reopens it as unfinished work: it does not become doable by trying harder, only by changing the plan the repository is on.",
       "doneWhen": "Both checks report a real result on every PR including forks, and both appear in the required status checks for main."
     },
     {
@@ -1403,7 +1403,7 @@
     },
     {
       "id": "P24",
-      "status": "pending",
+      "status": "done",
       "title": "Decide whether the guard tightening deserves a major on @mastra/core",
       "lane": "C",
       "size": "S",
@@ -1413,7 +1413,7 @@
       "files": [
         ".changeset/"
       ],
-      "detail": "P9 shipped with `@mastra/core: minor`, matching the precedent set by the earlier auth interface changeset in this series. That is a judgement call and it should be a maintainer's. Semver-wise the change is breaking for a consumer whose third-party provider satisfied a guard structurally with a subset of the required members: the guard now reports false, and a surface branching on it stops offering the capability. No provider in this repository is affected - measured with an AST scan - so the blast radius is external only, and a major on @mastra/core forces a whole-repo major release. The changeset body states the breaking consequence in full with a before/after either way, so the changelog is honest at both bump levels; only the version number is open.",
+      "detail": "P9 shipped with `@mastra/core: minor`, matching the precedent set by the earlier auth interface changeset in this series. That is a judgement call and it should be a maintainer's. Semver-wise the change is breaking for a consumer whose third-party provider satisfied a guard structurally with a subset of the required members: the guard now reports false, and a surface branching on it stops offering the capability. No provider in this repository is affected - measured with an AST scan - so the blast radius is external only, and a major on @mastra/core forces a whole-repo major release. The changeset body states the breaking consequence in full with a before/after either way, so the changelog is honest at both bump levels; only the version number is open. DECIDED: major. giant-teams-sort.md now reads `@mastra/core: major`, and the paragraph naming the consequence is headed \"Breaking:\" so it reads as one at a glance. The cost the task named stands: @mastra/core is in the changesets `fixed` group with @mastra/server, @mastra/deployer and @mastra/deployer-cloud, so all four go major together.",
       "doneWhen": "A maintainer has confirmed minor, or the changeset is reissued as major."
     },
     {
@@ -1465,7 +1465,7 @@
     },
     {
       "id": "P28",
-      "status": "pending",
+      "status": "done",
       "title": "Decide the WorkOS ISessionProvider facade",
       "lane": "C",
       "size": "M",
@@ -1475,7 +1475,7 @@
       "files": [
         "auth/workos/src/auth-provider.ts"
       ],
-      "detail": "The one conformance record left in the repository that names a live defect, and the only one P18 could not close. `auth/workos` declares `ISessionProvider` with all seven members as no-ops, so every guard reports the capability and `toAuthDescriptor` advertises `sessionRevocation`. Measured in P18: the members are unreachable on every host path here, the descriptor is carried into factory-ui but no component reads it yet, and no implementation can make `createSession(userId)` mint something `validateSession` accepts, because a WorkOS session comes from an authenticated token exchange. Two remedies, both written up in the provider header. (a) Drop the seven members: the descriptor becomes truthful and the in-repo runtime blast radius is zero, but it is a major bump for a published package. (b) Back the four readable members with AuthKit - `getSessionIdFromRequest` returns the sealed cookie, `validateSession` unseals through `AuthService.withAuth`, `destroySession` reads the `sid` claim as `getLogoutUrl` already does and calls `revokeSession`: non-breaking, and `sessionRevocation` becomes true in fact rather than in name. (b) does not clear the record, because `createSession` stays unmintable. This is a maintainer decision about a published package, not a test change.",
+      "detail": "The one conformance record left in the repository that names a live defect, and the only one P18 could not close. `auth/workos` declares `ISessionProvider` with all seven members as no-ops, so every guard reports the capability and `toAuthDescriptor` advertises `sessionRevocation`. Measured in P18: the members are unreachable on every host path here, the descriptor is carried into factory-ui but no component reads it yet, and no implementation can make `createSession(userId)` mint something `validateSession` accepts, because a WorkOS session comes from an authenticated token exchange. Two remedies, both written up in the provider header. (a) Drop the seven members: the descriptor becomes truthful and the in-repo runtime blast radius is zero, but it is a major bump for a published package. (b) Back the four readable members with AuthKit - `getSessionIdFromRequest` returns the sealed cookie, `validateSession` unseals through `AuthService.withAuth`, `destroySession` reads the `sid` claim as `getLogoutUrl` already does and calls `revokeSession`: non-breaking, and `sessionRevocation` becomes true in fact rather than in name. (b) does not clear the record, because `createSession` stays unmintable. This is a maintainer decision about a published package, not a test change. DECIDED BY THE MAINTAINER: option (b) now, with the interface split filed separately as P33. THE COUNT IN THIS TEXT WAS WRONG - not \"all seven members are no-ops\". getClearSessionHeaders always worked (it is what makes the Log out button end the browser session) and getSessionHeaders half worked (only for a cookie handleCallback had just sealed). Six were dead, and the write-up`s \"four readable members\" was right: getSessionIdFromRequest, validateSession, destroySession, refreshSession. All four are now backed by AuthKit, so five of seven are real and features.sessionRevocation is true in fact - destroySession reads the sid claim and calls userManagement.revokeSession. The session id is the sealed cookie throughout, which is not a shortcut: getSessionIdFromRequest is synchronous by interface and anything finer requires unsealing, which is async. @mastra/auth-studio already makes the same choice, so it is precedent rather than invention. refreshSession returns the NEW sealed cookie as the session id AND attaches the Set-Cookie for getSessionHeaders to emit, because that is the only route the new token has back to the browser - without it the refresh would succeed server-side while the browser kept presenting the old token. Found and fixed a real latent bug while in here: getLogoutUrl decoded the access token with atob() on the raw JWT segment, and atob rejects the - and _ that Base64URL uses in place of + and /. Any token whose payload happened to contain either threw, was swallowed by the surrounding catch, and returned null - so the browser went to / instead of WorkOS`s logout page and the session was never ended there. Confirmed by decoding a real payload both ways before claiming it. 26 new tests in auth/workos/src/session.test.ts; suite 142 -> 190. The knownFailures entry is narrowed to createSession alone rather than deleted.",
       "doneWhen": "auth/workos either stops declaring ISessionProvider, or implements the members it can, and the remaining knownFailures entry matches whichever was chosen."
     },
     {
@@ -1513,7 +1513,7 @@
     },
     {
       "id": "P31",
-      "status": "pending",
+      "status": "done",
       "title": "Remove the deprecated GET /auth/logout shim",
       "lane": "B",
       "size": "S",
@@ -1523,8 +1523,38 @@
       "files": [
         "mastracode/factory/src/auth.ts"
       ],
-      "detail": "A FOURTH compat item, found while clearing B19/U9/R3 and tracked by no task until now. B10 moved sign-out to POST and left GET /auth/logout reachable, with an isLogoutNavigation shim that reads Sec-Fetch-Dest to tell a top-level navigation from an <img> or <script> load. The changeset late-comics-yell promises it works \"for one release\" - a release that cannot happen in this fork, the same defect that made B19/U9/R3 unclearable. Unlike those two, this compat protects clients in the wild (a bookmarked link, an existing <a href>) rather than a deployment mid-upgrade; with nothing running this fork there are no such clients either. Removing it also CLOSES a residual security gap the code names itself: a request with no Sec-Fetch-Dest is allowed through, because browsers predating the header exist and refusing them would break sign-out rather than protect anybody. The comment says as much - \"why this is a shim on a deprecated route rather than the answer\". POST /auth/logout needs no such inference.",
+      "detail": "A FOURTH compat item, found while clearing B19/U9/R3 and tracked by no task until now. B10 moved sign-out to POST and left GET /auth/logout reachable, with an isLogoutNavigation shim that reads Sec-Fetch-Dest to tell a top-level navigation from an <img> or <script> load. The changeset late-comics-yell promises it works \"for one release\" - a release that cannot happen in this fork, the same defect that made B19/U9/R3 unclearable. Unlike those two, this compat protects clients in the wild (a bookmarked link, an existing <a href>) rather than a deployment mid-upgrade; with nothing running this fork there are no such clients either. Removing it also CLOSES a residual security gap the code names itself: a request with no Sec-Fetch-Dest is allowed through, because browsers predating the header exist and refusing them would break sign-out rather than protect anybody. The comment says as much - \"why this is a shim on a deprecated route rather than the answer\". POST /auth/logout needs no such inference. THE STATED JUSTIFICATION WAS HALF WRONG, AND THE SCOPE WAS WRONG. (1) It is not a pure deletion: the SPA signed out with window.location.assign, which can only issue a GET, so removing the route as written would have navigated every sign-out to a 404 with the session intact. factory-ui`s redirectToLogout is now submitLogout, which posts a hidden form and removes it again. (2) \"POST /auth/logout needs no such inference\" is a true statement about Sec-Fetch-Dest and NOT a claim that POST was safe - it had no origin check at all, and a cross-site auto-submitting form logged a user out exactly as <img> did. Removing GET alone would have closed one vector and left an equivalent one on the route the comment calls the answer. So POST is now origin-checked too (isAllowedRequestOrigin): Origin against this deployment plus MASTRACODE_ALLOWED_ORIGINS, Sec-Fetch-Site as the fallback, and a request with neither header allowed because it is not a browser and holds no ambient cookie. The residual gap is a browser that omits Origin on a cross-site POST - IE11 - against the shim`s residual gap of every browser predating Sec-Fetch-Dest, which included Safari until 16.4. Measured: packages/server was already POST-only for /api/auth/logout and asserts it, so the Factory was the only host with a GET that ended a session. Filed P32 for what the same measurement turned up about the rest of the surface.",
       "doneWhen": "GET /auth/logout is gone, isLogoutNavigation with it, and no route ends a session on a GET."
+    },
+    {
+      "id": "P32",
+      "status": "done",
+      "title": "Every mutating route is CSRF-exposed on a cross-origin deployment",
+      "lane": "B",
+      "size": "L",
+      "deps": [
+        "P31"
+      ],
+      "files": [
+        "mastracode/factory/src/factory.ts",
+        "mastracode/factory/src/auth.ts"
+      ],
+      "detail": "Found while scoping P31, and larger than it. Two facts combine. (1) A deployment that sets MASTRACODE_ALLOWED_ORIGINS serves the SPA from its own host, so the session cookie is minted `SameSite=None; Secure` (isCrossSiteAuth in auth.ts) and is therefore carried on EVERY cross-site request, not just the SPA`s. The same-origin deployment keeps SameSite=Lax and is not affected - Lax is what has been carrying this defence, and the existing test comment on the logout route says so. (2) CORS does not close the gap: it withholds the RESPONSE from a disallowed origin, it does not stop the REQUEST, and a request whose Content-Type is one of the three CORS-simple values is never preflighted. MEASURED, not assumed: a Hono route calling `await c.req.json()` parses a JSON body sent as text/plain, x-www-form-urlencoded and multipart/form-data - all three returned 200 with the body parsed. So `fetch(url, {method: 'POST', credentials: 'include', headers: {'Content-Type': 'text/plain'}, body: JSON.stringify(...)}) ` from any page reaches any mutating Factory route with the victim`s cookie attached. 160 POST/PUT/PATCH/DELETE route definitions across 26 files are in scope. P31 fixed exactly one of them. The shape of the fix is middleware over the gated routes reusing `isAllowedRequestOrigin`, but it is NOT a drive-by: inbound webhooks (github, slack, linear) legitimately POST from a server with no Origin header, and the current fall-through allows them by accident rather than by decision. Whichever way that is settled has to be settled deliberately, with the webhook routes enumerated and their own authentication (signature verification) confirmed as the thing carrying them. DONE. The guard keys on THE CREDENTIAL, not the route, which is what makes it both complete and safe - and is a better mechanism than the path allowlist createFactoryAuthGate needs. spendsAmbientCredential(c) is true only for POST/PUT/PATCH/DELETE that carry a Cookie and no Authorization; createCsrfGuard refuses those unless isAllowedRequestOrigin passes. So a route added tomorrow is covered with nobody remembering to list it, and the three callers that must not break fail the test on their own merits: a webhook sends no cookies and authenticates by HMAC, an API client sends Authorization (which a cross-site page cannot set without a preflight CORS must allow first), a signed-out browser has no session. NOTE the gate needs its path allowlist for a reason this does not: it runs before route matching and cannot read requiresAuth. IMPORTANT correction to this task text: gating on requiresAuth would have MISSED routes - /web/github/* declare `requiresAuth: false` and then call auth.ensureUser themselves, so they are cookie-authenticated despite the flag. Mounted first in the middleware chain, ahead of the auth gate, so a refused request never reaches authentication. 10 tests, including one that asserts the text/plain-parses-as-JSON fact as executable rather than as a comment, and one in factory.test.ts that pins the ORDER by behaviour (run middleware[0] alone; it must 403).",
+      "doneWhen": "A cross-site POST with a CORS-simple content type cannot reach a cookie-authenticated mutating route, webhook routes are enumerated with the authentication that exempts them named, and a test proves both."
+    },
+    {
+      "id": "P33",
+      "status": "done",
+      "title": "Split ISessionProvider so a provider can declare the half it has",
+      "lane": "K",
+      "size": "M",
+      "deps": [],
+      "files": [
+        "packages/_internals/auth/src/session/index.ts",
+        "packages/_internals/auth/src/provider/index.ts"
+      ],
+      "detail": "Chosen by the maintainer alongside P28 option (b), which is now done: wire WorkOS`s readable members now, split the interface later. After P28(b) the only member WorkOS cannot honour is `createSession`, which no implementation can satisfy - a WorkOS session comes from an authenticated token exchange and the SDK has no call that mints one from a user id. That is not a defect in the provider, it is an interface that bundles minting with reading. `ISessionClearer` was split out of `ISessionProvider` for exactly this reason in P11, and the machinery to recognise the result already exists: `contract/whole-capabilities` exempts any member set that is exactly a declared sub-interface`s required set (`wholeSubsets`), so a new sub-interface is honoured by rule without a new exemption. Blast radius is wider than P28: this is `@mastra/core/server` public API, every provider and both hosts, and it needs a capability guard of its own plus a `guardCase` entry to keep the member list pinned. Sequenced after P28 so the WorkOS work lands non-breaking first. DONE. ISessionManager = ISessionProvider minus createSession, guard canManageSessions, so the session interfaces are now a chain: ISessionProvider extends ISessionManager extends ISessionClearer. Additive at the type level - ISessionProvider is unchanged in shape and isSessionProvider still tests all seven - so no existing provider or host moved. THE PART THE TASK TEXT LEFT IMPLICIT: declaring the interface alone changes nothing for WorkOS, because it still CARRIED createSession as a stub and so still satisfied isSessionProvider structurally. Closing the record required removing the member, which is a major bump for @mastra/auth-workos - option (a)`s cost, but for one member instead of six and with the other five actually implemented first. That sequencing is why C was the right call. knownFailures is now `[]` rather than narrowed, which is the doneWhen. Machinery taught the new rung: guardCase pinning in capability-guards.test.ts, the CAPABILITY_INTERFACES roster (slug null - half an ISessionManager is necessarily half an ISessionProvider, so a slug would name one defect twice), wholeSubsets on ISessionProvider, the requiresSessions skip message, and three surface inventories. Two test-side corrections found by the suite itself: the goes-red assertion had to consult isWholeSubset as a RULE rather than special-case createSession, and `code` was doing two jobs (which slug this interface contributes vs which slug a partial carry reports under) - now split as `reportsAs`. Verified across all eleven providers, both hosts, core typecheck.",
+      "doneWhen": "A provider that can read and end sessions but not mint them has an interface to declare, WorkOS declares it, and the sessions/round-trip knownFailures entry is gone rather than narrowed."
     }
   ],
   "criticalPath": [
@@ -1556,6 +1586,7 @@
     "pending": "not started, or in flight",
     "note": "Update this field when a task merges. Nothing else records progress.",
     "held": "implemented but deliberately not merged - see README",
-    "ran-found-defects": "gate executed; it failed usefully - fixes dispatched, re-validate after"
+    "ran-found-defects": "gate executed; it failed usefully - fixes dispatched, re-validate after",
+    "wont-do": "decided against, with the reason in the task detail - not a gap to be closed later"
   }
 }

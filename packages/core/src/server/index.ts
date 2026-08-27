@@ -37,6 +37,7 @@ export {
   isAuthHttpHandler,
   hasAuthInit,
   canClearSession,
+  canManageSessions,
 } from './auth';
 export type {
   IMastraAuthProvider,
@@ -47,6 +48,7 @@ export type {
   ICredentialsProvider,
   IOrganizationsProvider,
   ISessionClearer,
+  ISessionManager,
   ISessionProvider,
   ISSOProvider,
   IUserProvider,

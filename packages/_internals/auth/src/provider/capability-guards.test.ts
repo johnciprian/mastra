@@ -6,11 +6,13 @@ import type {
   IOrganizationsProvider,
   ISSOProvider,
   ISessionClearer,
+  ISessionManager,
   ISessionProvider,
   IUserProvider,
 } from '../index';
 import {
   canClearSession,
+  canManageSessions,
   hasAuthInit,
   isAuthHttpHandler,
   isCredentialsProvider,
@@ -110,6 +112,19 @@ const GUARDS = [
   guardCase<IAuthHttpHandler>()('isAuthHttpHandler', isAuthHttpHandler, ['handleAuthRequest'], true),
   guardCase<IAuthInit>()('hasAuthInit', hasAuthInit, ['init'], true),
   guardCase<ISessionClearer>()('canClearSession', canClearSession, ['getClearSessionHeaders'], true),
+  guardCase<ISessionManager>()(
+    'canManageSessions',
+    canManageSessions,
+    [
+      'validateSession',
+      'destroySession',
+      'refreshSession',
+      'getSessionIdFromRequest',
+      'getSessionHeaders',
+      'getClearSessionHeaders',
+    ],
+    true,
+  ),
 ] as const;
 
 /** An object carrying exactly `members`, each a function. */
@@ -164,15 +179,49 @@ describe('capability guards', () => {
    * cannot be compared nominally across package boundaries.
    */
   /**
-   * Every full session provider is also a clearer, because `ISessionProvider`
-   * extends `ISessionClearer`. A provider with only the one member is not a
-   * session provider, which is the whole reason the narrower interface exists.
+   * The three session guards answer in a chain, because the three interfaces
+   * are one: `ISessionProvider extends ISessionManager extends ISessionClearer`.
+   * A provider sitting at any rung satisfies every guard below it and none
+   * above, which is the whole reason the narrower interfaces exist — asking the
+   * widest question of a provider that can do most of the job answers false and
+   * takes the part that works with it.
    */
-  it('relates canClearSession and isSessionProvider the way the interfaces do', () => {
-    const clearerOnly = objectWith(['getClearSessionHeaders']);
-    expect(canClearSession(clearerOnly)).toBe(true);
-    expect(isSessionProvider(clearerOnly)).toBe(false);
+  it('answers in a chain, the way the interfaces nest', () => {
+    const MANAGER_MEMBERS = [
+      'validateSession',
+      'destroySession',
+      'refreshSession',
+      'getSessionIdFromRequest',
+      'getSessionHeaders',
+      'getClearSessionHeaders',
+    ];
 
+    const clearerOnly = objectWith(['getClearSessionHeaders']);
+    expect([canClearSession(clearerOnly), canManageSessions(clearerOnly), isSessionProvider(clearerOnly)]).toEqual([
+      true,
+      false,
+      false,
+    ]);
+
+    // @mastra/auth-workos: everything but minting.
+    const manager = objectWith(MANAGER_MEMBERS);
+    expect([canClearSession(manager), canManageSessions(manager), isSessionProvider(manager)]).toEqual([
+      true,
+      true,
+      false,
+    ]);
+
+    const full = objectWith(['createSession', ...MANAGER_MEMBERS]);
+    expect([canClearSession(full), canManageSessions(full), isSessionProvider(full)]).toEqual([true, true, true]);
+  });
+
+  /**
+   * `createSession` is the only member separating the two wider guards, so it is
+   * the only place they can disagree. Naming it here means a member moved
+   * between the interfaces without the guards following shows up as a failure
+   * rather than as two guards that quietly answer the same thing.
+   */
+  it('separates isSessionProvider from canManageSessions on createSession alone', () => {
     const full = objectWith([
       'createSession',
       'validateSession',
@@ -182,8 +231,11 @@ describe('capability guards', () => {
       'getSessionHeaders',
       'getClearSessionHeaders',
     ]);
+    const { createSession: _dropped, ...withoutCreate } = full;
+
     expect(isSessionProvider(full)).toBe(true);
-    expect(canClearSession(full)).toBe(true);
+    expect(isSessionProvider(withoutCreate)).toBe(false);
+    expect(canManageSessions(withoutCreate)).toBe(true);
   });
 
   it('narrows to a type whose required members are all callable', () => {

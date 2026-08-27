@@ -11,7 +11,7 @@ import type {
   IOrganizationsProvider,
   IUserProvider,
   ISSOProvider,
-  ISessionProvider,
+  ISessionManager,
   Session,
   SSOCallbackResult,
   SSOLoginConfig,
@@ -46,6 +46,69 @@ function getWebRequest(request: MastraAuthRequest): Request | undefined {
 import { WebSessionStorage } from './session-storage.js';
 import type { WorkOSUser, MastraAuthWorkosOptions } from './types.js';
 import { mapWorkOSUserToEEUser } from './types.js';
+
+/**
+ * What this provider seals into its cookie. AuthKit reads the same shape, so
+ * the fields are AuthKit's rather than ours.
+ */
+interface SealedSession {
+  accessToken: string;
+  refreshToken: string;
+  user?: { id?: string };
+  organizationId?: string;
+  impersonator?: unknown;
+}
+
+/**
+ * A session carrying the `Set-Cookie` that puts it in the browser.
+ *
+ * `getSessionHeaders` takes a bare `Session` by interface and has no way to
+ * rebuild a sealed cookie from one, so the members that produce a session
+ * attach the cookie they already sealed. The underscore marks it as this
+ * provider's own channel between those members, not part of the contract.
+ */
+type SessionWithCookie = Session & { _sessionCookie?: string | string[] };
+
+/**
+ * The access-token claims this provider reads. `sid` is the WorkOS session
+ * identifier — the handle `revokeSession` and `getLogoutUrl` both take.
+ */
+interface AccessTokenClaims {
+  sid?: string;
+  sub?: string;
+  exp?: number;
+  iat?: number;
+}
+
+/**
+ * Decode a JWT's payload without verifying it.
+ *
+ * Verification is deliberately absent and is not a gap here: every caller
+ * reaches this only with a token that came out of a cookie this provider
+ * sealed, and unsealing is itself authenticated — a tampered cookie fails to
+ * unseal rather than yielding claims to be checked.
+ *
+ * Base64URL, not Base64. `atob` rejects the `-` and `_` that JWT payloads use
+ * in place of `+` and `/`, so decoding one directly throws on any token whose
+ * payload happens to contain them — intermittently, depending on the bytes.
+ */
+function decodeJwtPayload(token: string): AccessTokenClaims | null {
+  const payload = token.split('.')[1];
+  if (!payload) return null;
+  try {
+    const base64 = payload.replaceAll('-', '+').replaceAll('_', '/');
+    const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=');
+    const decoded: unknown = JSON.parse(atob(padded));
+    return typeof decoded === 'object' && decoded !== null ? (decoded as AccessTokenClaims) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** {@link decodeJwtPayload}, named for the one thing every caller wants from it. */
+function accessTokenClaims(token: string | undefined): AccessTokenClaims | null {
+  return token ? decodeJwtPayload(token) : null;
+}
 
 /**
  * Default cookie password for development (MUST be overridden in production).
@@ -102,7 +165,7 @@ function isMembershipAlreadyExists(error: unknown): boolean {
  */
 export class MastraAuthWorkos
   extends MastraAuthProvider<WorkOSUser>
-  implements IUserProvider<EEUser>, ISSOProvider<EEUser>, ISessionProvider<Session>, IOrganizationsProvider, IAuthInit
+  implements IUserProvider<EEUser>, ISSOProvider<EEUser>, ISessionManager<Session>, IOrganizationsProvider, IAuthInit
 {
   protected workos: WorkOS;
   protected clientId: string;
@@ -593,25 +656,8 @@ export class MastraAuthWorkos
       impersonator: authResponse.impersonator,
     };
 
-    // Use this.config for cookie settings to ensure consistency with read/clear paths
-    const cookiePassword = this.config.cookiePassword;
-    const cookieName = this.config.cookieName ?? 'wos_session';
-    let cookies: string[] | undefined;
-
-    if (cookiePassword) {
-      const encryptedSession = await sessionEncryption.sealData(sessionData, { password: cookiePassword });
-      // Set cookie with secure defaults matching AuthKit config
-      const cookieOptions = [
-        `${cookieName}=${encryptedSession}`,
-        'Path=/',
-        'HttpOnly',
-        `SameSite=${this.config.cookieSameSite ?? 'Lax'}`,
-        process.env['NODE_ENV'] === 'production' ? 'Secure' : '',
-      ]
-        .filter(Boolean)
-        .join('; ');
-      cookies = [cookieOptions];
-    }
+    const sealed = await this.sealSessionCookie(sessionData);
+    const cookies = sealed ? [sealed.setCookie] : undefined;
 
     return {
       user,
@@ -645,15 +691,7 @@ export class MastraAuthWorkos
         return null;
       }
 
-      // Decode JWT to extract sid claim (don't verify, just decode)
-      const [, payloadBase64] = auth.accessToken.split('.');
-      if (!payloadBase64) {
-        return null;
-      }
-
-      const payload = JSON.parse(atob(payloadBase64));
-      const sessionId = payload.sid;
-
+      const sessionId = accessTokenClaims(auth.accessToken)?.sid;
       if (!sessionId) {
         return null;
       }
@@ -689,76 +727,209 @@ export class MastraAuthWorkos
   }
 
   // ============================================================================
-  // ISessionProvider Implementation
+  // ISessionManager Implementation
   // ============================================================================
+  //
+  // NOT `ISessionProvider`, AND THAT IS THE POINT.
+  //
+  // The wider interface adds `createSession(userId)`, and no implementation of
+  // it is possible here: a WorkOS session is produced by an authenticated token
+  // exchange — a real credential presented by a real person — and
+  // `@workos-inc/node` has no call that mints one from a user id alone. This
+  // provider used to declare `ISessionProvider` and stub the member, which made
+  // every guard report a capability it did not have. `ISessionManager` is the
+  // whole of what it can do, so it declares that instead.
+  //
+  // THE SESSION ID IS THE SEALED COOKIE.
+  //
+  // A WorkOS session lives in an encrypted cookie, not in a table this provider
+  // can query, so there is no server-side row to address by id. The sealed
+  // cookie value is the only handle that identifies a session to this provider
+  // and is opaque to the host holding it — the same choice `@mastra/auth-studio`
+  // makes for the same reason.
+  //
+  // It follows that the id is a credential, not an identifier. Do not log it,
+  // put it in a URL, or store it anywhere the cookie itself would not go.
 
   /**
-   * Create a new session for a user.
+   * Seal a session into the `Set-Cookie` this provider sets, and hand back the
+   * sealed value alongside it.
    *
-   * Note: With AuthKit, sessions are created via handleCallback.
-   * This method is kept for interface compatibility.
+   * One place, because `handleCallback` and `refreshSession` must produce
+   * byte-identical cookie attributes — a refresh that widened `SameSite` or
+   * dropped `Secure` would quietly downgrade a session mid-flight.
    */
-  async createSession(userId: string, metadata?: Record<string, unknown>): Promise<Session> {
-    const sessionId = crypto.randomUUID();
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + this.config.cookieMaxAge * 1000);
+  private async sealSessionCookie(session: SealedSession): Promise<{ sealed: string; setCookie: string } | undefined> {
+    const cookiePassword = this.config.cookiePassword;
+    if (!cookiePassword) return undefined;
+
+    const sealed = await sessionEncryption.sealData(session, { password: cookiePassword });
+    const setCookie = [
+      `${this.config.cookieName ?? 'wos_session'}=${sealed}`,
+      'Path=/',
+      'HttpOnly',
+      `SameSite=${this.config.cookieSameSite ?? 'Lax'}`,
+      process.env['NODE_ENV'] === 'production' ? 'Secure' : '',
+    ]
+      .filter(Boolean)
+      .join('; ');
+
+    return { sealed, setCookie };
+  }
+
+  /** Open a sealed cookie, or `null` if it was tampered with, stale, or not ours. */
+  private async unsealSession(sealed: string): Promise<SealedSession | null> {
+    const cookiePassword = this.config.cookiePassword;
+    if (!cookiePassword || !sealed) return null;
+    try {
+      const session = await sessionEncryption.unsealData<SealedSession>(sealed, { password: cookiePassword });
+      return typeof session?.accessToken === 'string' ? session : null;
+    } catch {
+      // Wrong password, a cookie from another deployment, or a forgery.
+      return null;
+    }
+  }
+
+  /** Build the host-facing session record for an already-unsealed cookie. */
+  private toSession(sealed: string, session: SealedSession): Session | null {
+    const claims = accessTokenClaims(session.accessToken);
+    const userId = session.user?.id ?? claims?.sub;
+    if (!userId) return null;
+
+    const issuedAt = claims?.iat ? new Date(claims.iat * 1000) : new Date();
+    const expiresAt = claims?.exp
+      ? new Date(claims.exp * 1000)
+      : new Date(Date.now() + this.config.cookieMaxAge * 1000);
 
     return {
-      id: sessionId,
+      id: sealed,
       userId,
-      createdAt: now,
+      createdAt: issuedAt,
       expiresAt,
-      metadata,
+      metadata: { workosSessionId: claims?.sid, organizationId: session.organizationId },
     };
   }
 
   /**
    * Validate a session.
    *
-   * With AuthKit, sessions are validated via withAuth().
+   * Unsealing is the authentication: the cookie is sealed with a password only
+   * this deployment holds, so a value that opens is a value this provider
+   * issued. What is left to check is time, and an expired access token is
+   * refused here rather than passed on as valid — `refreshSession` is the way
+   * back from that, and the host calls it on exactly this answer.
    */
-  async validateSession(_sessionId: string): Promise<Session | null> {
-    // AuthKit handles validation internally via withAuth()
-    // This method is kept for interface compatibility
-    return null;
+  async validateSession(sessionId: string): Promise<Session | null> {
+    const sealed = await this.unsealSession(sessionId);
+    if (!sealed) return null;
+
+    const claims = accessTokenClaims(sealed.accessToken);
+    if (claims?.exp && claims.exp * 1000 <= Date.now()) return null;
+
+    return this.toSession(sessionId, sealed);
   }
 
   /**
-   * Destroy a session.
+   * Destroy a session — really, at WorkOS, not just in this browser.
+   *
+   * This is what makes `features.sessionRevocation` true in fact. The access
+   * token carries the WorkOS session id as its `sid` claim, which is the handle
+   * `revokeSession` takes; `getLogoutUrl` reads the same claim for the same
+   * reason.
+   *
+   * Best-effort by design, matching what the hosts expect: they clear the
+   * browser's cookies whether or not this succeeds, and a sign-out that fails
+   * because a session had already expired is a sign-out that worked.
    */
-  async destroySession(_sessionId: string): Promise<void> {
-    // AuthKit handles session clearing via signOut()
-    // The actual cookie clearing happens in the response headers
+  async destroySession(sessionId: string): Promise<void> {
+    const sealed = await this.unsealSession(sessionId);
+    const workosSessionId = accessTokenClaims(sealed?.accessToken)?.sid;
+    if (!workosSessionId) return;
+
+    try {
+      await this.workos.userManagement.revokeSession({ sessionId: workosSessionId });
+    } catch {
+      // Already revoked, expired, or unreachable. The cookie still gets cleared.
+    }
   }
 
   /**
-   * Refresh a session.
+   * Refresh a session, returning one whose id is the NEW sealed cookie.
+   *
+   * The new value has to travel back to the browser or the refresh is a no-op
+   * with extra steps, and the route it travels is `getSessionHeaders(session)`,
+   * which the host calls on whatever this returns. So the returned record
+   * carries the sealed cookie for that member to emit.
    */
-  async refreshSession(_sessionId: string): Promise<Session | null> {
-    // AuthKit handles refresh automatically in withAuth()
-    return null;
+  async refreshSession(sessionId: string): Promise<Session | null> {
+    const current = await this.unsealSession(sessionId);
+    if (!current?.refreshToken) return null;
+
+    try {
+      const refreshed = await this.workos.userManagement.authenticateWithRefreshToken({
+        clientId: this.clientId,
+        refreshToken: current.refreshToken,
+        organizationId: current.organizationId,
+      });
+
+      const next: SealedSession = {
+        accessToken: refreshed.accessToken,
+        refreshToken: refreshed.refreshToken,
+        user: refreshed.user,
+        organizationId: refreshed.organizationId,
+        impersonator: refreshed.impersonator,
+      };
+
+      const cookie = await this.sealSessionCookie(next);
+      if (!cookie) return null;
+
+      const session = this.toSession(cookie.sealed, next);
+      if (!session) return null;
+
+      const refreshedSession: SessionWithCookie = { ...session, _sessionCookie: cookie.setCookie };
+      return refreshedSession;
+    } catch {
+      // An expired or already-used refresh token. The caller treats a null as
+      // the original 401, which is the right answer.
+      return null;
+    }
   }
 
   /**
-   * Extract session ID from a request.
+   * Extract session ID from a request — the sealed cookie value, per the note
+   * at the top of this section.
+   *
+   * Synchronous by interface, which is the other reason the sealed cookie is
+   * the id: deriving anything finer means unsealing, and unsealing is async.
    */
-  getSessionIdFromRequest(_request: Request): string | null {
-    // With AuthKit, we don't expose the session ID directly
-    // The session is managed via encrypted cookies
+  getSessionIdFromRequest(request: Request): string | null {
+    const header = request.headers?.get('Cookie');
+    if (!header) return null;
+
+    const name = this.config.cookieName ?? 'wos_session';
+    for (const part of header.split(';')) {
+      const separator = part.indexOf('=');
+      if (separator === -1) continue;
+      if (part.slice(0, separator).trim() !== name) continue;
+      const value = part.slice(separator + 1).trim();
+      return value.length > 0 ? value : null;
+    }
     return null;
   }
 
   /**
    * Get response headers to set the session cookie.
+   *
+   * Only a session this provider built carries a cookie to set —
+   * `handleCallback` and `refreshSession` both attach one. A session from
+   * anywhere else (including `createSession`) has none, and gets no headers
+   * rather than a cookie that would not authenticate.
    */
   getSessionHeaders(session: Session): Record<string, string> {
-    // AuthKit handles cookie setting via saveSession()
-    // Check for _sessionCookie from handleCallback
-    const sessionCookie = (session as any)._sessionCookie;
-    if (sessionCookie) {
-      return { 'Set-Cookie': Array.isArray(sessionCookie) ? sessionCookie[0] : sessionCookie };
-    }
-    return {};
+    const sessionCookie = (session as SessionWithCookie)._sessionCookie;
+    if (!sessionCookie) return {};
+    const value = Array.isArray(sessionCookie) ? sessionCookie[0] : sessionCookie;
+    return value ? { 'Set-Cookie': value } : {};
   }
 
   /**

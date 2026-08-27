@@ -7,6 +7,7 @@ import type {
   IOrganizationsProvider,
   ISSOProvider,
   ISessionClearer,
+  ISessionManager,
   ISessionProvider,
   IUserProvider,
   Session,
@@ -202,18 +203,40 @@ export function hasAuthInit(p: unknown): p is IAuthInit {
 /**
  * Whether the provider can clear the session cookie it owns.
  *
- * The eighth guard, and the only one that narrows to a single member. It is
- * separate from `isSessionProvider` because a provider can have this and
- * nothing else: a provider that mints its own cookie on callback owns clearing
- * it on logout, while creating no session a host can address by id. Asking
+ * The only guard that narrows to a single member. It is separate from
+ * `isSessionProvider` because a provider can have this and nothing else: a
+ * provider that mints its own cookie on callback owns clearing it on logout,
+ * while creating no session a host can address by id. Asking
  * `isSessionProvider` for that provider answers false and takes its sign-out
  * with it.
  *
- * Every `ISessionProvider` satisfies this too, since `ISessionProvider`
- * extends `ISessionClearer`.
+ * Every `ISessionProvider` satisfies this too, since the session interfaces
+ * form a chain that starts here.
  */
 export function canClearSession(p: unknown): p is ISessionClearer {
   return hasMethods(p, ['getClearSessionHeaders']);
+}
+
+/**
+ * Whether the provider can work with sessions it already issued — validate,
+ * refresh, revoke, and read one off a request — whether or not it can mint one.
+ *
+ * The middle of the three session guards. `isSessionProvider` additionally
+ * requires `createSession`, and a provider whose identity service issues
+ * sessions only in exchange for a real credential cannot honour that member at
+ * any price. Branch on this one wherever the host is acting on a session that
+ * already exists: sign-out, refresh, reading the session id. Reserve
+ * `isSessionProvider` for the one thing it adds.
+ */
+export function canManageSessions(p: unknown): p is ISessionManager {
+  return hasMethods(p, [
+    'validateSession',
+    'destroySession',
+    'refreshSession',
+    'getSessionIdFromRequest',
+    'getSessionHeaders',
+    'getClearSessionHeaders',
+  ]);
 }
 
 function isObjectLike(value: unknown): value is object {

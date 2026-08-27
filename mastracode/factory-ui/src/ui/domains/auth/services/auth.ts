@@ -7,7 +7,7 @@
  *   gracefully to "auth disabled" when the route is absent.
  * - `loginUrl()` / `redirectToLogin()` build/navigate to the hosted
  *   login URL (used by the /signin page).
- * - `redirectToLogout()` / `logoutUrl()` send the user through the server logout route.
+ * - `submitLogout()` / `logoutUrl()` post the user through the server logout route.
  *
  * Every helper takes the API base URL injected by `ApiConfigProvider` (empty
  * string when the app is served same-origin) so the frontend dev server on a
@@ -163,6 +163,7 @@ export function redirectToLogin(baseUrl: string, returnTo?: string): void {
   window.location.assign(loginUrl(baseUrl, returnTo));
 }
 
+/** Where sign-out posts. POST only — no route ends a session on a GET. */
 export function logoutUrl(baseUrl: string): string {
   return `${baseUrl}/auth/logout`;
 }
@@ -174,8 +175,32 @@ export function clearMastraCodeStorage(): void {
   }
 }
 
-export function redirectToLogout(baseUrl: string): void {
-  window.location.assign(logoutUrl(baseUrl));
+/**
+ * Sign out by submitting a form, which is the only way a page can POST and
+ * still hand the browser on to wherever the server redirects.
+ *
+ * `location.assign` would be simpler and is what this used to do, but it can
+ * only issue a GET, and no route ends a session on a GET any more: a URL that
+ * signs you out by being fetched is one any other site can put in an `<img>`.
+ * The form is same-origin-or-declared-origin by construction, so it carries the
+ * `Origin` header the server checks.
+ *
+ * The form is removed again on the way out. `submit()` starts a navigation
+ * rather than completing one, so a caller that is torn down before the browser
+ * leaves — a test, or a route change that beats the network — does not strand a
+ * node in the document.
+ */
+export function submitLogout(baseUrl: string): void {
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = logoutUrl(baseUrl);
+  form.hidden = true;
+  document.body.appendChild(form);
+  try {
+    form.submit();
+  } finally {
+    form.remove();
+  }
 }
 
 /**
