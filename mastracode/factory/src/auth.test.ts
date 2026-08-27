@@ -470,7 +470,7 @@ describe('mountFactoryAuth /auth routes (enabled)', () => {
 
   it('logout clears the session cookie and redirects to the hosted logout URL', async () => {
     const { app } = buildApp();
-    const res = await app.request('/auth/logout');
+    const res = await app.request('/auth/logout', { method: 'POST' });
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toBe('https://idp.example/logout');
     expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
@@ -479,7 +479,7 @@ describe('mountFactoryAuth /auth routes (enabled)', () => {
   it('logout still clears the session cookie when the provider has no logout URL', async () => {
     mockGetLogoutUrl.mockRejectedValue(new Error('no session'));
     const { app } = buildApp();
-    const res = await app.request('/auth/logout');
+    const res = await app.request('/auth/logout', { method: 'POST' });
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toBe('/');
     expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
