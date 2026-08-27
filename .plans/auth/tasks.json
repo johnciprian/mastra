@@ -1,9 +1,13 @@
 {
   "project": "Factory auth: five seams to A-",
   "constraint": "Apache-2.0 only. No imports from any ee/ directory. Reimplement, never port.",
-  "sizes": { "S": "<= 0.5 day", "M": "~1 day", "L": "2-3 days" },
+  "sizes": {
+    "S": "<= 0.5 day",
+    "M": "~1 day",
+    "L": "2-3 days"
+  },
   "lanes": {
-    "K": "Kit foundation (mastracode/auth-kit)",
+    "K": "Kit foundation (mastracode/factory-auth)",
     "B": "Backend seam (mastracode/factory)",
     "U": "UI seam (mastracode/factory-ui)",
     "C": "Conformance and providers",
@@ -13,626 +17,966 @@
   "tasks": [
     {
       "id": "K1",
-      "title": "Scaffold mastracode/auth-kit package",
+      "status": "done",
+      "title": "Scaffold mastracode/factory-auth package",
       "lane": "K",
       "size": "S",
       "deps": [],
-      "files": ["mastracode/auth-kit/package.json", "mastracode/auth-kit/src/index.ts"],
-      "detail": "name @mastra/factory-auth, version 0.1.0, license Apache-2.0, type module, exports map with subpath exports per module (./contract, ./identity, ./capabilities, ./organizations, ./session, ./state, ./testing, ./conformance).",
-      "doneWhen": "package.json validates; empty src/index.ts builds nothing yet."
+      "files": [
+        "mastracode/factory-auth/package.json",
+        "mastracode/factory-auth/src/index.ts"
+      ],
+      "detail": "name @mastra/factory-auth, version 0.1.0, license Apache-2.0, type module, exports map with subpath exports per module (./contract, ./identity, ./capabilities, ./organizations, ./cookie, ./oauth-state, ./testing, ./conformance). RENAMED from the original ./session and ./state: FactoryAuthState already means 'am I signed in' in factory-ui, and mastracode/factory owns a different signed `state`, so ./oauth-state and ./cookie say what they are. Declare all 8 up front with real stub modules (not a './*' wildcard) - a declared-but-missing subpath is green here and ERR_MODULE_NOT_FOUND in a consumer. Root src/index.ts re-exports ./contract + ./identity + ./capabilities so the package is not empty at its front door; it never re-exports ./testing or ./conformance. Package must NOT be private - K21 requires a publishable version.",
+      "doneWhen": "package.json validates against .github/scripts/validate-pkg-json.mjs; all 8 subpaths resolve to real modules."
     },
     {
       "id": "K2",
+      "status": "done",
       "title": "Register the package in the workspace",
       "lane": "K",
       "size": "S",
-      "deps": ["K1"],
-      "files": ["pnpm-workspace.yaml"],
-      "detail": "Root pnpm-workspace.yaml lists mastracode packages EXPLICITLY (mastracode/sdk, tui, factory, factory-ui, mastra-factory) - there is no mastracode/* glob. Add mastracode/auth-kit, then pnpm install at the root.",
-      "doneWhen": "pnpm ls --filter ./mastracode/auth-kit resolves."
+      "deps": [
+        "K1"
+      ],
+      "files": [
+        "pnpm-workspace.yaml"
+      ],
+      "detail": "Root pnpm-workspace.yaml lists mastracode packages EXPLICITLY (mastracode/sdk, tui, factory, factory-ui, mastra-factory) - there is no mastracode/* glob. Add mastracode/factory-auth, then pnpm install at the root.",
+      "doneWhen": "pnpm ls --filter ./mastracode/factory-auth resolves."
     },
     {
       "id": "K3",
+      "status": "done",
       "title": "Toolchain config mirroring sibling packages",
       "lane": "K",
       "size": "S",
-      "deps": ["K2"],
+      "deps": [
+        "K2"
+      ],
       "files": [
-        "mastracode/auth-kit/tsdown.config.ts",
-        "mastracode/auth-kit/tsconfig.json",
-        "mastracode/auth-kit/tsconfig.build.json",
-        "mastracode/auth-kit/vitest.config.ts",
-        "mastracode/auth-kit/eslint.config.js",
-        "mastracode/auth-kit/turbo.json"
+        "mastracode/factory-auth/tsdown.config.ts",
+        "mastracode/factory-auth/tsconfig.json",
+        "mastracode/factory-auth/tsconfig.build.json",
+        "mastracode/factory-auth/vitest.config.ts",
+        "mastracode/factory-auth/eslint.config.js",
+        "mastracode/factory-auth/turbo.json"
       ],
       "detail": "Copy the shape from mastracode/factory. Strict TypeScript, colocated vitest, tsdown multi-entry matching the exports map.",
-      "doneWhen": "pnpm --filter ./mastracode/auth-kit build && check && lint all pass on an empty package."
+      "doneWhen": "pnpm --filter ./mastracode/factory-auth build && check && lint all pass on an empty package."
     },
     {
       "id": "K4",
+      "status": "done",
       "title": "ESLint rule banning EE import paths",
       "lane": "K",
       "size": "S",
-      "deps": ["K3"],
-      "files": ["mastracode/auth-kit/eslint.config.js"],
-      "detail": "no-restricted-imports with patterns: '@mastra/core/auth', '@mastra/core/auth/ee', '@internal/auth/ee', '**/ee/**'. Note @mastra/core/auth is banned WHOLESALE, not just /ee - its barrel reaches @internal/auth whose src/index.ts:373 does `export * from './ee'`, and packages/core/src/auth/ee/index.ts opens with a side-effecting `import './telemetry'`.",
+      "deps": [
+        "K3"
+      ],
+      "files": [
+        "mastracode/factory-auth/eslint.config.js"
+      ],
+      "detail": "no-restricted-imports. MEASURED ban list is wider than first drafted: besides @mastra/core/auth, @mastra/core/auth/ee, @internal/auth (root AND /ee) and any whole `ee` path segment, it must ban @mastra/core ROOT and the barrels that transitively reach EE at runtime (/utils, /storage, /agent, /memory, /tools, /workflows, /mastra, /agent-builder) - @mastra/core root reaches ee via tools/tool-builder/builder.ts:17 importing MastraFGAPermissions, a runtime const that tree-shaking will not drop. It must also ban the @mastra/auth-* provider packages: mastracode/factory/src/auth.ts line 1 imports @mastra/auth-workos, which pulls 11 EE modules into the runtime graph today. THREE TRAPS: (1) ESLint flat-config rule options REPLACE rather than merge, so declaring this rule silently deletes the one already bound in packages/_config/src/eslint.js - preserve and extend it; (2) the shared base carries `ignores: testFiles`, which would exempt this package's own tests from the ban - they must not be exempt; (3) every lint script is `oxlint . && eslint .` and mastracode/* ships no oxlint.config.ts, so half the rule belongs there. Message must name the licence reason and point at @mastra/core/server.",
       "doneWhen": "A file importing @mastra/core/auth fails lint with a message naming the reason."
     },
     {
       "id": "K5",
+      "status": "done",
       "title": "CI module-graph test proving zero EE in the resolved graph",
       "lane": "K",
-      "size": "M",
-      "deps": ["K3"],
-      "files": ["mastracode/auth-kit/src/__tests__/no-ee-boundary.test.ts"],
-      "detail": "Walk the kit's built output (or resolved import graph) and assert no specifier contains '/ee' and no module id resolves inside an ee/ directory. Lint catches source; this catches transitive resolution and survives a dependency bump.",
-      "doneWhen": "Test passes on the empty package and is wired into the package's test script."
+      "size": "L",
+      "deps": [
+        "K3"
+      ],
+      "files": [
+        "mastracode/factory-auth/src/__tests__/no-ee-boundary.test.ts",
+        "vitest.config.ts or .github/workflows/lint.yml (CI wiring)"
+      ],
+      "detail": "REDESIGNED - the originally specified string-scan for '/ee' specifiers is unsound and returns GREEN on the exact import K4 bans wholesale. packages/core/tsdown.config.ts:116-125 alwaysBundles @internal/auth, so @mastra/core/auth ships EE inlined into dist with no `ee` segment in any specifier or chunk name. Build instead: resolve over SOURCE via the repo's existing scripts/madge.webpack.config.cjs + scripts/workspace-source-aliases.cjs (transitive across package boundaries, needs no build), with three assertions - (1) denylist on whole-segment /(?:^|\\/)ee(?:\\/|$)/, never substring, path.relative'd to the repo root and rejecting '../' first because the pnpm store has a literal ee/ hex shard; (2) a FAIL-CLOSED allowlist of permitted external specifiers, which is the only assertion that catches bundled EE; (3) a dist/**/*.d.ts content scan for EE identifiers, closing the gap that skipping type imports opens. Use skipTypeImports:true for the runtime assertion: core/server/auth.ts measures ee=0 at runtime but ee=15 with type imports included, so without it the test fails on correct code. Guard against false green: fail loudly if 0 modules were scanned, if fewer than all 8 exports entries were scanned, or if any specifier fails to resolve. Failure output must name the offending module and the import chain.",
+      "doneWhen": "Test passes, is wired into the package test script, AND actually runs in the PR gate - nothing under mastracode/ does today, because root vitest.config.ts:30 globs mastracode/vitest.config.ts, a file that does not exist. Wire it narrowly rather than widening the root globs, which would switch on the factory+sdk suites repo-wide."
     },
     {
       "id": "K6",
+      "status": "done",
       "title": "Negative-prove the boundary",
       "lane": "K",
       "size": "S",
-      "deps": ["K4", "K5"],
-      "files": ["mastracode/auth-kit/README.md"],
-      "detail": "GATE. Temporarily add `import { buildCapabilities } from '@mastra/core/auth/ee'` to a kit module, confirm BOTH lint and the graph test go red, then revert. Record the procedure in the README so a future maintainer can re-verify.",
+      "deps": [
+        "K4",
+        "K5"
+      ],
+      "files": [
+        "mastracode/factory-auth/README.md"
+      ],
+      "detail": "GATE. The originally specified proof imports @mastra/core/auth/ee, which resolves to a real ee/ path and goes red trivially - it does not exercise the threat, and would sign off a test that green-lights the bundled barrel. Negative-prove with @mastra/core/auth AND @mastra/core root instead: precisely the specifiers a naive segment-matching test lets through. Confirm BOTH lint and the graph test go red, revert, then confirm both go green again (stopping at red proves half of what is needed). Record the procedure in the README, including that a type-only import trips lint and correctly does NOT trip the runtime graph assertion, and that a resolution error is not the expected red. A real positive control already exists: @mastra/auth-workos reaches 11 EE modules at runtime.",
       "doneWhen": "Red observed and reverted; procedure documented.",
       "gate": true
     },
     {
       "id": "K7",
+      "status": "done",
       "title": "contract.ts - the single import site",
       "lane": "K",
       "size": "S",
-      "deps": ["K6"],
-      "files": ["mastracode/auth-kit/src/contract.ts"],
+      "deps": [
+        "K6"
+      ],
+      "files": [
+        "mastracode/factory-auth/src/contract.ts"
+      ],
       "detail": "Re-export the 8 interfaces (IMastraAuthProvider, ISSOProvider, ISessionProvider, IUserProvider, ICredentialsProvider, IOrganizationsProvider, IAuthHttpHandler, IAuthInit) and the 8 guards from '@mastra/core/server' ONLY. packages/core/src/server/auth.ts already re-exports exactly these by explicit name and is runtime-clean.",
       "doneWhen": "All 16 symbols re-exported and type-checked; no-ee test still green."
     },
     {
       "id": "K8",
+      "status": "done",
       "title": "identity.ts - AuthIdentity type",
       "lane": "K",
       "size": "S",
-      "deps": ["K7"],
-      "files": ["mastracode/auth-kit/src/identity.ts"],
+      "deps": [
+        "K7"
+      ],
+      "files": [
+        "mastracode/factory-auth/src/identity.ts"
+      ],
       "detail": "{ id: string (required); email?, name?, avatarUrl?, organizationId? }. No vendor field - this is what replaces both FactoryAuthUser.workosId and EEUser.",
       "doneWhen": "Type exported and documented with the reason id is required."
     },
     {
       "id": "K9",
+      "status": "done",
       "title": "identity.ts - toAuthIdentity normalizer",
       "lane": "K",
       "size": "M",
-      "deps": ["K8"],
-      "files": ["mastracode/auth-kit/src/identity.ts"],
+      "deps": [
+        "K8"
+      ],
+      "files": [
+        "mastracode/factory-auth/src/identity.ts"
+      ],
       "detail": "Accepts flat { id }, { uid } (Firebase DecodedIdToken), { sub } (raw OIDC claims), and the { session, user } wrapper (better-auth, org on session.activeOrganizationId). Returns null only when no id can be found. Replaces mastracode/factory/src/auth.ts:190-231.",
       "doneWhen": "Unit tests cover all four shapes plus the null case."
     },
     {
       "id": "K10",
+      "status": "done",
       "title": "identity.ts - IIdentityProvider escape hatch",
       "lane": "K",
       "size": "S",
-      "deps": ["K9"],
-      "files": ["mastracode/auth-kit/src/identity.ts"],
+      "deps": [
+        "K9"
+      ],
+      "files": [
+        "mastracode/factory-auth/src/identity.ts"
+      ],
       "detail": "Optional capability `toIdentity(raw): AuthIdentity | null` plus a structural guard, so a provider whose token shape you cannot change can map itself. toAuthIdentity prefers it when present.",
       "doneWhen": "Guard + precedence tested."
     },
     {
       "id": "K11",
+      "status": "done",
       "title": "state.ts - one OAuth state codec",
       "lane": "K",
       "size": "S",
-      "deps": ["K7"],
-      "files": ["mastracode/auth-kit/src/state.ts"],
+      "deps": [
+        "K7"
+      ],
+      "files": [
+        "mastracode/factory-auth/src/state.ts"
+      ],
       "detail": "encodeState(returnTo) / decodeState(raw) with an explicit documented format, plus a parseStateId helper. Exists because the Factory passes the raw pipe-delimited value to handleCallback while packages/server splits it first - the disagreement that breaks auth/okta.",
       "doneWhen": "Round-trip tests including a returnTo containing a literal pipe."
     },
     {
       "id": "K12",
+      "status": "done",
       "title": "session.ts - host-owned signed cookie",
       "lane": "K",
       "size": "M",
-      "deps": ["K7"],
-      "files": ["mastracode/auth-kit/src/session.ts"],
+      "deps": [
+        "K7"
+      ],
+      "files": [
+        "mastracode/factory-auth/src/session.ts"
+      ],
       "detail": "HMAC-signed cookie over node:crypto with one declared name, correct SameSite/Secure derivation for same-site vs cross-site deploys, and mint/read/clear. Written fresh: the shipped CookieSessionProvider is Apache but only reachable through the EE-barrelled @mastra/core/auth.",
       "doneWhen": "Tamper test (modified payload rejected), expiry test, cross-site attribute test."
     },
     {
       "id": "K13",
+      "status": "done",
       "title": "capabilities.ts - AuthDescriptor type",
       "lane": "K",
       "size": "S",
-      "deps": ["K7"],
-      "files": ["mastracode/auth-kit/src/capabilities.ts"],
+      "deps": [
+        "K7"
+      ],
+      "files": [
+        "mastracode/factory-auth/src/capabilities.ts"
+      ],
       "detail": "{ signIn: { kind: 'hosted' | 'credentials' | 'both' | 'none', label?, providerHint?, signUpEnabled?, credentialsBasePath? }, features: { logout, organizations, refresh, sessionRevocation } }. Deliberately smaller than the EE version: no RBAC, no FGA, no licence gate, no telemetry.",
       "doneWhen": "Type exported; scope boundary documented in the file header."
     },
     {
       "id": "K14",
+      "status": "done",
       "title": "capabilities.ts - describeAuth() derivation",
       "lane": "K",
       "size": "M",
-      "deps": ["K13"],
-      "files": ["mastracode/auth-kit/src/capabilities.ts"],
+      "deps": [
+        "K13"
+      ],
+      "files": [
+        "mastracode/factory-auth/src/capabilities.ts"
+      ],
       "detail": "Derive the descriptor purely from the Apache guards (isSSOProvider, isCredentialsProvider, isAuthHttpHandler, isOrganizationsProvider, isSessionProvider). CLEAN-ROOM: write this with ee/capabilities.ts closed. Different shape, different names, smaller scope.",
       "doneWhen": "Unit tests for all four signIn kinds against fake providers; a second engineer confirms it does not read as a paraphrase of the EE file."
     },
     {
       "id": "K15",
+      "status": "done",
       "title": "organizations.ts - withSyntheticOrganizations",
       "lane": "K",
       "size": "M",
-      "deps": ["K8"],
-      "files": ["mastracode/auth-kit/src/organizations.ts"],
+      "deps": [
+        "K8"
+      ],
+      "files": [
+        "mastracode/factory-auth/src/organizations.ts"
+      ],
       "detail": "Wrap any provider so it satisfies IOrganizationsProvider with a deterministic personal org. Must be a WRAPPER, not a CompositeAuth member: CompositeAuth implements only ISSOProvider/ISessionProvider/IUserProvider (provider/index.ts:169-171), so composing cannot supply orgs.",
       "doneWhen": "isOrganizationsProvider(wrapped) === true; ensureOrganization is deterministic across calls."
     },
     {
       "id": "K16",
+      "status": "done",
       "title": "organizations.ts - resolveTenant host helper",
       "lane": "K",
       "size": "S",
-      "deps": ["K15"],
-      "files": ["mastracode/auth-kit/src/organizations.ts"],
+      "deps": [
+        "K15"
+      ],
+      "files": [
+        "mastracode/factory-auth/src/organizations.ts"
+      ],
       "detail": "Generalizes the `user:${userId}` fallback that already exists at mastracode/factory/src/routes/provider-credentials.ts:74-75 so every org-scoped surface can degrade instead of 403ing.",
       "doneWhen": "Returns a stable orgId for a no-org identity; unit tested."
     },
     {
       "id": "K17",
+      "status": "done",
       "title": "testing/ - composable fake providers",
       "lane": "K",
       "size": "M",
-      "deps": ["K10", "K14"],
-      "files": ["mastracode/auth-kit/src/testing/index.ts"],
+      "deps": [
+        "K10",
+        "K14"
+      ],
+      "files": [
+        "mastracode/factory-auth/src/testing/index.ts"
+      ],
       "detail": "fakeProvider() plus capability mixins (withSSO, withCredentials, withHttpHandler, withOrganizations, withSession, withInit) so a host test can build 'SSO but no orgs' in one line, with zero env stubbing.",
       "doneWhen": "Every mixin combination satisfies the matching guard."
     },
     {
       "id": "K18",
+      "status": "done",
       "title": "conformance/ - describeAuthProvider suite",
       "lane": "K",
       "size": "L",
-      "deps": ["K17", "K11", "K12"],
-      "files": ["mastracode/auth-kit/src/conformance/index.ts"],
+      "deps": [
+        "K17",
+        "K11",
+        "K12"
+      ],
+      "files": [
+        "mastracode/factory-auth/src/conformance/index.ts"
+      ],
       "detail": "A drop-in vitest suite a provider package runs in its own CI. Asserts the declared contract AND the four previously-undocumented obligations: a flat resolvable id, cookie-readable authenticateToken, agreement with the kit state codec, and an organization id (own or synthetic).",
       "doneWhen": "Green against a fully-capable fake; red against a deliberately broken fake for each obligation."
     },
     {
       "id": "K19",
+      "status": "done",
       "title": "Kit unit test sweep",
       "lane": "K",
       "size": "M",
-      "deps": ["K9", "K11", "K12", "K14", "K16"],
-      "files": ["mastracode/auth-kit/src/**/*.test.ts"],
+      "deps": [
+        "K9",
+        "K11",
+        "K12",
+        "K14",
+        "K16"
+      ],
+      "files": [
+        "mastracode/factory-auth/src/**/*.test.ts"
+      ],
       "detail": "Fill gaps so every exported symbol has direct coverage. The kit is the thing everything else trusts.",
       "doneWhen": "Coverage threshold set and met; no untested export."
     },
     {
       "id": "K20",
+      "status": "done",
       "title": "Kit README and stability policy",
       "lane": "K",
       "size": "S",
-      "deps": ["K18"],
-      "files": ["mastracode/auth-kit/README.md"],
+      "deps": [
+        "K18"
+      ],
+      "files": [
+        "mastracode/factory-auth/README.md"
+      ],
       "detail": "What the kit is, the EE boundary and how to re-verify it (from K6), semver policy for the contract, and how to run conformance.",
       "doneWhen": "README reviewed."
     },
     {
       "id": "K21",
+      "status": "done",
       "title": "Packaging into mastracode/web's separate pnpm project",
       "lane": "K",
       "size": "M",
-      "deps": ["K20"],
-      "files": ["mastracode/web/package.json", "mastracode/web/pnpm-lock.yaml"],
-      "detail": "web is a standalone pnpm project consuming monorepo packages via link:. Add '@mastra/factory-auth': 'link:../auth-kit', add --filter ./mastracode/auth-kit to the prebuild turbo filter list, and confirm scripts/monorepo-deps.mjs pin resolves it to a real version at build time (it requires a version field and a matching package name).",
+      "deps": [
+        "K20"
+      ],
+      "files": [
+        "mastracode/web/package.json",
+        "mastracode/web/pnpm-lock.yaml"
+      ],
+      "detail": "web is a standalone pnpm project consuming monorepo packages via link:. Add '@mastra/factory-auth': 'link:../factory-auth', add --filter ./mastracode/factory-auth to the prebuild turbo filter list, and confirm scripts/monorepo-deps.mjs pin resolves it to a real version at build time (it requires a version field and a matching package name).",
       "doneWhen": "pnpm --dir mastracode/web run prebuild && build succeed; validate-output.mjs passes.",
       "gate": true
     },
-
     {
       "id": "B1",
+      "status": "done",
       "title": "Add the kit to @mastra/factory and extend its lint",
       "lane": "B",
       "size": "S",
-      "deps": ["K7"],
-      "files": ["mastracode/factory/package.json", "mastracode/factory/eslint.config.js"],
+      "deps": [
+        "K7"
+      ],
+      "files": [
+        "mastracode/factory/package.json",
+        "mastracode/factory/eslint.config.js"
+      ],
       "detail": "Depend on @mastra/factory-auth workspace:*, and add the same no-restricted-imports EE ban so the Factory cannot regress the boundary either.",
       "doneWhen": "factory builds and lints with the kit as a dependency."
     },
     {
       "id": "B2",
+      "status": "done",
       "title": "Compat flag for the identity change",
       "lane": "B",
       "size": "S",
-      "deps": ["B1"],
-      "files": ["mastracode/factory/src/auth.ts"],
+      "deps": [
+        "B1"
+      ],
+      "files": [
+        "mastracode/factory/src/auth.ts"
+      ],
       "detail": "MASTRACODE_AUTH_IDENTITY_V2, defaulting OFF. The identity/session/logout changes all land together and are the only ones that can break a live sign-in; the flag keeps a one-command rollback for a release.",
       "doneWhen": "Flag reads once at module scope, both paths reachable in tests."
     },
     {
       "id": "B3",
+      "status": "done",
       "title": "Route identity through the kit",
       "lane": "B",
       "size": "M",
-      "deps": ["B2", "K10"],
-      "files": ["mastracode/factory/src/auth.ts"],
+      "deps": [
+        "B2",
+        "K10"
+      ],
+      "files": [
+        "mastracode/factory/src/auth.ts"
+      ],
       "detail": "Replace toFactoryAuthUser (auth.ts:190-231) with the kit's toAuthIdentity behind the flag. This is the change that makes a { uid } or raw-JWT provider stop authenticating as nobody.",
       "doneWhen": "Both flag states pass the existing auth suite."
     },
     {
       "id": "B4",
+      "status": "done",
       "title": "Drop workosId from the neutral user shapes",
       "lane": "B",
       "size": "S",
-      "deps": ["B3"],
-      "files": ["mastracode/factory/src/auth.ts", "mastracode/factory/src/routes/test-utils.ts"],
+      "deps": [
+        "B3"
+      ],
+      "files": [
+        "mastracode/factory/src/auth.ts",
+        "mastracode/factory/src/routes/test-utils.ts"
+      ],
       "detail": "FactoryAuthUser (auth.ts:41-43) and TestAuthUser (test-utils.ts:27-28). A vendor name in the neutral type is the tell that identity was never really abstracted.",
       "doneWhen": "grep for workosId in mastracode/ returns nothing outside changelogs."
     },
     {
       "id": "B5",
+      "status": "done",
       "title": "Delete the WorkOS type-test helpers",
       "lane": "B",
       "size": "S",
-      "deps": ["B1"],
-      "files": ["mastracode/factory/src/auth.ts"],
+      "deps": [
+        "B1"
+      ],
+      "files": [
+        "mastracode/factory/src/auth.ts"
+      ],
       "detail": "isWorkOSAuth (auth.ts:325) and getWorkOSProvider (auth.ts:334), plus their call sites. Verified dead on production paths - the audit's severity downgrade stands, but they are the last instanceof coupling in the neutral module.",
       "doneWhen": "No instanceof against a provider class anywhere in mastracode/factory/src."
     },
     {
       "id": "B6",
+      "status": "done",
       "title": "Delete the WORKOS_* env fallback provider",
       "lane": "B",
       "size": "M",
-      "deps": ["B5"],
-      "files": ["mastracode/factory/src/auth.ts"],
+      "deps": [
+        "B5"
+      ],
+      "files": [
+        "mastracode/factory/src/auth.ts"
+      ],
       "detail": "envFallbackAuthProvider (auth.ts:161-179) and the static MastraAuthWorkos import at auth.ts:1. mountFactoryAuth then requires an explicit provider. Update the two suites that relied on the implicit env path to pass a fake instead.",
       "doneWhen": "mountFactoryAuth has no env reads; suites pass without stubbing WORKOS_*."
     },
     {
       "id": "B7",
+      "status": "done",
       "title": "Remove @mastra/auth-workos from the Factory",
       "lane": "B",
       "size": "S",
-      "deps": ["B6"],
-      "files": ["mastracode/factory/package.json", "mastracode/factory/src/auth.test.ts", "mastracode/factory/src/auth-seam.test.ts"],
+      "deps": [
+        "B6"
+      ],
+      "files": [
+        "mastracode/factory/package.json",
+        "mastracode/factory/src/auth.test.ts",
+        "mastracode/factory/src/auth-seam.test.ts"
+      ],
       "detail": "Drop the dependency (package.json:58) and delete the vi.mock('@mastra/auth-workos') calls both gate suites are forced to carry.",
       "doneWhen": "A vendor auth package no longer appears in the neutral module's dependency graph."
     },
     {
       "id": "B8",
+      "status": "done",
       "title": "Adopt the kit state codec on login and callback",
       "lane": "B",
       "size": "M",
-      "deps": ["B2", "K11"],
-      "files": ["mastracode/factory/src/auth.ts"],
+      "deps": [
+        "B2",
+        "K11"
+      ],
+      "files": [
+        "mastracode/factory/src/auth.ts"
+      ],
       "detail": "Replace encodeState/decodeState (auth.ts:434, :443) and fix the handoff at auth.ts:569 so what handleCallback receives matches what the contract documents.",
       "doneWhen": "A provider written against the documented codec completes a callback under BOTH hosts."
     },
     {
       "id": "B9",
+      "status": "done",
       "title": "Session cookie minting and clearing via the kit",
       "lane": "B",
       "size": "M",
-      "deps": ["B2", "K12"],
-      "files": ["mastracode/factory/src/auth.ts"],
+      "deps": [
+        "B2",
+        "K12"
+      ],
+      "files": [
+        "mastracode/factory/src/auth.ts"
+      ],
       "detail": "Use the kit session module for the ISessionProvider fallback branch (auth.ts:576-593) and for clearing. Keep honoring provider-supplied cookies when handleCallback returns them - that path is what WorkOS and Okta already use.",
       "doneWhen": "Both cookie sources tested; the un-join regex at auth.ts:281-282 has a test pinning the malformed-header case it defends against."
     },
     {
       "id": "B10",
+      "status": "done",
       "title": "Logout revokes, and moves to POST",
       "lane": "B",
       "size": "M",
-      "deps": ["B9"],
-      "files": ["mastracode/factory/src/auth.ts"],
+      "deps": [
+        "B9"
+      ],
+      "files": [
+        "mastracode/factory/src/auth.ts"
+      ],
       "detail": "Call destroySession on the SSO path (auth.ts:603) where the provider implements it, and move logout to POST - a GET logout is CSRF-triggerable by any <img src=\"/auth/logout\">. Keep a GET shim that redirects for one release so bookmarked links do not break.",
       "doneWhen": "destroySession observed called; POST is the documented route; GET shim tested."
     },
     {
       "id": "B11",
+      "status": "done",
       "title": "Session refresh parity with packages/server",
       "lane": "B",
       "size": "M",
-      "deps": ["B9"],
-      "files": ["mastracode/factory/src/auth.ts"],
+      "deps": [
+        "B9"
+      ],
+      "files": [
+        "mastracode/factory/src/auth.ts"
+      ],
       "detail": "packages/server transparently refreshes (helpers.ts:397-417); the Factory does not, so a provider's refreshSession works on /api/* and silently does nothing on Factory routes. Close the third behavioural divergence.",
       "doneWhen": "A fake provider with an expiring session is transparently refreshed on a Factory route."
     },
     {
       "id": "B12",
+      "status": "done",
       "title": "resolveTenant wired into the RouteAuth seam",
       "lane": "B",
       "size": "M",
-      "deps": ["B3", "K16"],
-      "files": ["mastracode/factory/src/auth.ts", "mastracode/factory/src/routes/route.ts"],
+      "deps": [
+        "B3",
+        "K16"
+      ],
+      "files": [
+        "mastracode/factory/src/auth.ts",
+        "mastracode/factory/src/routes/route.ts"
+      ],
       "detail": "factoryAuthTenant returns a resolved tenant with a synthetic org when the provider has none, so the seven org-gated route groups stop 403ing an otherwise valid user.",
       "doneWhen": "A no-org fake provider reaches the board."
     },
     {
       "id": "B13",
+      "status": "done",
       "title": "Remove the org-required throw in the workspace layer",
       "lane": "B",
       "size": "S",
-      "deps": ["B12"],
-      "files": ["mastracode/factory/src/workspace.ts"],
+      "deps": [
+        "B12"
+      ],
+      "files": [
+        "mastracode/factory/src/workspace.ts"
+      ],
       "detail": "workspace.ts:316 throws when organizationId is absent. Route it through resolveTenant; keep the throw only for the genuinely identity-less server-side caller case the comment describes.",
       "doneWhen": "No-org user opens a session; identity-less caller still throws."
     },
     {
       "id": "B14",
+      "status": "done",
       "title": "Migrate workspace.ts onto RouteAuth",
       "lane": "B",
       "size": "M",
-      "deps": ["B13"],
-      "files": ["mastracode/factory/src/workspace.ts"],
+      "deps": [
+        "B13"
+      ],
+      "files": [
+        "mastracode/factory/src/workspace.ts"
+      ],
       "detail": "Stop importing the auth module directly (workspace.ts:13) and reading identity off the raw request context. One of three modules that bypass the port.",
       "doneWhen": "No direct auth-module import remains in workspace.ts."
     },
     {
       "id": "B15",
+      "status": "done",
       "title": "Migrate rules/binding-context.ts onto RouteAuth",
       "lane": "B",
       "size": "S",
-      "deps": ["B12"],
-      "files": ["mastracode/factory/src/rules/binding-context.ts"],
+      "deps": [
+        "B12"
+      ],
+      "files": [
+        "mastracode/factory/src/rules/binding-context.ts"
+      ],
       "detail": "Second bypass module (binding-context.ts:4).",
       "doneWhen": "No direct auth-module import remains."
     },
     {
       "id": "B16",
+      "status": "done",
       "title": "Migrate github/session-subscriptions.ts onto RouteAuth",
       "lane": "B",
       "size": "S",
-      "deps": ["B12"],
-      "files": ["mastracode/factory/src/integrations/github/session-subscriptions.ts"],
+      "deps": [
+        "B12"
+      ],
+      "files": [
+        "mastracode/factory/src/integrations/github/session-subscriptions.ts"
+      ],
       "detail": "Third bypass module (session-subscriptions.ts:5). After this, RouteAuth is the only identity path, not merely the preferred one.",
       "doneWhen": "grep confirms RouteAuth is the sole identity route into mastracode/factory/src."
     },
     {
       "id": "B17",
+      "status": "done",
       "title": "Backend exit-gate tests",
       "lane": "B",
       "size": "L",
-      "deps": ["B4", "B7", "B8", "B10", "B11", "B14", "B15", "B16"],
-      "files": ["mastracode/factory/src/auth.test.ts", "mastracode/factory/src/auth-seam.test.ts"],
+      "deps": [
+        "B4",
+        "B7",
+        "B8",
+        "B10",
+        "B11",
+        "B14",
+        "B15",
+        "B16"
+      ],
+      "files": [
+        "mastracode/factory/src/auth.test.ts",
+        "mastracode/factory/src/auth-seam.test.ts"
+      ],
       "detail": "GATE. (1) a cookie-only request authenticates through the gate - the browser path, uncovered today; (2) a { uid }-shaped provider authenticates end to end; (3) a no-org provider reaches the board without a 403; (4) each capability branch - SSO, http-handler, neither - drives real app.request() responses; (5) the { session, tokens } callback branch at auth.ts:576, unasserted in both hosts today.",
       "doneWhen": "All five pass with the flag ON.",
       "gate": true
     },
     {
       "id": "B18",
+      "status": "done",
       "title": "Flip the compat flag on by default and soak",
       "lane": "B",
       "size": "S",
-      "deps": ["B17", "U7"],
-      "files": ["mastracode/factory/src/auth.ts"],
+      "deps": [
+        "B17",
+        "U7"
+      ],
+      "files": [
+        "mastracode/factory/src/auth.ts"
+      ],
       "detail": "Default V2 on. Hold one release with the legacy path still reachable by env override.",
       "doneWhen": "A release ships with V2 default and no rollback."
     },
     {
       "id": "B19",
+      "status": "pending",
       "title": "Delete the flag and the legacy sniffer",
       "lane": "B",
       "size": "S",
-      "deps": ["B18"],
-      "files": ["mastracode/factory/src/auth.ts"],
+      "deps": [
+        "B18"
+      ],
+      "files": [
+        "mastracode/factory/src/auth.ts"
+      ],
       "detail": "Remove the flag, the old toFactoryAuthUser, and the dual-path tests. Deferred deliberately - this is the one task that should wait a release.",
       "doneWhen": "One identity path remains."
     },
-
     {
       "id": "U1",
+      "status": "done",
       "title": "/auth/me emits the capability descriptor",
       "lane": "U",
       "size": "M",
-      "deps": ["B1", "K14"],
-      "files": ["mastracode/factory/src/auth.ts"],
+      "deps": [
+        "B1",
+        "K14"
+      ],
+      "files": [
+        "mastracode/factory/src/auth.ts"
+      ],
       "detail": "Replace the bare provider.name payload (auth.ts:400-424, :407) with describeAuth(provider). The handler already evaluates isCredentialsProvider one line earlier at :406 and throws the answer away. Keep name in the payload for one release so the SPA fallback still works.",
       "doneWhen": "Descriptor present in the response for every capability shape."
     },
     {
       "id": "U2",
+      "status": "done",
       "title": "Server-side descriptor tests",
       "lane": "U",
       "size": "S",
-      "deps": ["U1"],
-      "files": ["mastracode/factory/src/auth-seam.test.ts"],
+      "deps": [
+        "U1"
+      ],
+      "files": [
+        "mastracode/factory/src/auth-seam.test.ts"
+      ],
       "detail": "Assert the /auth/me payload for hosted, credentials, both and none, using the kit's fakes.",
       "doneWhen": "Four cases pinned."
     },
     {
       "id": "U3",
+      "status": "done",
       "title": "SPA reads the descriptor",
       "lane": "U",
       "size": "S",
-      "deps": ["U1"],
-      "files": ["mastracode/factory-ui/src/ui/domains/auth/services/auth.ts"],
+      "deps": [
+        "U1"
+      ],
+      "files": [
+        "mastracode/factory-ui/src/ui/domains/auth/services/auth.ts"
+      ],
       "detail": "Extend FactoryAuthState with the descriptor and parse it in fetchAuthState, tolerating its absence (older server) by falling back to the name.",
       "doneWhen": "Type and parse tested against both payload shapes."
     },
     {
       "id": "U4",
+      "status": "done",
       "title": "SignInPage branches on capability",
       "lane": "U",
       "size": "M",
-      "deps": ["U3"],
-      "files": ["mastracode/factory-ui/src/ui/pages/SignInPage.tsx"],
+      "deps": [
+        "U3"
+      ],
+      "files": [
+        "mastracode/factory-ui/src/ui/pages/SignInPage.tsx"
+      ],
       "detail": "Replace the two string comparisons at SignInPage.tsx:154-156 with descriptor.signIn.kind. Unknown providers get a correct generic hosted-login button instead of the GitHub logo and 'Continue with GitHub' at :157/:225. Keep the name check behind a clearly labelled legacy branch.",
       "doneWhen": "All four kinds render correctly, including an unrecognised provider."
     },
     {
       "id": "U5",
+      "status": "done",
       "title": "Credentials endpoint comes from the descriptor",
       "lane": "U",
       "size": "M",
-      "deps": ["U4"],
-      "files": ["mastracode/factory-ui/src/ui/domains/auth/services/auth.ts"],
+      "deps": [
+        "U4"
+      ],
+      "files": [
+        "mastracode/factory-ui/src/ui/domains/auth/services/auth.ts"
+      ],
       "detail": "services/auth.ts:74 posts to `${baseUrl}/auth/api/${path}` with callers passing 'sign-in/email' (:103) and 'sign-up/email' (:107) - better-auth's WIRE FORMAT, not just its name. Take the base path from descriptor.signIn.credentialsBasePath so any IAuthHttpHandler provider works untouched.",
       "doneWhen": "A fake http-handler provider on a different base path signs in."
     },
     {
       "id": "U6",
+      "status": "done",
       "title": "Remaining provider-name reads in the SPA",
       "lane": "U",
       "size": "S",
-      "deps": ["U4"],
-      "files": ["mastracode/factory-ui/src/ui/domains/settings/components/AccountSettingsSection.tsx"],
+      "deps": [
+        "U4"
+      ],
+      "files": [
+        "mastracode/factory-ui/src/ui/domains/settings/components/AccountSettingsSection.tsx"
+      ],
       "detail": "Sweep for any other provider-name branch. The Settings label already humanizes unknown names, so this is mostly confirmation.",
       "doneWhen": "No behavioural branch on a provider name outside the labelled legacy fallback."
     },
     {
       "id": "U7",
+      "status": "done",
       "title": "MSW tests for every sign-in kind",
       "lane": "U",
       "size": "M",
-      "deps": ["U5", "U6"],
-      "files": ["mastracode/factory-ui/src/ui/pages/__tests__/SignInPage.msw.test.tsx"],
+      "deps": [
+        "U5",
+        "U6"
+      ],
+      "files": [
+        "mastracode/factory-ui/src/ui/pages/__tests__/SignInPage.msw.test.tsx"
+      ],
       "detail": "Follow the playground-msw-tests approach (primary for these packages): drive the real client + React Query stack through MSW handlers. Cover hosted, credentials, both, none, and an unknown provider name with a descriptor present.",
       "doneWhen": "pnpm --filter ./mastracode/factory-ui test:msw green."
     },
     {
       "id": "U8",
+      "status": "done",
       "title": "CI test banning provider-name literals in the SPA",
       "lane": "U",
       "size": "S",
-      "deps": ["U7"],
-      "files": ["mastracode/factory-ui/src/ui/__tests__/no-provider-literals.test.ts"],
+      "deps": [
+        "U7"
+      ],
+      "files": [
+        "mastracode/factory-ui/src/ui/__tests__/no-provider-literals.test.ts"
+      ],
       "detail": "GATE. Scan factory-ui/src for 'better-auth', 'mastra-studio', 'workos' etc. and fail on any hit outside the labelled legacy branch and its test fixtures. This is what stops the UI seam sliding back.",
       "doneWhen": "Test passes; adding a name literal makes it fail.",
       "gate": true
     },
     {
       "id": "U9",
+      "status": "pending",
       "title": "Remove the legacy name fallback",
       "lane": "U",
       "size": "S",
-      "deps": ["U8", "B18"],
-      "files": ["mastracode/factory-ui/src/ui/pages/SignInPage.tsx", "mastracode/factory/src/auth.ts"],
+      "deps": [
+        "U8",
+        "B18"
+      ],
+      "files": [
+        "mastracode/factory-ui/src/ui/pages/SignInPage.tsx",
+        "mastracode/factory/src/auth.ts"
+      ],
       "detail": "After one release, drop the name branch in the SPA and the name field from /auth/me. Deferred with B19 for the same reason.",
       "doneWhen": "Descriptor is the only input to the sign-in decision."
     },
-
     {
       "id": "C1",
+      "status": "done",
       "title": "Conformance baseline: better-auth",
       "lane": "C",
       "size": "S",
-      "deps": ["K18"],
-      "files": ["auth/better-auth/src/conformance.test.ts"],
+      "deps": [
+        "K18"
+      ],
+      "files": [
+        "auth/better-auth/src/conformance.test.ts"
+      ],
       "detail": "Start with the richest provider (IAuthHttpHandler + IOrganizationsProvider + IAuthInit) to shake out suite bugs against something that should pass.",
       "doneWhen": "Green, or failures triaged as suite bugs and fixed."
     },
     {
       "id": "C2",
+      "status": "done",
       "title": "Conformance baseline: workos and studio",
       "lane": "C",
       "size": "M",
-      "deps": ["C1"],
-      "files": ["auth/workos/src/conformance.test.ts", "auth/studio/src/conformance.test.ts"],
+      "deps": [
+        "C1"
+      ],
+      "files": [
+        "auth/workos/src/conformance.test.ts",
+        "auth/studio/src/conformance.test.ts"
+      ],
       "detail": "The two providers that run the Factory today. Any failure here is a suite bug or a real latent defect - both worth knowing.",
       "doneWhen": "Both green or defects filed."
     },
     {
       "id": "C3",
+      "status": "done",
       "title": "Conformance on okta - expect red",
       "lane": "C",
       "size": "S",
-      "deps": ["C1"],
-      "files": ["auth/okta/src/conformance.test.ts"],
+      "deps": [
+        "C1"
+      ],
+      "files": [
+        "auth/okta/src/conformance.test.ts"
+      ],
       "detail": "Should fail the state obligation immediately. This is the suite proving its worth: auth/okta has zero handleCallback coverage today, which is exactly why the defect shipped.",
       "doneWhen": "Suite reproduces the callback failure."
     },
     {
       "id": "C4",
+      "status": "done",
       "title": "Fix the okta state contract",
       "lane": "C",
       "size": "M",
-      "deps": ["C3", "K11"],
-      "files": ["auth/okta/src/auth-provider.ts", "auth/okta/src/auth-provider.test.ts"],
+      "deps": [
+        "C3",
+        "K11"
+      ],
+      "files": [
+        "auth/okta/src/auth-provider.ts",
+        "auth/okta/src/auth-provider.test.ts"
+      ],
       "detail": "getLoginUrl stores under the UUID half (auth-provider.ts:379-383) while handleCallback looks the value up verbatim (:412). Adopt the kit codec on both sides, and add the handleCallback tests that were missing.",
       "doneWhen": "C3 goes green; a full sign-in completes under the Factory."
     },
     {
       "id": "C5",
+      "status": "done",
       "title": "Conformance on supabase and firebase - decide and act",
       "lane": "C",
       "size": "L",
-      "deps": ["C1", "K15"],
-      "files": ["auth/supabase/src/conformance.test.ts", "auth/firebase/src/conformance.test.ts"],
+      "deps": [
+        "C1",
+        "K15"
+      ],
+      "files": [
+        "auth/supabase/src/conformance.test.ts",
+        "auth/firebase/src/conformance.test.ts"
+      ],
       "detail": "Both are two-method bearer validators today. Either adapt them (Supabase: ISSOProvider over signInWithOAuth; Firebase: IAuthHttpHandler over Identity Toolkit REST, since Admin SDK has no hosted-login URL) plus withSyntheticOrganizations, or mark them explicitly unsupported-with-reason. Both must also override authorizeUser, whose shipped implementations 403 core /api/* without bespoke infrastructure.",
       "doneWhen": "Each provider either passes conformance or carries a documented unsupported marker."
     },
     {
       "id": "C6",
+      "status": "done",
       "title": "Retire the 60-second boot tests",
       "lane": "C",
       "size": "M",
-      "deps": ["B7"],
-      "files": ["mastracode/web/src/mastra/index.test.ts"],
+      "deps": [
+        "B7"
+      ],
+      "files": [
+        "mastracode/web/src/mastra/index.test.ts"
+      ],
       "detail": "Provider-selection branches each cost a 60s module re-import under vi.stubEnv (index.test.ts:315). The factoryConfigs capture seam already exists in the same file (:6-16) and is already used at :81 - move the auth ladder assertions onto it.",
       "doneWhen": "The auth env-group describes run in seconds, asserting on captured config rather than a booted app."
     },
     {
       "id": "C7",
+      "status": "done",
       "title": "Conformance wired into CI for every shipped provider",
       "lane": "C",
       "size": "S",
-      "deps": ["C2", "C4", "C5"],
-      "files": [".github/workflows/"],
+      "deps": [
+        "C2",
+        "C4",
+        "C5"
+      ],
+      "files": [
+        ".github/workflows/"
+      ],
       "detail": "GATE. Every provider you ship runs conformance in CI. A new provider that skips it should be impossible to merge.",
       "doneWhen": "CI fails when a shipped provider's conformance test is deleted.",
       "gate": true
     },
-
     {
       "id": "D1",
+      "status": "done",
       "title": "Capability reference table",
       "lane": "D",
       "size": "M",
-      "deps": ["K14", "K18"],
-      "files": ["docs/"],
+      "deps": [
+        "K14",
+        "K18"
+      ],
+      "files": [
+        "docs/"
+      ],
       "detail": "Interface -> routes unlocked -> methods required, for all eight. Zero occurrences of these interface names exist in docs today. Follow docs/AGENTS.md and the styleguides.",
       "doneWhen": "Table published and matches the guards in contract.ts."
     },
     {
       "id": "D2",
+      "status": "done",
       "title": "The four obligations, promoted to documented contract",
       "lane": "D",
       "size": "M",
-      "deps": ["D1", "B8", "B9"],
-      "files": ["docs/"],
+      "deps": [
+        "D1",
+        "B8",
+        "B9"
+      ],
+      "files": [
+        "docs/"
+      ],
       "detail": "Flat resolvable id, cookie-first authenticateToken, the state codec, and the organization requirement - each with the consuming code named and the kit helper that satisfies it.",
       "doneWhen": "Every obligation the conformance suite asserts is documented."
     },
     {
       "id": "D3",
+      "status": "done",
       "title": "Write-a-provider guide, end to end",
       "lane": "D",
       "size": "L",
-      "deps": ["D2", "C4"],
-      "files": ["docs/"],
+      "deps": [
+        "D2",
+        "C4"
+      ],
+      "files": [
+        "docs/"
+      ],
       "detail": "From empty package to working sign-in, ending with 'now run the conformance suite'. Use a generic OIDC provider as the worked example, since that is the shape Cognito and most enterprise SSO reduce to.",
       "doneWhen": "Complete draft reviewed."
     },
     {
       "id": "D4",
+      "status": "done",
       "title": "CI type-checks every doc example",
       "lane": "D",
       "size": "M",
-      "deps": ["D3"],
-      "files": ["docs/", ".github/workflows/"],
+      "deps": [
+        "D3"
+      ],
+      "files": [
+        "docs/",
+        ".github/workflows/"
+      ],
       "detail": "Extract examples into compiled fixtures so the guide cannot silently rot against the contract it documents.",
       "doneWhen": "A deliberate breaking change to the contract makes the docs job fail."
     },
     {
       "id": "D5",
+      "status": "done",
       "title": "Validate the guide on a real reader",
       "lane": "D",
       "size": "M",
-      "deps": ["D4"],
+      "deps": [
+        "D4"
+      ],
       "files": [],
       "detail": "GATE. Someone who has not worked on this writes a working provider from the guide alone, with no help. That is the actual A- test for documentation; everything before it is a proxy.",
       "doneWhen": "They succeed, or the guide is revised until they do.",
@@ -640,31 +984,49 @@
     },
     {
       "id": "D6",
+      "status": "done",
       "title": "Update the mastracode READMEs",
       "lane": "D",
       "size": "S",
-      "deps": ["D2"],
-      "files": ["mastracode/README.md", "mastracode/web/README.md", "mastracode/web/.env.schema"],
+      "deps": [
+        "D2"
+      ],
+      "files": [
+        "mastracode/README.md",
+        "mastracode/web/README.md",
+        "mastracode/web/.env.schema"
+      ],
       "detail": "The new provider ladder and local setup. Also the gotcha that with any auth provider active, env model keys are ignored (TenantCredentialStore.allowEnvironmentFallback = false) - keys go in through the UI. That currently reads as a bug.",
       "doneWhen": "A fresh clone can run locally from the README alone."
     },
-
     {
       "id": "R1",
+      "status": "done",
       "title": "Changesets",
       "lane": "R",
       "size": "S",
-      "deps": ["B17", "U8", "C7"],
-      "files": [".changeset/"],
+      "deps": [
+        "B17",
+        "U8",
+        "C7"
+      ],
+      "files": [
+        ".changeset/"
+      ],
       "detail": "Per .mastracode/commands/changeset.md: one changeset per logical group, not one giant multi-package file. Likely groups: the kit (new package, minor), @mastra/factory (minor - behaviour change), auth/okta (patch - callback fix), factory-ui (patch).",
       "doneWhen": "Changesets written and reviewed for audience fit."
     },
     {
       "id": "R2",
+      "status": "done",
       "title": "Re-grade against the five exit-criteria sets",
       "lane": "R",
       "size": "M",
-      "deps": ["R1", "D5", "K21"],
+      "deps": [
+        "R1",
+        "D5",
+        "K21"
+      ],
       "files": [],
       "detail": "Walk the A- criteria for contract, backend, UI, testability and docs. Anything short gets a follow-up task, not a rounded-up grade.",
       "doneWhen": "All five criteria sets demonstrably met, or gaps explicitly accepted in writing.",
@@ -672,19 +1034,513 @@
     },
     {
       "id": "R3",
+      "status": "pending",
       "title": "Deferred cleanup release",
       "lane": "R",
       "size": "S",
-      "deps": ["B19", "U9"],
+      "deps": [
+        "B19",
+        "U9"
+      ],
       "files": [],
       "detail": "The one-release-later tasks: flag removal and legacy fallback deletion. Tracked here so they are not forgotten.",
       "doneWhen": "Both deferred deletions shipped."
+    },
+    {
+      "id": "P1",
+      "status": "done",
+      "title": "Put the mastracode test suites in the PR gate",
+      "lane": "C",
+      "size": "L",
+      "gate": true,
+      "deps": [],
+      "files": [
+        "vitest.config.ts",
+        "mastracode/factory/vitest.config.ts",
+        "mastracode/factory-ui/vitest.config.ts",
+        ".github/workflows/test-suite.yml"
+      ],
+      "detail": "GATE, and the largest single finding of the R2 re-grade. `vitest.config.ts:30` globs `mastracode/vitest.config.ts`, a file that does not exist, so root project discovery reaches nothing under `mastracode/`. Measured at HEAD: `pnpm vitest list --filesOnly --project 'unit:*' --project 'typecheck:*'` selects ZERO files under mastracode/. Consequence: mastracode/factory (91 files, 1,887 tests) and mastracode/factory-ui (158 files, 966 tests) never run on a pull request - 2,853 green tests that cannot fail a merge. Two A- criteria depend directly on this: the UI seam's 'a CI test greps factory-ui for provider-name literals and fails on any hit' (mastracode/factory-ui/src/ui/__tests__/no-provider-literals.test.ts exists and is good, and CI never runs it), and testability's 'host tests cover a cookie-only request through the gate and every capability branch'. Fix by changing the glob to `mastracode/*/vitest.config.ts` and giving each package a `unit:mastracode/<name>` project name so the existing `--project 'unit:*'` selector picks them up. Expect to triage: this switches on the factory, factory-ui, sdk, tui, web and mastra-factory suites at once, and factory-ui's suite takes ~3 minutes locally. Splitting the switch-on per package across several PRs is fine; leaving it off is not. Note that mastracode/factory-auth already runs, via its own job in lint.yml - see P13 for that job's conditions.",
+      "doneWhen": "`pnpm vitest list --filesOnly --project 'unit:*'` lists files under mastracode/factory and mastracode/factory-ui, and deleting an assertion from no-provider-literals.test.ts fails a PR."
+    },
+    {
+      "id": "P2",
+      "status": "done",
+      "title": "auth/cloud: name the vitest project, then add conformance",
+      "lane": "C",
+      "size": "M",
+      "deps": [],
+      "files": [
+        "auth/cloud/vitest.config.ts",
+        "auth/cloud/src/conformance.test.ts",
+        ".github/workflows/auth-conformance-gate.test.ts"
+      ],
+      "detail": "`auth/cloud/vitest.config.ts` declares no `name`, so vitest falls back to the package.json name and the project is `@mastra/auth-cloud`. The unit job selects `--project 'unit:*'`, which never matches it. Measured: `vitest list --project '@mastra/auth-cloud'` returns auth/cloud/src/index.test.ts - a real test file that has never run in the PR gate - while `--project 'unit:auth/*'` returns the other ten packages and not this one. Set `name: 'unit:auth/cloud'`, fix whatever that surfaces, then add the conformance suite and delete the 'cloud' line from NO_CONFORMANCE_YET in the gate. Order matters: a conformance suite added before the rename would not run either.",
+      "doneWhen": "`vitest list --project 'unit:auth/*'` includes auth/cloud files, auth/cloud/src/conformance.test.ts passes, and the gate's stale-entry assertion forces the allowlist line to be deleted."
+    },
+    {
+      "id": "P3",
+      "status": "done",
+      "title": "Conformance suites for auth0, clerk, google and neon",
+      "lane": "C",
+      "size": "L",
+      "deps": [],
+      "files": [
+        "auth/auth0/src/conformance.test.ts",
+        "auth/clerk/src/conformance.test.ts",
+        "auth/google/src/conformance.test.ts",
+        "auth/neon/src/conformance.test.ts",
+        ".github/workflows/auth-conformance-gate.test.ts"
+      ],
+      "detail": "The A- criterion is 'every shipped provider executes conformance in its own CI'. Measured by the gate itself at HEAD: providers=11 with-suite=6 recorded-without=5. Six have suites (workos, better-auth, firebase, okta, studio, supabase); five do not, and the gate is green only because each carries a written reason in NO_CONFORMANCE_YET. Four of the five are covered here (auth/cloud is P2, because it is blocked on the project name first). Each is roughly the 40 lines the gate's own failure message spells out: inject the token verifier in `createProvider` so nothing reaches the network, then call describeAuthProvider. neon is the one most likely to surface real findings - it declares more of the contract than the others and carries an RBAC provider - so do it first rather than last. Delete each allowlist line as its suite lands; the gate fails on a stale entry, so this is enforced rather than remembered.",
+      "doneWhen": "All four suites pass and NO_CONFORMANCE_YET contains only the auth/cloud entry."
+    },
+    {
+      "id": "P4",
+      "status": "done",
+      "title": "Conformance exercises IUserProvider and isOrganizationAdmin",
+      "lane": "K",
+      "size": "M",
+      "deps": [],
+      "files": [
+        "mastracode/factory-auth/src/conformance/index.ts",
+        "mastracode/factory-auth/README.md"
+      ],
+      "detail": "MAJOR under the kit's own semver policy - adding a check can turn a green provider red, so it needs a major and scheduling. Two holes, both measured at HEAD by grepping mastracode/factory-auth/src/conformance/: `isUserProvider` and `getCurrentUser` appear ZERO times, so one of the seven guards has no section, no gate and no skip - the capability is simply absent from a run. `isOrganizationAdmin` appears exactly once, at conformance/index.ts:1619, inside a failure-message string; it is never invoked, so half of IOrganizationsProvider is unchecked even though the guard requires it to exist. Confirmed against a live run: the okta suite reports 18 checks split 6 base / 6 obligations / 6 capabilities, with sections for SSO, credentials, sessions, auth routes and init - and none for users. Add a `users (IUserProvider)` section gated on isUserProvider, and an isOrganizationAdmin check under obligation 4. Expect the new checks to go red somewhere; record those in the provider's `knownFailures` with a reason rather than weakening the check.",
+      "doneWhen": "A run against a provider implementing IUserProvider shows a users section, isOrganizationAdmin is called at least once, and the kit's README semver table records the major."
+    },
+    {
+      "id": "P5",
+      "status": "done",
+      "title": "Declare the PKCE read side, and call it from the Factory callback",
+      "lane": "B",
+      "size": "M",
+      "deps": [],
+      "files": [
+        "packages/_internals/auth/src/index.ts",
+        "mastracode/factory/src/auth.ts",
+        "packages/server/src/server/handlers/auth.ts"
+      ],
+      "detail": "PKCE is broken under the Factory, not merely undocumented, and this is the one unmet clause of the contract seam's A- criterion ('cookie name, state format and the PKCE read side all move from convention into the contract'). The write side is declared and used: `ISSOProvider` declares `getLoginCookies?` at packages/_internals/auth/src/index.ts:194, and the Factory calls it at mastracode/factory/src/auth.ts:1035. The read side is neither. `setCallbackCookieHeader` is declared on no interface, is duck-typed through `(auth as any)` at packages/server/src/server/handlers/auth.ts:492, and appears ZERO times in mastracode/factory/src/ - verified by grep at HEAD. So under the Factory a PKCE provider writes its verifier cookie at login and has no way to read it back at callback. auth/supabase's own package comment independently gives this as its reason for declining a hosted login. Declare `setCallbackCookieHeader?(cookieHeader: string | null): void` on ISSOProvider as optional, call it from the Factory's callback before handleCallback the way packages/server already does, and drop the `as any` at the server call site now that the member is declared.",
+      "doneWhen": "A provider that sets a verifier cookie in getLoginCookies can read it back in handleCallback under the Factory, and no call site casts through `any` to reach the hook."
+    },
+    {
+      "id": "P6",
+      "status": "done",
+      "title": "Conformance check for a PKCE cookie round-trip",
+      "lane": "K",
+      "size": "M",
+      "deps": [
+        "P5"
+      ],
+      "files": [
+        "mastracode/factory-auth/src/conformance/index.ts"
+      ],
+      "detail": "MAJOR under the kit's semver policy. The conformance suite has no PKCE check at all - `pkce`, `getLoginCookies` and `setCallbackCookieHeader` all appear zero times in mastracode/factory-auth/src/conformance/ at HEAD - so a provider passes all 18 checks with PKCE entirely absent or entirely broken. That is what made D5's verdict 'no for a production OIDC provider': a green run tells the author they are done. Add a check, gated on `typeof provider.getLoginCookies === 'function'`, that mints a login URL, captures the cookies, feeds them back as a Cookie header through the read side declared by P5, and asserts handleCallback accepts them. A provider with no getLoginCookies skips with a reason, as every other optional check does.",
+      "doneWhen": "A provider implementing getLoginCookies without the read side fails the new check, and one implementing both passes it."
+    },
+    {
+      "id": "P7",
+      "status": "done",
+      "title": "Correct two factual defects in the capability reference",
+      "lane": "D",
+      "size": "S",
+      "deps": [],
+      "files": [
+        "docs/src/content/en/reference/auth/capability-interfaces.mdx"
+      ],
+      "detail": "Two errors found by the R2 re-grade, both in a page a provider author is told to trust. (1) Line 252 says Better Auth is 'the only one that runs the conformance suite in its own package'. Six do: auth/{workos,better-auth,firebase,okta,studio,supabase}/src/conformance.test.ts. The sentence was true when D1 was written and went stale when the C-lane suites landed; it is the same staleness class as the audit's own capability matrix. (2) The ISSOProvider member table at line 66 lists `getLoginCookies` as an ordinary optional member with no caveat, and PKCE appears nowhere in docs/src/content/en/docs/auth/ or docs/src/content/en/reference/auth/ - verified by grep. An author who implements it from this table builds a flow that cannot complete under the Factory, because the read side does not exist (see P5). Until P5 lands the table must say so. This is a documentation hazard rather than a documentation gap: it is worse than saying nothing.",
+      "doneWhen": "The conformance sentence names the real count or drops the claim, and getLoginCookies carries a caveat pointing at the missing read side."
+    },
+    {
+      "id": "P8",
+      "status": "done",
+      "title": "Document PKCE end to end, once it works",
+      "lane": "D",
+      "size": "S",
+      "deps": [
+        "P5",
+        "P6"
+      ],
+      "files": [
+        "docs/src/content/en/docs/auth/write-a-provider.mdx",
+        "docs/src/content/en/reference/auth/capability-interfaces.mdx"
+      ],
+      "detail": "The plan deliberately did not document PKCE, because documenting it would have documented something that does not work. Once P5 declares the read side and P6 checks it, write the pair up properly: getLoginCookies at login, setCallbackCookieHeader at callback, what the verifier cookie must look like, and the conformance check that proves the round trip. Replace the P7 caveat rather than leaving both. This is what closes out D5's 'no for a production OIDC provider' verdict, which still stands at the time of the re-grade and stands on a code gap, not a docs gap.",
+      "doneWhen": "A reader can build a working PKCE provider from the guide, and the example type-checks in CI."
+    },
+    {
+      "id": "P9",
+      "status": "done",
+      "title": "Guards narrow on the members their interfaces require",
+      "lane": "K",
+      "size": "M",
+      "deps": [],
+      "files": [
+        "packages/_internals/auth/src/provider/index.ts",
+        "packages/_internals/auth/src/provider/capability-guards.test.ts",
+        "packages/_internals/auth/vitest.config.ts",
+        "packages/_internals/auth/tsconfig.conformance.json",
+        "vitest.config.ts",
+        "mastracode/factory-auth/src/capabilities.ts",
+        "mastracode/factory-auth/src/conformance/index.ts",
+        "auth/firebase/src/index.ts",
+        "auth/supabase/src/index.ts",
+        "docs/src/content/en/reference/auth/capability-interfaces.mdx"
+      ],
+      "detail": "DONE at 367cacda. Measured before changing anything, with a TypeScript AST scan over every provider class under auth/*: narrowing changes ZERO verdicts in this repository. Every provider declares its capability interfaces with `implements`, so tsc already forced the required members to exist, and the kit's own `with*` fakes each supply their full required set. The guards are now sound rather than newly strict - the value is for providers that only ever matched structurally, and for the type assertion itself, which licensed a call to a member nobody had checked for. CORRECTION to the original detail: this does NOT stop auth/workos advertising `sessionRevocation`. WorkOS carries all seven `ISessionProvider` members as no-ops, so it passed the loose guard and passes the tight one; only P18 can fix that, and P18's cross-reference to this task was wrong on the same point. Guard member lists are now pinned to their interfaces at compile time by packages/_internals/auth/src/provider/capability-guards.test.ts, proved to bite in three directions: an interface growing a required member fails the typecheck project (exit 1), a guard reverting to the loose form fails five runtime assertions, and a list naming a member the interface does not require fails with `notRequiredByInterface`. Two consequences handled here. `toAuthDescriptor` stopped gating `features.refresh` and `features.sessionRevocation` on `isSessionProvider` - with a seven-member guard that gate makes both fields exactly equal to the guard, and reports no session features at all for a provider carrying six of the seven. And the conformance user section now gates on carrying EITHER required member, so half an interface fails rather than skipping; `users/current-user#not-declared` was added to mirror `users/get-user#not-declared`. A generalized partial-capability check was written up and rejected: it would flag @mastra/auth-better-auth for implementing `getClearSessionHeaders` alone, which is the pattern P11 exists to bless. Filed as P23. Two things found while measuring, both fixed here. `packages/_internals/*/vitest.config.ts` matched no glob in the root PROJECT_GLOBS, so @internal/auth and @internal/voice never ran on a pull request - the same gap P1 found under mastracode/. And auth/firebase and auth/supabase both implement `ensureOrganization` and `isOrganizationAdmin` and both passed `isOrganizationsProvider`, without declaring the interface, so nothing held them to it.",
+      "doneWhen": "Each guard checks every required member of the interface it narrows to, and the documented checked/required/total table matches the code."
+    },
+    {
+      "id": "P10",
+      "status": "done",
+      "title": "Stop mapUserToResourceId shadowing itself",
+      "lane": "K",
+      "size": "S",
+      "deps": [],
+      "files": [
+        "packages/_internals/auth/src/provider/index.ts"
+      ],
+      "detail": "packages/_internals/auth/src/provider/index.ts:84 assigns `this.mapUserToResourceId = options?.mapUserToResourceId` unconditionally in the MastraAuthProvider constructor. A subclass that implements mapUserToResourceId as a prototype method and does not forward the option therefore gets an own `undefined` shadowing its own method, so the method is unreachable and the conformance check for it silently skips - it reads as 'this provider does not implement the optional mapUserToResourceId' when the provider plainly does. Assign only when the option is present. Small fix, and it makes an existing conformance check start meaning something for the providers it currently skips.",
+      "doneWhen": "A provider defining mapUserToResourceId on its prototype and passing no option has the method reachable, and its conformance check runs instead of skipping."
+    },
+    {
+      "id": "P11",
+      "status": "done",
+      "title": "A blessed way to clear a provider-owned session cookie",
+      "lane": "K",
+      "size": "M",
+      "deps": [],
+      "files": [
+        "packages/_internals/auth/src/index.ts",
+        "packages/_internals/auth/src/session/index.ts",
+        "mastracode/factory/src/auth.ts",
+        "docs/src/content/en/reference/auth/capability-interfaces.mdx"
+      ],
+      "detail": "A hosted-login provider that mints its own cookie has no supported way to clear it on logout. ISSOProvider has getLogoutUrl but nothing that returns clear-cookie headers, and getClearSessionHeaders lives on ISessionProvider - whose guard and interface demand all seven members, six of which such a provider has no reason to implement. What actually happens today works but is unblessed: mastracode/factory/src/auth.ts:741 reads getClearSessionHeaders off the provider as `Partial<ISessionProvider>` and honours it without requiring the other six, and @mastra/auth-better-auth relies on exactly that. Nothing is broken; it is documented by no interface, which is why a fresh reader in D5 invented their own method for the job. Declare the member somewhere a provider can implement it alone - an optional member on ISSOProvider, or a one-member interface with its own guard - and make the Factory's Partial read the declared path rather than a convention. DONE at 59ce486a. Route taken: a one-member interface with its own guard, not an optional member on ISSOProvider. The second option in this task does not work: @mastra/auth-better-auth is the provider the pattern exists for and it is not an ISSOProvider - it is credentials, HTTP handler, user and organizations - so putting the member there would declare it for every provider that cannot use it and none that needs it. ISessionProvider extends ISessionClearer, so the member is declared once and every full session provider satisfies canClearSession too. This is the eighth guard, which makes the audit right by accident about a number it was wrong about when written.",
+      "doneWhen": "A hosted-login provider can clear its own cookie by implementing one declared member, and the Factory reads that member rather than a structural Partial."
+    },
+    {
+      "id": "P12",
+      "status": "done",
+      "title": "Settle the organization fallback",
+      "lane": "B",
+      "size": "S",
+      "deps": [],
+      "files": [
+        "mastracode/factory/src/workspace.test.ts",
+        "mastracode/factory-auth/src/identity.ts",
+        "mastracode/factory/src/auth-seam.test.ts",
+        "docs/src/content/en/docs/auth/provider-obligations.mdx"
+      ],
+      "detail": "SETTLED FAIL-CLOSED, and it no longer blocks B18. The kit's toAuthIdentity used to resolve a `{ session, user }` wrapper's organization from session.activeOrganizationId and fall back to the user half's own organizationId when the session named none; mastracode/factory/src/workspace.test.ts asserted the opposite, and it was the only assertion in the suite that MASTRACODE_AUTH_IDENTITY_V2 flipped. The fallback is removed. A wrapper's organization now comes from the session and from nowhere else, and a session that has activated none resolves to the user's private partition via resolveOrganizationId - the same answer any no-org caller gets. Rationale: the user half's organizationId proves membership, not activation, and a session that never activated an organization must not reach that organization's shared data. Membership is not activation. The cost is accepted and stated in the code, the tests and the docs rather than hidden: a user who belongs to exactly one organization and has not switched into it sees their private partition instead of their team's, which is confusing but is not a data leak. The other direction is a leak, which is why it lost. A third implementation, resolveTenantFromRequestContext in mastracode/sdk, already read the wrapper this way and documented that the two parsers must agree by rule - so the removal closed a latent divergence rather than creating one. The conflict note in workspace.test.ts is rewritten to record the decision and its reasoning, not deleted.",
+      "doneWhen": "toAuthIdentity and workspace.test.ts agree, the decision and its reasoning are recorded, and no assertion changes behaviour when the flag flips.",
+      "notes": "Verified by running the factory suite under both flag states: 1881 passed with MASTRACODE_AUTH_IDENTITY_V2 unset and 1881 passed with it true, identical counts. factory-auth is at 824 (823 + one new assertion pinning the private-partition resolution)."
+    },
+    {
+      "id": "P13",
+      "status": "pending",
+      "title": "Make both auth CI gates required, and unconditional",
+      "lane": "C",
+      "size": "S",
+      "gate": true,
+      "deps": [],
+      "files": [
+        ".github/workflows/lint.yml",
+        ".github/workflows/auth-conformance.yml"
+      ],
+      "detail": "Two gates run and neither can block a merge. `auth-conformance.yml` is already built to be requirable - no path filter, no repository condition, its header explains that a skipped check cannot be a required one - so it needs only the repo setting. `factory-auth-ee-boundary` in lint.yml:111 is not: it carries `if: needs.changes.outputs.has_code == 'true' && github.repository == 'mastra-ai/mastra'`, so it reports skipped on a fork and on any PR that touches no code, and a skipped check cannot be required. That job is also the ONLY thing running mastracode/factory-auth's 833 tests in CI (`pnpm --filter ./mastracode/factory-auth test` at lint.yml:141), so its conditions gate the whole kit suite, not just the boundary test. Drop the conditions the way auth-conformance.yml does, then add both to the required checks in repo settings. Branch protection is repo settings rather than a file, so the second half cannot be verified from the tree and has to be confirmed in the GitHub UI. Once P1 lands, the mastracode unit job wants the same treatment.",
+      "doneWhen": "Both checks report a real result on every PR including forks, and both appear in the required status checks for main."
+    },
+    {
+      "id": "P14",
+      "status": "done",
+      "title": "Take @mastra/auth-workos out of the Factory's dependencies",
+      "lane": "B",
+      "size": "M",
+      "deps": [],
+      "files": [
+        "mastracode/factory/package.json",
+        "mastracode/factory/src/integrations/workos/integration.ts",
+        "mastracode/factory/eslint.config.js"
+      ],
+      "detail": "The backend A- criterion names this explicitly - '@mastra/auth-workos leaves the dependency list' - and it is still at mastracode/factory/package.json:58. B7 did the real work (the neutral auth module no longer imports it, and the instanceof and WORKOS_* reach-throughs are gone; only comments mention them now), but the dependency cannot be dropped because src/integrations/workos/integration.ts imports WorkOSAdminPortal at top level and it ships - dist/integrations/workos/integration.js carries the runtime import, reachable through the './*' exports map. Dropping the dependency would leave an unresolvable import in published output. Nothing in the repo imports WorkOSAuditIntegration, so it may be dead code, but deleting a shipped feature is a product decision and that is the decision this task needs. Once it is gone, the vendor-auth lint ban at eslint.config.js:176 can widen from `src/auth.ts` alone toward the package - though note factory.ts:21 imports MastraAuthStudio as the default provider, so a package-wide `@mastra/auth-*` ban stays unavailable until that is addressed too. DONE at 8599b6cf. THE BLOCKER IN THIS TEXT WAS FALSE. It treats the top-level `WorkOSAdminPortal` import as necessary, and frames the task as a product decision between deleting a shipped feature and peer-dependency gymnastics. Reading what the file uses dissolves that: the host already injects its own client, and the import bought a type alias plus one string constant (`GeneratePortalLinkIntent.AuditLogs === 'audit_logs'`). The integration now declares a structural interface for the two methods it calls and invokes `portal.generateLink` directly. Feature kept, dependency gone, no unresolvable import - checked by resolving all 45 bare specifiers `dist/` emits. A real `WorkOS` instance still satisfies the widened parameter, proved against the vendor typings with a negative control. The lint ban widened from `src/auth.ts` to package-wide with `src/factory.ts` exempt, which is as far as is true while it imports `MastraAuthStudio` as the default provider.",
+      "doneWhen": "@mastra/auth-workos is absent from mastracode/factory/package.json and the published output has no unresolvable import."
+    },
+    {
+      "id": "P15",
+      "status": "done",
+      "title": "Close the last RouteAuth bypass: the audit actor profile",
+      "lane": "B",
+      "size": "M",
+      "deps": [],
+      "files": [
+        "mastracode/factory/src/routes/route.ts",
+        "mastracode/factory/src/storage/domains/audit/domain.ts"
+      ],
+      "detail": "The backend A- criterion says RouteAuth becomes the ONLY identity path. B14, B15 and B16 closed the three bypasses the audit named. One remains, and it is structural rather than an oversight: mastracode/factory/src/storage/domains/audit/domain.ts:89 reads `context.get('factoryAuthUser')` straight off the Hono context to build an audit actor profile. It has to, because the port cannot answer the question - RouteAuth.tenant() returns only `{ orgId, userId }` (routes/route.ts:36) and there is no member that yields a display name, email or avatar. Either add a profile member to the port and migrate the domain onto it, or state that the audit trail's display fields are deliberately outside the port and say why. Whichever, add something that stops a fourth bypass appearing quietly: a grep test for `get('factoryAuthUser')` outside auth.ts and the test helpers would do it, in the style of factory-ui's no-provider-literals test. DONE at 8599b6cf. Route (a): `RouteAuth` gained `profile()` and the audit domain reads display fields through the port. The bypass was structural rather than sloppy - `tenant()` answers `{ orgId, userId }` and no member could answer the question - so the port grew the member rather than the domain keeping an exception. The anti-regression test is `mastracode/factory/src/__tests__/route-auth-is-the-only-identity-path.test.ts`, proved red by adding a read and green by removing it.",
+      "doneWhen": "No production module outside src/auth.ts reads factoryAuthUser off the context, or the exception is declared and enforced against growth."
+    },
+    {
+      "id": "P16",
+      "status": "done",
+      "title": "Shrink LEGACY_UNCHECKED so every auth doc example type-checks",
+      "lane": "D",
+      "size": "M",
+      "deps": [],
+      "files": [
+        "docs/scripts/typecheck-examples.ts",
+        "docs/src/content/en/docs/auth/custom-auth-provider.mdx",
+        "docs/src/content/en/docs/auth/composite-auth.mdx"
+      ],
+      "detail": "D4's criterion is 'every doc example type-checks in CI'. Measured at HEAD: `pnpm typecheck:examples` reports 'Checked 19 TypeScript examples from 3 pages' and '17 pages in scope are not checked yet'. The three checked pages are the three D1-D3 wrote; the 17 excluded ones are listed in LEGACY_UNCHECKED at docs/scripts/typecheck-examples.ts:86-104 and include custom-auth-provider.mdx and composite-auth.mdx - both pages a provider author is sent to - plus ten provider reference pages. The exclusion list is well built: each line carries a reason, and a line naming a page that no longer exists fails the run, so it cannot rot quietly. The reasons split into two kinds and they need different work: 'class-member fragments predate docscheck=member' is an annotation job on two pages and is the place to start; 'examples reference packages the docs workspace does not install' needs those packages added to the docs workspace or the examples reworked. The script's own header says annotating one page and deleting its line is a self-contained change, so this is genuinely incremental. DONE at 43ea5f02. LEGACY_UNCHECKED is empty; 19 examples from 3 pages became 95 from 20. Every page taken off was proved red first with a deliberate unknown-type probe, then green. Two bugs in the checker made pages unpassable rather than merely unchecked: `tsx` fences were accepted but fixtures were always written `.ts`, and pages were keyed by base name so the two `jwt.mdx` and the two `fga.mdx` collided. Turning the check on surfaced six real API defects, filed as P26. NOT CLOSED BY THIS: `src/content/en/integrations/auth/` is outside the SCOPES array entirely - 8 pages, 58 examples, neither checked nor excluded, so the \"not checked yet\" count never counted them. Filed as P27.",
+      "doneWhen": "LEGACY_UNCHECKED is empty, or every remaining line names a page with no TypeScript examples."
+    },
+    {
+      "id": "P17",
+      "status": "done",
+      "title": "auth/better-auth: one shape for 'auth isn't ready'",
+      "lane": "C",
+      "size": "S",
+      "deps": [],
+      "files": [
+        "auth/better-auth/src/index.ts"
+      ],
+      "detail": "handleAuthRequest answers two different ways to the same condition, on a public route. auth/better-auth/src/index.ts:349 wraps #ensureDbReady in a try and returns a clean 503 `{ error: 'auth_unavailable' }` when migrations fail. But #ensureDbReady returns early when the instance is not owned, and the next line - `return this.auth.handler(request)` - reads the `auth` getter at index.ts:231, which THROWS 'MastraAuthBetterAuth is not initialized' when #auth is unset. That throw is outside the try, so a never-initialized instance produces an uncaught error and a 500 where the sibling condition produces a 503. Same operator-visible situation, two outcomes, one of them a stack trace on an unauthenticated endpoint. Answer 503 for both. DONE at 07430f9b. Both conditions return 503 { error: \"auth_unavailable\" } from one helper. The not-initialized warning is latched, because the route is unauthenticated and the misconfiguration persistent.",
+      "doneWhen": "Both 'not ready' conditions return the same 503 shape and neither throws out of handleAuthRequest."
+    },
+    {
+      "id": "P18",
+      "status": "done",
+      "title": "Resolve the four recorded workos and studio conformance defects",
+      "lane": "C",
+      "size": "L",
+      "deps": [],
+      "files": [
+        "auth/workos/src/auth-provider.ts",
+        "auth/workos/src/conformance.test.ts",
+        "auth/studio/src/index.ts",
+        "auth/studio/src/conformance.test.ts"
+      ],
+      "detail": "C2's first run against the two providers that actually run the Factory found four real defects. All four are pinned as knownFailures - the suite goes green and says on every run that it is not the green of a clean provider - because each has a product or data consequence a test may not decide. They are still open at the re-grade. (1) auth/workos: ISessionProvider is a no-op facade; validateSession returns null unconditionally (auth-provider.ts:712) and all seven members are no-ops 'kept for interface compatibility', so the descriptor advertises sessionRevocation a UI cannot deliver. Remedies - a real session store, or dropping ISessionProvider from a published package - are both breaking. See P9, which makes the guard stop reporting the capability but does not give the provider one. (2) auth/studio: getLoginUrl drops `state`, forwarding only the returnTo half as post_login_redirect, so the id half a host compares for CSRF never returns. (3) auth/studio: ensureOrganization(userId) returns undefined unless a cookie was previously cached for that user, so bearer and CLI callers never get an org bootstrapped - and the interface hands it only a user id, so a correct implementation must work from one. (4) auth/studio: createSession(userId) with no metadata mints an id validateSession can never accept; the host always passes metadata.accessToken today, which is why nothing noticed, but metadata is optional in the declared contract. Each needs an owner and a decision. Delete each knownFailures entry as it is fixed - the kit fails the suite when a recorded failure starts passing, so the record cannot outlive the defect. DONE at 15dc9b41 for auth/studio; auth/workos is a written decision, not a fix. THE TASK UNDERCOUNTED: auth/studio had FOUR recorded failures, not three - the extra one was `obligation/stateCodec/callback#threw-without-cause-after-token-exchange`. All four fixed and the array removed. Each proved a real fix rather than a deleted record: with the source fixed and the entries still present the suite went red with four stale-entry errors. ANOTHER RECORDED REASON WAS WRONG: defect (3) claimed fixing `ensureOrganization` would change which partition bearer-token users' rows land in. It does not - `factoryAuthTenant` already runs `resolveOrganizationId` over these users and gets exactly `user:<userId>` when no org is declared, so the partition was being decided one layer earlier, and `packages/server` never calls `ensureOrganization` at all. auth/workos defect (1) stands, with the entry kept and its reason rewritten. Three things measured that sharpen it: the seven members are unreachable on every host path in this repo (`handleCallback` always returns `cookies`, and both hosts branch on `result.cookies` before `createSession`); the harm is latent rather than live, because factory-ui carries `sessionRevocation` into its service layer and no component reads it; and no honest fix makes the check pass, because a WorkOS session comes from an authenticated token exchange and the SDK has no way to mint one from a user id, so `createSession` cannot produce anything `validateSession` could accept. The two remedies are in the file header: drop the seven members (truthful, major bump), or back the four readable ones with AuthKit (non-breaking, makes `sessionRevocation` true in fact, but does not clear the entry).",
+      "doneWhen": "Each defect is fixed or explicitly accepted with an owner, and knownFailures shrinks to match."
+    },
+    {
+      "id": "P19",
+      "status": "done",
+      "title": "Typecheck the conformance suites in auth/*",
+      "lane": "C",
+      "size": "S",
+      "deps": [
+        "P3"
+      ],
+      "files": [
+        "auth/*/tsconfig.json"
+      ],
+      "detail": "Every auth/* package excludes **/*.test.ts from its tsconfig, so no conformance suite is typechecked anywhere - vitest transpiles without checking. P3 found this by typechecking its four suites on a throwaway config and surfaced two genuine type errors: getLoginUrl and handleCallback do not exist on the provider class type in auth0/clerk/google, because ssoEnabled attaches them dynamically at construction. P3 fixed its own four by narrowing through the kit isSSOProvider guard, which also asserts the attachment happened. The seven pre-existing suites have never been typechecked either. Changing the tsconfig exclude is a shape change across eleven packages and was deliberately not made unasked.",
+      "doneWhen": "A type error in any auth/*/src/conformance.test.ts fails CI. Verified by introducing one and observing the failure, then reverting."
+    },
+    {
+      "id": "P20",
+      "status": "done",
+      "title": "Widen MastraAuthBetterAuthOptions.auth so the documented usage typechecks",
+      "lane": "C",
+      "size": "S",
+      "deps": [
+        "P19"
+      ],
+      "files": [
+        "auth/better-auth/src/index.ts"
+      ],
+      "detail": "P19 found that `new MastraAuthBetterAuth({ auth: betterAuth({...}) })` does not typecheck for anyone. betterAuth() is generic over its exact options object and Auth<T> is invariant in T (DBAdapter<T> appears in both a covariant and a contravariant position), so the inferred Auth<{...}> is not assignable to the bare Auth the option declares. That call is exactly what auth/better-auth/README.md:19, docs integrations/auth/better-auth.mdx:51, docs reference/auth/better-auth.mdx:20 and the class JSDoc all tell users to write. index.ts:298 already documents the defect and widens to BetterAuthOptions for the instance it builds itself; nobody applied the same widening to the public option. Changes a published API, so it was not done inside a test task. DONE at 07430f9b. TWO CORRECTIONS to this text, both measured. (1) The suggested Auth<BetterAuthOptions> is a no-op: better-auth declares type Auth<Options extends BetterAuthOptions = BetterAuthOptions>, so the bare Auth already IS Auth<BetterAuthOptions>, and an explicit probe fails identically. The fix is a TAuthOptions parameter on the class, inferred at the call site. (2) The invariance comes from createSchema(options: T), transaction's callback and AuthContext<T>.checkPassword, not from DBAdapter<T> being covariant and contravariant in general - which matters, because the members this provider calls all take model: string and are identical for every T. Also: the docs path given here, docs/src/content/en/docs/integrations/auth/better-auth.mdx, does not exist; the page is at docs/src/content/en/integrations/auth/better-auth.mdx, and that whole directory is outside the docs typechecker's SCOPES. Verified against built output, not source: the documented snippet fails TS2322 on the pre-change dist and compiles clean after. Fixed examples/agent/src/mastra/auth/better-auth.ts by the same widening.",
+      "doneWhen": "The documented snippet typechecks verbatim in a fresh consumer project, and the docs examples are covered by the docs typechecker."
+    },
+    {
+      "id": "P21",
+      "status": "done",
+      "title": "Typecheck the remaining auth/* test files",
+      "lane": "C",
+      "size": "M",
+      "deps": [
+        "P19"
+      ],
+      "files": [
+        "auth/*/tsconfig.conformance.json",
+        "auth/*/vitest.config.ts"
+      ],
+      "detail": "P19 scoped to conformance.test.ts and measured the rest: 66 errors across 7 files in 5 packages -- workos/fga-provider (23), neon/index (20), better-auth/index (15), workos/index (4), cloud/index (2), google/index (1), better-auth/deferred (1). Mostly partial object literals standing in for full SDK types (WorkOSUser, RoleMapping), plus one that looks like real drift: authorizeUser does not exist in MastraAuthWorkosOptions. Widening the file list is mechanical; fixing 66 errors is not, and some may be provider findings rather than test bugs. DONE at 807651b5. THE COUNTS IN THIS TEXT WERE STALE: measured 64 errors across 7 files in 6 packages, not 66 across 5. better-auth/index was 12 not 15, better-auth/deferred was already clean, and studio/index had 2 nobody had counted. All eleven packages now typecheck `src/**/*.test.ts` - the `files` list and the `**/*.test.ts` re-exclusion are gone, so a test file added later is covered the day it lands. 11 checked files became 25; the sweep went from 36 files to 50 and 1294 passing. Proved per package with a probe in a NEWLY covered file, red then green, and re-proved on auth/firebase afterwards. 61 of 64 were test bugs; two of those hid something real - auth/cloud's unannotated roleMapping fixture was masking `studio:*`, which is not a permission and which a test asserted on, and the unchecked `mock.calls[0][0]` indexing in better-auth and neon was a runtime hazard as well as a type one. The other 3 are provider findings, asserted around with a reason rather than fixed, and filed as P30.",
+      "doneWhen": "Every test file under auth/* is typechecked in CI, and each error fixed was classified as a test bug or a provider finding."
+    },
+    {
+      "id": "P22",
+      "status": "done",
+      "title": "Fix the ~10% flake in the auth unit suites",
+      "lane": "C",
+      "size": "M",
+      "deps": [],
+      "files": [
+        "auth/*/src/*.test.ts",
+        "auth/*/vitest.config.ts"
+      ],
+      "detail": "Measured by P19 on the baseline as well as on its own branch: running all auth unit projects fails roughly 1 run in 10, in a different package each time (neon on baseline, okta on the branch). Cause is isolate:false plus nine index.test.ts files calling vi.mock('jose') and similar, whose module registry bleeds into the same package's real-jose conformance.test.ts when worker scheduling puts index first. Fixing means editing index.test.ts or flipping isolate; both were outside P19's remit. A 10% flake on a suite that now gates merges will erode trust in the gate. DONE at cc7ef6ed. THE DIAGNOSIS IN THIS TEXT WAS WRONG about the mechanism. `jose` is incidental: the leak is any module mocked in one test file and imported for real by a sibling under a shared registry. The captured case was auth/clerk's `vi.mock('@clerk/backend')` reaching its own conformance.test.ts, whose header states the Clerk SDK is real and unmocked - and it surfaced as `contract/rejects-unknown-token`, the suite's one security check, reporting a clean provider red. Reduced to a minimum outside the repo and it reproduces in BOTH directions, which is why the failing package differed every time. Fixed with `isolate: true` on all eleven unit projects; measured cost is nil (9.76s isolated against 9.70s shared, back to back on an idle machine), so the usual argument for `isolate: false` does not apply to suites this small. Acceptance met: 20 consecutive clean sweeps. The conformance gate now asserts the setting and rejects both reverting it and deleting the line.",
+      "doneWhen": "The auth unit projects pass 20 consecutive full runs."
+    },
+    {
+      "id": "P23",
+      "status": "done",
+      "title": "A blessed partial capability, and a check that finds the unblessed ones",
+      "lane": "K",
+      "size": "M",
+      "deps": [
+        "P11"
+      ],
+      "files": [
+        "mastracode/factory-auth/src/conformance/index.ts",
+        "packages/_internals/auth/src/session/index.ts"
+      ],
+      "detail": "P9 made every guard test its interface’s full required set, which turns a provider carrying SOME of a set from \"passes the guard\" into \"has no capability at all\" - silent, where it used to be a run-time throw. P9 restored the reporting for `IUserProvider` only, by gating that section on carrying either member. The general check - fail any provider holding some but not all of an interface’s required members - was written up and rejected, because @mastra/auth-better-auth implements `getClearSessionHeaders` alone and that is a legitimate pattern the Factory already honours through a structural `Partial<ISessionProvider>` read. It cannot be told from a half-finished interface until P11 declares it as its own member with its own guard. Once P11 lands, the general check becomes writable and should replace the ad-hoc user-section gate. DONE at ea86778c, and it could not have been written before P11. `contract/whole-capabilities` asks every capability interface whether the provider carries all of its required members or none. Four codes - #partial-sso, #partial-sessions, #partial-credentials, #partial-organizations. The three one-member interfaces have no part to carry, and `IUserProvider` stays with `users/current-user` and `users/get-user`, which own a member each and can say what the absent one costs. The blessed shape is exempted BY RULE rather than by name: any member set that is exactly a declared sub-interface's required set counts as whole, which is what makes `getClearSessionHeaders` alone the whole of `ISessionClearer` rather than a seventh of `ISessionProvider`. Verified after a container restart killed the agent mid-flight: all eleven providers still pass, and adding one `createSession` to better-auth - one step past the blessed subset - fails with #partial-sessions.",
+      "doneWhen": "A provider holding part of a capability interface either satisfies a declared narrower interface, or fails conformance naming the members it is missing."
+    },
+    {
+      "id": "P24",
+      "status": "pending",
+      "title": "Decide whether the guard tightening deserves a major on @mastra/core",
+      "lane": "C",
+      "size": "S",
+      "deps": [
+        "P9"
+      ],
+      "files": [
+        ".changeset/"
+      ],
+      "detail": "P9 shipped with `@mastra/core: minor`, matching the precedent set by the earlier auth interface changeset in this series. That is a judgement call and it should be a maintainer's. Semver-wise the change is breaking for a consumer whose third-party provider satisfied a guard structurally with a subset of the required members: the guard now reports false, and a surface branching on it stops offering the capability. No provider in this repository is affected - measured with an AST scan - so the blast radius is external only, and a major on @mastra/core forces a whole-repo major release. The changeset body states the breaking consequence in full with a before/after either way, so the changelog is honest at both bump levels; only the version number is open.",
+      "doneWhen": "A maintainer has confirmed minor, or the changeset is reissued as major."
+    },
+    {
+      "id": "P25",
+      "status": "done",
+      "title": "auth/clerk index.test.ts has a test that depends on an earlier test",
+      "lane": "C",
+      "size": "S",
+      "deps": [],
+      "files": [
+        "auth/clerk/src/index.test.ts"
+      ],
+      "detail": "Found while building a reproduction harness for P22, and unrelated to it. Running `vitest --sequence.shuffle --sequence.seed=2` against auth/clerk/src/index.test.ts ALONE fails: 'should produce signed state that round-trips through handleCallback' expects `clerk|user` and gets `user_123`, because it relies on a mock an earlier test in the same file configured. Declaration order hides it, so it is latent rather than failing today. Worth measuring across the other auth suites with the same seed sweep before fixing one instance - shuffle found this in the first package tried, which suggests it is not the only one. DONE at fc90cb56, and the cause was neither of the two this text guessed at. auth/studio: its last describe replaces `globalThis.fetch` by ASSIGNMENT rather than through `vi.spyOn`, and `vi.restoreAllMocks()` cannot undo an assignment. The replacement outlived the block, so shuffled runs put it first and every `vi.spyOn(globalThis, 'fetch')` above it then spied on the leftover `vi.fn()` and inherited its call history - which is how a test making no requests came to see seven. Three hypotheses were ruled out by measurement first (fake timers not restored, a module-level cache, a background bootstrap race); the tell was that a zero-call test saw seven, which is neither a race nor a cache. Studio was pre-existing, not introduced by P18 - it reproduces at the same seeds on the pre-P18 source. auth/clerk: `vi.clearAllMocks()` drops call history and keeps implementations, so a `mockResolvedValue` set by one test answered every later test that set none - tests inherited each other's identities. `vi.resetAllMocks()` instead. A third finding, fixed with it: studio's fetch spy had no default implementation, and `vi.spyOn` without one calls through to the real `fetch` - two requests to /v1/auth/orgs were leaving the process on every run of a unit suite. Proved with a standalone probe, then made to throw and name the URL. All 135 studio and 63 clerk tests still pass, so nothing relied on it. Measured across all eleven packages at six seeds: before, clerk 2/6 and studio 2/6 red; after, 0/6 everywhere.",
+      "doneWhen": "The auth unit projects pass under --sequence.shuffle across a range of seeds, or each remaining order-dependent test is recorded with a reason."
+    },
+    {
+      "id": "P26",
+      "status": "done",
+      "title": "Six API defects the docs typechecker exposed",
+      "lane": "C",
+      "size": "M",
+      "deps": [
+        "P16"
+      ],
+      "files": [
+        "packages/core/src/server/request-types.ts",
+        "packages/auth/src",
+        "auth/okta/src",
+        "auth/google/src"
+      ],
+      "detail": "P16 turned the checker on for 17 more pages and the examples stopped compiling in places where the docs were right and the types were wrong. (1) THE SHARPEST: `packages/core/src/server/request-types.ts` declares its own `HonoRequestLike`/`MastraAuthRequest` (`header()` required, `headers?: Headers`) while the type `MastraAuthProvider` and `MastraAuthProviderOptions.authorizeUser` actually use is `packages/_internals/auth/src/types/index.ts` (`header?()` optional, `headers` also allowing a plain object). The internal one is not assignable to core's, so `getWebRequest(request)` - imported from `@mastra/core/server` - fails on the request your own `authorizeUser` callback is handed. Core's copy of `getRequestHeader` also calls `request.header(name)` unguarded and throws on an Express-style plain-object `headers`, which the internal copy explicitly guards. The docs carry an explicit parameter annotation as a workaround and say so. (2) `@mastra/auth`'s `getTokenIssuer` is declared `(decoded: jwt.JwtPayload | null)` but its body reads `decoded.payload`, so it wants the `jwt.Jwt` that `decodeToken` returns; it only compiles because `JwtPayload` has an `[key: string]: any` index signature. (3) `MastraRBACOktaOptions.getUserId`, `MastraRBACGoogleOptions.getUserKey` and `StoredResourceScopeConfig.resolve` all take `(user: unknown)`, and each package's own JSDoc example does not compile under strict. A generic parameter is the real fix. DONE at e2c002f2. Three fixed, two verified already correct at source (WorkOS has `organizationId` not `teamId`; `BetterAuthUser.session` does carry `activeOrganizationId` - only the docs had been wrong, and P16 already corrected them), one worse than filed. CORRECTION: defect (1) did NOT need `packages/_internals/auth`. The fix is a re-export from `@internal/auth/types` entirely inside core, and `server/types.ts` already imported from there, so there was precedent in the same directory. WORSE THAN FILED: `StoredResourceScopeConfig` was not merely typed `unknown` - it was never exported from any published subpath, so no consumer could name the type at all. BEYOND THE BRIEF: auth/okta's shipped JSDoc example does not compile even with the parameter typed, because `EEUser.metadata` is `Record<string, unknown>`; typing the callback was necessary and not sufficient. Verified against the built package rather than source: all three request shapes now read a header (the Express-style plain-object one used to throw `request.headers?.get is not a function`), and a provider that hands its own `authorizeUser` request to `getWebRequest` compiles.",
+      "doneWhen": "Each defect is fixed or recorded with an owner, and the workarounds the doc examples carry are removed where the fix lands."
+    },
+    {
+      "id": "P27",
+      "status": "done",
+      "title": "integrations/auth/ is outside the docs typechecker entirely",
+      "lane": "D",
+      "size": "M",
+      "deps": [
+        "P16"
+      ],
+      "files": [
+        "docs/scripts/typecheck-examples.ts",
+        "docs/package.json"
+      ],
+      "detail": "P16 emptied LEGACY_UNCHECKED, but that list only ever covered pages inside SCOPES - `['src/content/en/docs/auth', 'src/content/en/reference/auth']`. `src/content/en/integrations/auth/` is in neither, so its 8 pages and 58 TypeScript examples are neither checked nor excluded, and the \"N pages in scope are not checked yet\" line never counted them. Note the path given in P16 and P20, `docs/src/content/en/docs/integrations/auth/better-auth.mdx`, does not exist. Widening SCOPES is not free: these are frontend integration guides whose examples import `@auth0/auth0-react`, `react`, `@clerk/nextjs`, `firebase/app`, `firebase/auth`, `react-firebase-hooks/auth`, `@supabase/supabase-js`, `@workos-inc/node` and `better-auth`, plus app-relative imports the pages never define (`@/lib/auth`, `./auth-client`, `./firebase`). Closing it means deciding whether browser-framework dependencies belong in the docs workspace. DONE via the second branch of its doneWhen, not the first. The directory is now declared in an OUT_OF_SCOPE table in the checker with the reason and its page count, and the count is enforced: adding a page there fails the run until somebody decides whether it belongs in scope. Proved by adding one - \"holds 9 pages and OUT_OF_SCOPE records 8\", exit 1 - and removing it. The widening itself is left as a maintainer decision, because it means adding React, Next, Firebase and Supabase client packages to the docs workspace plus scaffolds for the app-relative imports those pages use and never define. What is fixed is the invisibility: an unlisted directory was worse than an excluded page, since LEGACY_UNCHECKED at least fails when it rots and counts what is left, while these eight pages were never in scope to be counted.",
+      "doneWhen": "Every page under integrations/auth/ is checked, or SCOPES states why that directory is out of scope and something fails when a new page is added there."
+    },
+    {
+      "id": "P28",
+      "status": "pending",
+      "title": "Decide the WorkOS ISessionProvider facade",
+      "lane": "C",
+      "size": "M",
+      "deps": [
+        "P18"
+      ],
+      "files": [
+        "auth/workos/src/auth-provider.ts"
+      ],
+      "detail": "The one conformance record left in the repository that names a live defect, and the only one P18 could not close. `auth/workos` declares `ISessionProvider` with all seven members as no-ops, so every guard reports the capability and `toAuthDescriptor` advertises `sessionRevocation`. Measured in P18: the members are unreachable on every host path here, the descriptor is carried into factory-ui but no component reads it yet, and no implementation can make `createSession(userId)` mint something `validateSession` accepts, because a WorkOS session comes from an authenticated token exchange. Two remedies, both written up in the provider header. (a) Drop the seven members: the descriptor becomes truthful and the in-repo runtime blast radius is zero, but it is a major bump for a published package. (b) Back the four readable members with AuthKit - `getSessionIdFromRequest` returns the sealed cookie, `validateSession` unseals through `AuthService.withAuth`, `destroySession` reads the `sid` claim as `getLogoutUrl` already does and calls `revokeSession`: non-breaking, and `sessionRevocation` becomes true in fact rather than in name. (b) does not clear the record, because `createSession` stays unmintable. This is a maintainer decision about a published package, not a test change.",
+      "doneWhen": "auth/workos either stops declaring ISessionProvider, or implements the members it can, and the remaining knownFailures entry matches whichever was chosen."
+    },
+    {
+      "id": "P29",
+      "status": "done",
+      "title": "packages/core turbo outputs overlap, and a cache hit can leave dist with no declarations",
+      "lane": "C",
+      "size": "S",
+      "deps": [],
+      "files": [
+        "packages/core/turbo.json",
+        "packages/server/turbo.json",
+        "client-sdks/ai-sdk/turbo.json",
+        "scripts/commonjs-tsc-fixer.js"
+      ],
+      "detail": "Found twice during this work, from opposite directions, and it wastes real time both times. `packages/core/turbo.json` gives `build:lib` outputs `[\"dist/**\"]` and `build:patch-commonjs` outputs `[\"./**/*.d.ts\"]`, which overlap. A cache-restored build can leave `packages/core/dist` with ZERO `.d.ts` files while reporting success, and the symptom is indistinguishable from having broken the types: every consumer fails with \"has no exported member\", and `@mastra/core/server` appears to have lost exports it still declares in source. `pnpm turbo build --filter ./packages/core --force` restores all of them. Both P11 and P26 lost cycles to this, P11 while also blaming a concurrent agent. Narrow the globs so the two tasks do not claim the same files. DONE at 0a14ce30. It was not only packages/core: packages/server and client-sdks/ai-sdk declare the identical glob, so all three are fixed. Measured, excluding node_modules - core claimed 1084 files and writes 84, server claimed 286 and writes 7, ai-sdk claimed 23 and writes 1. The explanation lives in scripts/commonjs-tsc-fixer.js because turbo rejects an unknown `//` key inside a task definition.",
+      "doneWhen": "The two build tasks declare disjoint outputs, and a cache-restored core build always leaves a complete dist."
+    },
+    {
+      "id": "P30",
+      "status": "done",
+      "title": "Two published providers cannot type the options they honour",
+      "lane": "C",
+      "size": "M",
+      "deps": [
+        "P21"
+      ],
+      "files": [
+        "auth/workos/src/types.ts",
+        "auth/okta/src/types.ts",
+        "auth/workos/src/auth-provider.ts"
+      ],
+      "detail": "Found by P21 once the provider test files were typechecked, and asserted around there rather than fixed, because a test may not change a published provider. (1) `MastraAuthWorkosOptions` does not declare `authorizeUser`, and the option works: the constructor passes the options through `registerOptions`, which binds `authorizeUser`, `mapUserToResourceId`, `protected` and `public`. So three options are honoured at run time and untypeable for a caller. Nine of the eleven providers declare `Options extends MastraAuthProviderOptions<TUser>` and have none of this. The two that do not - workos and okta - are exactly the two whose `registerOptions` call carries an `as MastraAuthProviderOptions<TUser>` cast, which is what hid it. Okta has the identical defect and no test exercised it, so it produced no error. The fix is `src/types.ts` in both packages. (2) `MastraAuthWorkos.getCurrentUser` declares `Promise<EEUser | null>` while its body builds and returns a `WorkOSUser`, and the sibling `getUser` on the same class declares `WorkOSUser` correctly. `organizationId`, `memberships`, `organizationMembershipId` and `workosId` - the fields this provider exists to supply - are invisible to every caller of `getCurrentUser`. DONE. Both option types now extend MastraAuthProviderOptions, and getCurrentUser declares WorkOSUser. Proved as a consumer would hit it, against the package source rather than by reading: a scratch file passing authorizeUser, protected and public to each constructor failed TS2353 before and compiles after. Widening the return is safe for callers because WorkOSUser extends EEUser, so the class still satisfies IUserProvider<EEUser>. Nothing changes at run time - registerOptions was already binding all four.",
+      "doneWhen": "A caller can type `authorizeUser`, `protected` and `public` on both workos and okta, and `getCurrentUser`'s declared return type matches what it returns."
     }
   ],
-  "criticalPath": ["K1", "K2", "K3", "K5", "K6", "K7", "K8", "K9", "K10", "K17", "K18", "C1", "C5", "C7", "R1", "R2"],
+  "criticalPath": [
+    "K1",
+    "K2",
+    "K3",
+    "K5",
+    "K6",
+    "K7",
+    "K8",
+    "K9",
+    "K10",
+    "K17",
+    "K18",
+    "C1",
+    "C5",
+    "C7",
+    "R1",
+    "R2"
+  ],
   "notes": [
     "B18, B19, U9 and R3 are deliberately deferred by one release; they are not on the path to A-.",
     "Two engineers parallelize cleanly after K7: one takes the K8-K10/K15-K18 identity+conformance spine, the other takes K11-K14 (state, session, capabilities). They rejoin at K17.",
-    "Lane U cannot start before U1, which needs K14. Lane C cannot start before K18. Lane D trails both."
-  ]
+    "Lane U cannot start before U1, which needs K14. Lane C cannot start before K18. Lane D trails both.",
+    "P1-P18 are post-plan follow-ups filed by R2, the re-grade. Each one exists because a measured A- exit criterion came up short; none was in the original 65. The P prefix marks them as such. P1 and P13 are gates: until they land, several of the checks this plan built cannot fail a pull request."
+  ],
+  "statusLegend": {
+    "done": "merged and pushed on claude/k1-k6-agent-team-tqgv8e",
+    "pending": "not started, or in flight",
+    "note": "Update this field when a task merges. Nothing else records progress.",
+    "held": "implemented but deliberately not merged - see README",
+    "ran-found-defects": "gate executed; it failed usefully - fixes dispatched, re-validate after"
+  }
 }

@@ -163,6 +163,10 @@ function fakeProvider(
     authorizeUser: vi.fn(async () => true),
     getLoginUrl: vi.fn(async () => 'https://sso.example.com/login'),
     handleCallback: vi.fn(async () => ({ user: {}, tokens: { accessToken: 't' } })),
+    // Third member `ISSOProvider` requires. Without it this is not an SSO
+    // provider, and the /auth/login and /auth/callback routes below are never
+    // derived - which is what the guard narrowing is for.
+    getLoginButtonConfig: vi.fn(() => ({ label: 'Sign in' })),
     getClearSessionHeaders: () => ({ 'Set-Cookie': 'fake_session=; Max-Age=0' }),
     ...overrides,
   } as unknown as IMastraAuthProvider & { init: ReturnType<typeof vi.fn> };
@@ -549,7 +553,7 @@ describe('MastraFactory.prepare', () => {
       requestContext: RequestContext;
     }) => Promise<Record<string, unknown>>;
     const requestContext = new RequestContext();
-    requestContext.set('user', { workosId: 'user-1', organizationId: 'org-1' });
+    requestContext.set('user', { id: 'user-1', organizationId: 'org-1' });
     requestContext.set('controller', {
       resourceId: 'resource-1',
       threadId: 'thread-1',

@@ -19,6 +19,7 @@ jobs:
       contents: read
     outputs:
       docs: ${{ steps.filter.outputs.docs }}
+      examples: ${{ steps.filter.outputs.examples }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@e8d4307400f9427dba7cb98e488d6ab85f1cec5f
@@ -31,10 +32,25 @@ jobs:
       - name: Check for docs changes
         id: filter
         run: |
-          if git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep -qE '^docs/|^\.github/scripts/(check-deleted-pages|validate-redirects)\.js$|^\.github/workflows/lint-docs\.yml$'; then
+          CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
+
+          if echo "$CHANGED" | grep -qE '^docs/|^\.github/scripts/(check-deleted-pages|validate-redirects)\.js$|^\.github/workflows/lint-docs\.yml$'; then
             echo "docs=true" >> $GITHUB_OUTPUT
           else
             echo "docs=false" >> $GITHUB_OUTPUT
+          fi
+
+          # The example type-check also has to run when the contract those
+          # examples import changes. A rename in the kit breaks the guide
+          # without touching a single file under docs/, and that is precisely
+          # the drift this check exists to catch. The list mirrors
+          # CHECKED_PACKAGES in docs/scripts/typecheck-examples.ts; auth/ is
+          # matched whole rather than provider by provider, so a new provider
+          # package is covered without editing this regex.
+          if echo "$CHANGED" | grep -qE '^docs/|^mastracode/factory-auth/|^packages/core/src/server/|^packages/_internals/auth/|^packages/auth/src/|^packages/server/src/|^client-sdks/client-js/src/|^auth/|^\.github/workflows/lint-docs\.yml$'; then
+            echo "examples=true" >> $GITHUB_OUTPUT
+          else
+            echo "examples=false" >> $GITHUB_OUTPUT
           fi
 
   check-deleted-pages:
@@ -189,6 +205,67 @@ jobs:
             } catch (error) {
               console.error('Failed to post comment:', error);
             }
+
+  # Type-checks the TypeScript examples embedded in the auth documentation
+  # against the contract they document. Three fabricated-API incidents reached
+  # main in that area before this job existed, each caught by a person
+  # re-reading prose.
+  #
+  # Kept as its own job so it can fail on its own, and so the build it needs
+  # never delays the prose checks above.
+  typecheck-doc-examples:
+    name: Type-check doc examples
+    needs: changes
+    if: needs.changes.outputs.examples == 'true'
+    runs-on: starsling-ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # Same cache the Prebuild workflow populates. On a documentation-only
+      # change every input to the packages the examples import is unchanged, so
+      # this restores rather than builds. The list is BUILT_PACKAGES in
+      # docs/scripts/typecheck-examples.ts; keep the two in step.
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ secrets.TURBO_TEAM }}
+      TURBO_CACHE: ${{ secrets.TURBO_TOKEN == '' && 'local:rw' || 'remote:rw' }}
+      NODE_OPTIONS: --max-old-space-size=8192
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@e8d4307400f9427dba7cb98e488d6ab85f1cec5f
+        timeout-minutes: 20
+
+      - name: Setup pnpm and Node.js
+        uses: ./.github/actions/setup-pnpm-node
+
+      - name: Cache turbo build setup
+        if: ${{ env.TURBO_TOKEN == '' }}
+        uses: actions/cache@v6
+        with:
+          path: .turbo/cache
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-
+
+      - name: Build the packages the examples import
+        run: >-
+          pnpm turbo build
+          --filter ./mastracode/factory-auth
+          --filter ./packages/core
+          --filter ./packages/auth
+          --filter ./client-sdks/client-js
+          --filter ./packages/server
+          --filter ./auth/auth0
+          --filter ./auth/better-auth
+          --filter ./auth/clerk
+          --filter ./auth/firebase
+          --filter ./auth/google
+          --filter ./auth/okta
+          --filter ./auth/supabase
+          --filter ./auth/workos
+
+      - name: Type-check documented examples
+        working-directory: ./docs
+        run: pnpm typecheck:examples
 
   lint-docs:
     name: Lint docs

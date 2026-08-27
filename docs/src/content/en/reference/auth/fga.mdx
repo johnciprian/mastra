@@ -70,21 +70,19 @@ System actors skip the user-centric `require()` path, so implement `requireActor
 
 Treat `actor.permissions` as an untrusted claim. Resolve the agent's authoritative grants from a trusted source keyed by `actor.agentId`, rather than trusting the inline values. See [System actors](/docs/auth/fga#system-actors).
 
-```typescript
+Add the method to the class that implements `IFGAProvider`:
+
+```typescript title="src/fga-provider.ts" docscheck=member docscheck-scaffold=fga-provider
 import { FGADeniedError } from '@mastra/core/auth/ee'
-import type { ActorSignal, FGACheckParams, IFGAProvider } from '@mastra/core/auth/ee'
+import type { ActorSignal, FGACheckParams } from '@mastra/core/auth/ee'
 
-class MyFGAProvider implements IFGAProvider {
-  // ...check, require, filterAccessible...
-
-  async requireActor(actor: ActorSignal, params: FGACheckParams): Promise<void> {
-    const agentId = actor === true ? undefined : actor.agentId
-    // Resolve the agent's authoritative grants from a trusted source keyed by agentId.
-    const granted = await this.grantsForAgent(agentId)
-    const required = Array.isArray(params.permission) ? params.permission : [params.permission]
-    if (!required.some(permission => granted.includes(permission))) {
-      throw new FGADeniedError(null, params.resource, params.permission)
-    }
+async requireActor(actor: ActorSignal, params: FGACheckParams): Promise<void> {
+  const agentId = actor === true ? undefined : actor.agentId
+  // Resolve the agent's authoritative grants from a trusted source keyed by agentId.
+  const granted = await this.grantsForAgent(agentId)
+  const required = Array.isArray(params.permission) ? params.permission : [params.permission]
+  if (!required.some(permission => granted.includes(permission))) {
+    throw new FGADeniedError(null, params.resource, params.permission)
   }
 }
 ```
@@ -209,7 +207,7 @@ Identifies a call made by a trusted non-user actor rather than an authenticated 
 
 Thrown when an authorization check is denied. `require` and `requireActor` throw it to deny, and Mastra surfaces it as an HTTP `403`.
 
-```typescript
+```typescript docscheck=statements docscheck-scaffold=fga-provider
 import { FGADeniedError } from '@mastra/core/auth/ee'
 
 throw new FGADeniedError(user, { type: 'agent', id: 'reporter' }, 'agents:execute')

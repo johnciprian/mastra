@@ -63,6 +63,16 @@ describe('MastraAuthSupabase', () => {
 
       expect(() => new MastraAuthSupabase()).toThrow('Supabase URL and anon key are required');
     });
+
+    it('should accept an injected client and build none of its own', () => {
+      delete process.env.SUPABASE_URL;
+      delete process.env.SUPABASE_ANON_KEY;
+      (createClient as any).mockClear();
+
+      const injected = { auth: { getUser: vi.fn() } } as any;
+      expect(() => new MastraAuthSupabase({ client: injected })).not.toThrow();
+      expect(createClient).not.toHaveBeenCalled();
+    });
   });
 
   describe('authenticateToken', () => {
@@ -88,40 +98,89 @@ describe('MastraAuthSupabase', () => {
       const result = await authProvider.authenticateToken(mockToken);
       expect(result).toBeNull();
     });
+
+    it('should return null for an empty token without asking Supabase', async () => {
+      const result = await authProvider.authenticateToken('');
+
+      expect(result).toBeNull();
+      // An empty token is the host saying "no bearer token on this request".
+      // This provider reads no cookie, so there is nothing to look up.
+      expect(mockSupabaseClient.auth.getUser).not.toHaveBeenCalled();
+    });
   });
 
   describe('authorizeUser', () => {
-    it('should return true for admin users', async () => {
-      mockSupabaseClient.single.mockResolvedValue({
-        data: { isAdmin: true },
-        error: null,
-      });
-
+    it('should authorize any authenticated user by default', async () => {
       const result = await authProvider.authorizeUser(mockUser);
+
       expect(result).toBe(true);
-      expect(mockSupabaseClient.from).toHaveBeenCalledWith('users');
-      expect(mockSupabaseClient.select).toHaveBeenCalledWith('isAdmin');
-      expect(mockSupabaseClient.eq).toHaveBeenCalledWith('id', mockUser.id);
+      // The default must not reach for infrastructure the contract never
+      // mentions. Until 1.2 it did, and every deployment without a `users` table
+      // authenticated a user and then 403d every core /api/* call.
+      expect(mockSupabaseClient.from).not.toHaveBeenCalled();
     });
 
-    it('should return false for non-admin users', async () => {
-      mockSupabaseClient.single.mockResolvedValue({
-        data: { isAdmin: false },
-        error: null,
-      });
-
-      const result = await authProvider.authorizeUser(mockUser);
-      expect(result).toBe(false);
+    it('should refuse a payload that names nobody', async () => {
+      expect(await authProvider.authorizeUser({ ...mockUser, id: '' })).toBe(false);
+      expect(await authProvider.authorizeUser(undefined as unknown as User)).toBe(false);
     });
 
-    it('should return false when user data cannot be retrieved', async () => {
-      mockSupabaseClient.single.mockResolvedValue({
-        data: null,
-        error: new Error('Database error'),
+    describe('with requireAdminRow', () => {
+      let adminGated: MastraAuthSupabase;
+
+      beforeEach(() => {
+        adminGated = new MastraAuthSupabase({ requireAdminRow: true });
       });
 
-      const result = await authProvider.authorizeUser(mockUser);
-      expect(result).toBe(false);
+      it('should return true for admin users', async () => {
+        mockSupabaseClient.single.mockResolvedValue({
+          data: { isAdmin: true },
+          error: null,
+        });
+
+        const result = await adminGated.authorizeUser(mockUser);
+        expect(result).toBe(true);
+        expect(mockSupabaseClient.from).toHaveBeenCalledWith('users');
+        expect(mockSupabaseClient.select).toHaveBeenCalledWith('isAdmin');
+        expect(mockSupabaseClient.eq).toHaveBeenCalledWith('id', mockUser.id);
+      });
+
+      it('should return false for non-admin users', async () => {
+        mockSupabaseClient.single.mockResolvedValue({
+          data: { isAdmin: false },
+          error: null,
+        });
+
+        const result = await adminGated.authorizeUser(mockUser);
+        expect(result).toBe(false);
+      });
+
+      it('should return false when user data cannot be retrieved', async () => {
+        mockSupabaseClient.single.mockResolvedValue({
+          data: null,
+          error: new Error('Database error'),
+        });
+
+        const result = await adminGated.authorizeUser(mockUser);
+        expect(result).toBe(false);
+      });
+
+      it('should return false rather than throw when the lookup blows up', async () => {
+        mockSupabaseClient.single.mockRejectedValue(new Error('connection refused'));
+
+        await expect(adminGated.authorizeUser(mockUser)).resolves.toBe(false);
+      });
+    });
+  });
+
+  describe('organizations', () => {
+    it('should derive a stable personal organization id', async () => {
+      expect(await authProvider.ensureOrganization(mockUser.id)).toBe(`user:${mockUser.id}`);
+      expect(await authProvider.ensureOrganization(mockUser.id)).toBe(`user:${mockUser.id}`);
+    });
+
+    it('should resolve no organization for a blank user id', async () => {
+      expect(await authProvider.ensureOrganization('  ')).toBeUndefined();
     });
   });
 

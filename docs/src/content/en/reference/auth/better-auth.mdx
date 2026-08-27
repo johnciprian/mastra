@@ -82,14 +82,16 @@ export const mastra = new Mastra({
 
 The `BetterAuthUser` type contains the session and user information returned by Better Auth:
 
-```typescript
+```typescript title="src/mastra/better-auth-user.ts"
+import type { Session, User } from 'better-auth'
+
 interface BetterAuthUser {
-  session: Session
+  session: Session & { activeOrganizationId?: string | null }
   user: User
 }
 ```
 
-- `session`: The Better Auth session object containing session metadata
+- `session`: The Better Auth session object containing session metadata, plus `activeOrganizationId` from the organization plugin the provider registers. When the stored session has none, `authenticateToken` resolves a default from the user's memberships.
 - `user`: The authenticated user object with user details
 
 The `Session` and `User` types are exported by the Better Auth package.

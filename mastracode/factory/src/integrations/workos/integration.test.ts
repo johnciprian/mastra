@@ -4,16 +4,31 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fakeRouteAuth, mountApiRoutes } from '../../routes/test-utils.js';
 import type { AuditEventRow } from '../../storage/domains/audit/base.js';
 import type { IntegrationContext } from '../base.js';
+import type { WorkOSAuditClient } from './integration.js';
 import { toWorkOSEvent, WorkOSAuditIntegration } from './integration.js';
 
 const createEvent = vi.fn(async () => undefined);
 const generateLink = vi.fn(async () => ({ link: 'https://portal.workos.test/link' }));
 
+/**
+ * A client with only the two methods this integration uses.
+ *
+ * Typed as `WorkOSAuditClient` rather than cast, because that structural type
+ * is now the whole contract with WorkOS: `@mastra/factory` no longer depends on
+ * `@mastra/auth-workos`, so nothing else in this package pins the shape of the
+ * client a host passes in. A real `WorkOS` instance satisfies it — verified
+ * against `@workos-inc/node`'s own typings, which this package deliberately
+ * does not depend on either.
+ */
+function fakeClient(): WorkOSAuditClient {
+  return { auditLogs: { createEvent }, portal: { generateLink } };
+}
+
 function makeContext(): IntegrationContext {
   return { auth: fakeRouteAuth() } as IntegrationContext;
 }
 
-function makeApp(integration: WorkOSAuditIntegration, user?: { workosId: string; organizationId?: string }) {
+function makeApp(integration: WorkOSAuditIntegration, user?: { id: string; organizationId?: string }) {
   const app = new Hono();
   app.use('*', async (c, next) => {
     if (user) c.set('factoryAuthUser' as never, user as never);
@@ -71,7 +86,7 @@ describe('WorkOSAuditIntegration', () => {
 
   it('forwards through its explicit client without consulting auth configuration', async () => {
     const integration = new WorkOSAuditIntegration({
-      client: { auditLogs: { createEvent } } as any,
+      client: fakeClient(),
       returnUrl: 'https://app.test/factory/audit',
     });
     const row = makeRow();
@@ -85,7 +100,7 @@ describe('WorkOSAuditIntegration', () => {
   it('swallows WorkOS forwarding failures', async () => {
     createEvent.mockRejectedValueOnce(new Error('invalid event'));
     const integration = new WorkOSAuditIntegration({
-      client: { auditLogs: { createEvent } } as any,
+      client: fakeClient(),
       returnUrl: '/factory/audit',
     });
 
@@ -98,10 +113,10 @@ describe('WorkOSAuditIntegration', () => {
 
   it('creates an audit-log portal link for the request organization', async () => {
     const integration = new WorkOSAuditIntegration({
-      client: { auditLogs: { createEvent }, portal: { generateLink } } as any,
+      client: fakeClient(),
       returnUrl: 'https://app.test/factory/audit',
     });
-    const response = await makeApp(integration, { workosId: 'user-1', organizationId: 'org-1' }).request(
+    const response = await makeApp(integration, { id: 'user-1', organizationId: 'org-1' }).request(
       '/web/audit/portal-link',
     );
 
@@ -118,22 +133,24 @@ describe('WorkOSAuditIntegration', () => {
 
   it('requires an authenticated organization for portal links', async () => {
     const integration = new WorkOSAuditIntegration({
-      client: { auditLogs: { createEvent }, portal: { generateLink } } as any,
+      client: fakeClient(),
       returnUrl: '/factory/audit',
     });
 
     expect((await makeApp(integration).request('/web/audit/portal-link')).status).toBe(401);
-    expect((await makeApp(integration, { workosId: 'user-1' }).request('/web/audit/portal-link')).status).toBe(403);
-    expect(generateLink).not.toHaveBeenCalled();
+    // A user with no provider organization used to 403 here. They now resolve
+    // to their own, and the portal link is generated for that organization.
+    expect((await makeApp(integration, { id: 'user-1' }).request('/web/audit/portal-link')).status).toBe(200);
+    expect(generateLink).toHaveBeenCalled();
   });
 
   it('returns 502 when portal-link generation fails', async () => {
     generateLink.mockRejectedValueOnce(new Error('portal down'));
     const integration = new WorkOSAuditIntegration({
-      client: { auditLogs: { createEvent }, portal: { generateLink } } as any,
+      client: fakeClient(),
       returnUrl: '/factory/audit',
     });
-    const response = await makeApp(integration, { workosId: 'user-1', organizationId: 'org-1' }).request(
+    const response = await makeApp(integration, { id: 'user-1', organizationId: 'org-1' }).request(
       '/web/audit/portal-link',
     );
 

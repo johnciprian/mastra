@@ -94,7 +94,7 @@ function buildApp(
   return app;
 }
 
-const org1 = (): TestAuthUser => ({ workosId: 'u1', organizationId: 'org1' });
+const org1 = (): TestAuthUser => ({ id: 'u1', organizationId: 'org1' });
 
 const connect = (overrides: Record<string, any> = {}) =>
   linear.upsertConnection({
@@ -161,9 +161,12 @@ describe('status route', () => {
     });
   });
 
-  it('requires an organization', async () => {
-    const res = await buildApp({ workosId: 'u1' }).request('/web/linear/status');
-    expect(await res.json()).toMatchObject({ enabled: true, connected: false, reason: 'organization_required' });
+  it('reports not connected, not organization_required, for a user with no provider organization', async () => {
+    // Such a user now resolves to their own private organization, so the honest
+    // answer is "you have not connected Linear" rather than "you have no
+    // organization" — which read as a dead end nobody could act on.
+    const res = await buildApp({ id: 'u1' }).request('/web/linear/status');
+    expect(await res.json()).toMatchObject({ enabled: true, connected: false, reason: 'not_connected' });
   });
 });
 

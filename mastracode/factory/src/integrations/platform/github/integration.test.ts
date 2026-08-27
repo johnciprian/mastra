@@ -2,6 +2,7 @@ import { RequestContext } from '@mastra/core/request-context';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { factoryRunTenant } from '../../../auth.js';
 import { defaultFactoryRules } from '../../../rules/defaults.js';
 import type { SourceControlStorageHandle } from '../../../storage/domains/source-control/base.js';
 import type { IntegrationContext } from '../../base.js';
@@ -17,8 +18,11 @@ const config = {
 function fakeAuth(tenant: { orgId?: string; userId: string } | undefined = { orgId: 'org-1', userId: 'user-1' }) {
   return {
     enabled: () => true,
-    ensureUser: vi.fn(async () => ({ workosId: tenant?.userId ?? 'user-1', organizationId: tenant?.orgId })),
+    ensureUser: vi.fn(async () => ({ id: tenant?.userId ?? 'user-1', organizationId: tenant?.orgId })),
     tenant: () => tenant,
+    // Through the real resolver, so this double answers about a run context the
+    // same way the host does rather than echoing the fixture back.
+    runTenant: factoryRunTenant,
     isOrganizationAdmin: vi.fn(async () => true),
   };
 }
@@ -732,7 +736,7 @@ describe('PlatformGithubIntegration', () => {
     expect(routes.some(route => route.path === '/auth/github/callback')).toBe(false);
     expect(routes.some(route => route.path === '/web/github/webhook')).toBe(false);
     const requestContext = new RequestContext();
-    requestContext.set('user', { workosId: 'user-1', organizationId: 'org-1' });
+    requestContext.set('user', { id: 'user-1', organizationId: 'org-1' });
     requestContext.set('controller', {
       resourceId: 'resource-1',
       threadId: 'thread-1',
@@ -740,7 +744,7 @@ describe('PlatformGithubIntegration', () => {
       session: { id: 'session-1', ownerId: 'user-1', modeId: 'build' },
       getState: () => ({ factoryProjectId: 'resource-1', projectRepositoryId: 'project-repository-1' }),
     });
-    expect(Object.keys(integration.sessionTools({ requestContext }))).toEqual([
+    expect(Object.keys(integration.sessionTools({ requestContext, auth: context.auth }))).toEqual([
       'github_refresh_token',
       'github_subscribe_pr',
       'github_unsubscribe_pr',
@@ -861,7 +865,7 @@ describe('PlatformGithubIntegration', () => {
     integration.versionControl.initialize({ storage: sourceControl });
     const app = new Hono();
     app.use('*', async (c, next) => {
-      c.set('webAuthUser' as never, { workosId: 'user-1', organizationId: 'org-1' } as never);
+      c.set('webAuthUser' as never, { id: 'user-1', organizationId: 'org-1' } as never);
       await next();
     });
     mountApiRoutes(app as never, integration.routes(context));
@@ -925,7 +929,7 @@ describe('PlatformGithubIntegration', () => {
     integration.versionControl.initialize({ storage: context.storage.sourceControl });
     const app = new Hono();
     app.use('*', async (c, next) => {
-      c.set('webAuthUser' as never, { workosId: 'user-1', organizationId: 'org-1' } as never);
+      c.set('webAuthUser' as never, { id: 'user-1', organizationId: 'org-1' } as never);
       await next();
     });
     mountApiRoutes(app as never, integration.routes(context));
@@ -1003,7 +1007,7 @@ describe('PlatformGithubIntegration', () => {
     integration.versionControl.initialize({ storage: context.storage.sourceControl });
     const app = new Hono();
     app.use('*', async (c, next) => {
-      c.set('webAuthUser' as never, { workosId: 'user-1', organizationId: 'org-1' } as never);
+      c.set('webAuthUser' as never, { id: 'user-1', organizationId: 'org-1' } as never);
       await next();
     });
     mountApiRoutes(app as never, integration.routes(context));
@@ -1051,7 +1055,7 @@ describe('PlatformGithubIntegration', () => {
     integration.versionControl.initialize({ storage: context.storage.sourceControl });
     const app = new Hono();
     app.use('*', async (c, next) => {
-      c.set('webAuthUser' as never, { workosId: 'user-1', organizationId: 'org-1' } as never);
+      c.set('webAuthUser' as never, { id: 'user-1', organizationId: 'org-1' } as never);
       await next();
     });
     mountApiRoutes(app as never, integration.routes(context));

@@ -6,6 +6,7 @@ import type {
   ICredentialsProvider,
   IOrganizationsProvider,
   ISSOProvider,
+  ISessionClearer,
   ISessionProvider,
   IUserProvider,
   Session,
@@ -82,7 +83,27 @@ export abstract class MastraAuthProvider<TUser = unknown> extends MastraBase imp
 
     this.protected = options?.protected;
     this.public = options?.public;
-    this.mapUserToResourceId = options?.mapUserToResourceId;
+
+    // Assign only when the option is actually supplied. `mapUserToResourceId` is
+    // declared above as an *optional method*, so the documented way for a subclass
+    // to implement it is a prototype method — and every consumer duck-types it with
+    // `typeof provider.mapUserToResourceId === 'function'`. An unconditional
+    // assignment here installs an own property holding `undefined` on every
+    // provider that does not forward the option (which is all of them; they pass
+    // only `name`), and that own `undefined` shadows the subclass's own prototype
+    // method. The method became unreachable and the duck-type read false, with no
+    // error anywhere: hosts silently fell back to the identity id, and the
+    // conformance check for it reported "this provider does not implement the
+    // optional mapUserToResourceId" about providers that plainly did.
+    //
+    // A supplied option still wins, which is the documented override — it is only
+    // the absent case that now leaves the prototype alone. Contrast `authorizeUser`
+    // just above, which has always been guarded, and `protected`/`public`, which
+    // are plain data the base declares and owns rather than a method a subclass
+    // supplies.
+    if (options?.mapUserToResourceId) {
+      this.mapUserToResourceId = options.mapUserToResourceId;
+    }
   }
 
   /**
@@ -120,46 +141,79 @@ export abstract class MastraAuthProvider<TUser = unknown> extends MastraBase imp
 type PrimitiveAuthUser = string | number | boolean | bigint | symbol | null | undefined;
 
 // Type guards for interface detection
+
+/**
+ * Whether `value` is an object carrying every named member as a function.
+ *
+ * Each guard below asserts `value is I<Something>`, and that assertion licenses
+ * a caller to reach for any member the interface requires. So a guard has to
+ * test every required member: testing a subset hands back an assertion the
+ * object cannot honour, and the failure lands later, at the first call of an
+ * absent method, with the type system saying it was fine. A guard that tested
+ * `createSession` alone would let `provider.destroySession(id)` compile and
+ * throw.
+ *
+ * Optional members are deliberately not tested. An interface's optional half is
+ * the part a caller has to feature-detect for itself, and requiring it here
+ * would reject providers the interface accepts.
+ */
+function hasMethods(value: unknown, names: readonly string[]): boolean {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  return names.every(name => typeof (value as Record<string, unknown>)[name] === 'function');
+}
+
 export function isSSOProvider(p: unknown): p is ISSOProvider {
-  return (
-    p !== null &&
-    typeof p === 'object' &&
-    typeof (p as any).getLoginUrl === 'function' &&
-    typeof (p as any).handleCallback === 'function'
-  );
+  return hasMethods(p, ['getLoginUrl', 'handleCallback', 'getLoginButtonConfig']);
 }
 
 export function isSessionProvider(p: unknown): p is ISessionProvider {
-  return (
-    p !== null &&
-    typeof p === 'object' &&
-    typeof (p as any).validateSession === 'function' &&
-    typeof (p as any).createSession === 'function'
-  );
+  return hasMethods(p, [
+    'createSession',
+    'validateSession',
+    'destroySession',
+    'refreshSession',
+    'getSessionIdFromRequest',
+    'getSessionHeaders',
+    'getClearSessionHeaders',
+  ]);
 }
 
 export function isUserProvider(p: unknown): p is IUserProvider {
-  return p !== null && typeof p === 'object' && typeof (p as any).getCurrentUser === 'function';
+  return hasMethods(p, ['getCurrentUser', 'getUser']);
 }
 export function isCredentialsProvider(p: unknown): p is ICredentialsProvider {
-  return p !== null && typeof p === 'object' && typeof (p as any).signIn === 'function';
+  return hasMethods(p, ['signIn', 'signUp']);
 }
 
 export function isOrganizationsProvider(p: unknown): p is IOrganizationsProvider {
-  return (
-    p !== null &&
-    typeof p === 'object' &&
-    typeof (p as any).ensureOrganization === 'function' &&
-    typeof (p as any).isOrganizationAdmin === 'function'
-  );
+  return hasMethods(p, ['ensureOrganization', 'isOrganizationAdmin']);
 }
 
 export function isAuthHttpHandler(p: unknown): p is IAuthHttpHandler {
-  return p !== null && typeof p === 'object' && typeof (p as any).handleAuthRequest === 'function';
+  return hasMethods(p, ['handleAuthRequest']);
 }
 
 export function hasAuthInit(p: unknown): p is IAuthInit {
-  return p !== null && typeof p === 'object' && typeof (p as any).init === 'function';
+  return hasMethods(p, ['init']);
+}
+
+/**
+ * Whether the provider can clear the session cookie it owns.
+ *
+ * The eighth guard, and the only one that narrows to a single member. It is
+ * separate from `isSessionProvider` because a provider can have this and
+ * nothing else: a provider that mints its own cookie on callback owns clearing
+ * it on logout, while creating no session a host can address by id. Asking
+ * `isSessionProvider` for that provider answers false and takes its sign-out
+ * with it.
+ *
+ * Every `ISessionProvider` satisfies this too, since `ISessionProvider`
+ * extends `ISessionClearer`.
+ */
+export function canClearSession(p: unknown): p is ISessionClearer {
+  return hasMethods(p, ['getClearSessionHeaders']);
 }
 
 function isObjectLike(value: unknown): value is object {
@@ -325,9 +379,7 @@ export class CompositeAuth
    */
   setCallbackCookieHeader(cookieHeader: string | null): void {
     const sso = this.findProvider(isSSOProvider);
-    if (sso && typeof (sso as any).setCallbackCookieHeader === 'function') {
-      (sso as any).setCallbackCookieHeader(cookieHeader);
-    }
+    sso?.setCallbackCookieHeader?.(cookieHeader);
   }
 
   getLoginUrl(redirectUri: string, state: string): string | Promise<string> {

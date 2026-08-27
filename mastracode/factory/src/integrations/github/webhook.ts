@@ -368,7 +368,7 @@ async function resolveSubscriptionSession(
       throw new Error(`GitHub subscription ${subscription.id} has no Factory session ${sessionId} to run as.`);
     }
     const requestContext = new RequestContext();
-    requestContext.set('user', { workosId: sessionRow.userId, organizationId: sessionRow.orgId });
+    requestContext.set('user', { id: sessionRow.userId, organizationId: sessionRow.orgId });
     session = await controller.createSession({
       id: sessionId,
       ownerId: sessionRow.userId,

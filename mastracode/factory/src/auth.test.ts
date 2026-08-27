@@ -1,63 +1,73 @@
+import type { IMastraAuthProvider } from '@mastra/core/server';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  createFactoryRouteAuth,
   getFactoryAuthOrgId,
   getFactoryAuthUser,
   getFactoryAuthUserId,
   mountFactoryAuth,
+  factoryAuthProfile,
   factoryAuthTenant,
 } from './auth.js';
 
-// Mock @mastra/auth-workos so the tests exercise the gating/routing logic in
-// this module without constructing a real WorkOS client. `authenticateToken`'s
-// behavior is swapped per-test via `mockAuthenticate`.
+// A hosted-login provider, built here rather than mocked out of a vendor
+// package. This suite is about the provider-neutral gate — which routes it
+// derives, who it lets through, what it reports to the SPA — and none of that
+// depends on which vendor is behind the provider. Building the double locally
+// says so, and it is what lets the module under test have no vendor dependency
+// at all. `authenticateToken`'s behavior is swapped per-test via
+// `mockAuthenticate`.
+//
+// Every `mockAuthenticate` payload below names the user with `id`. These
+// fixtures used to say `workosId` instead — a shape no provider actually
+// emits on its own — and they passed only because the pre-kit reader accepted
+// that vendor key as an identifier. The payloads that still exercise it
+// deliberately live in `auth-seam.test.ts`, where the differential table
+// asserts what each flag path makes of them.
 const mockAuthenticate = vi.fn();
-const mockGetLoginUrl = vi.fn((_redirectUri: string, _state: string) => 'https://workos.example/login');
-const mockHandleCallback = vi.fn(async () => ({ user: { email: 'a@b.com' }, cookies: ['wos_session=sealed; Path=/'] }));
-const mockGetLogoutUrl = vi.fn(async () => 'https://workos.example/logout');
-const mockGetClearSessionHeaders = vi.fn(() => ({ 'Set-Cookie': 'wos_session=; Path=/; HttpOnly; Max-Age=0' }));
-// Personal-org bootstrap (IOrganizationsProvider). The WorkOS-specific
-// bootstrap mechanics live in @mastra/auth-workos and are covered there; here
-// the mock models "no org → org_new".
+const mockGetLoginUrl = vi.fn((_redirectUri: string, _state: string) => 'https://idp.example/login');
+const mockHandleCallback = vi.fn(async () => ({
+  user: { email: 'a@b.com' },
+  cookies: ['idp_session=sealed; Path=/'],
+}));
+const mockGetLogoutUrl = vi.fn(async () => 'https://idp.example/logout');
+const mockGetClearSessionHeaders = vi.fn(() => ({ 'Set-Cookie': 'idp_session=; Path=/; HttpOnly; Max-Age=0' }));
+// Personal-org bootstrap (IOrganizationsProvider). A provider's own bootstrap
+// mechanics are covered in its package; here the double models "no org → org_new".
 const mockEnsureOrganization = vi.fn(async (_userId: string) => 'org_new');
 const mockIsOrganizationAdmin = vi.fn(async () => false);
 
-vi.mock('@mastra/auth-workos', () => ({
-  MastraAuthWorkos: class {
-    name = 'workos';
-    getLoginUrl = mockGetLoginUrl;
-    handleCallback = mockHandleCallback;
-    authenticateToken = mockAuthenticate;
-    authorizeUser = async () => true;
-    getLogoutUrl = mockGetLogoutUrl;
-    getClearSessionHeaders = mockGetClearSessionHeaders;
-    ensureOrganization = mockEnsureOrganization;
-    isOrganizationAdmin = mockIsOrganizationAdmin;
-  },
-}));
-
 const ORIGINAL_ENV = { ...process.env };
 
-function enableEnv() {
-  process.env.WORKOS_API_KEY = 'sk_test';
-  process.env.WORKOS_CLIENT_ID = 'client_test';
-}
-
-function disableEnv() {
-  delete process.env.WORKOS_API_KEY;
-  delete process.env.WORKOS_CLIENT_ID;
-  delete process.env.WORKOS_REDIRECT_URI;
+/**
+ * The provider under test: hosted login (`ISSOProvider`) plus organizations,
+ * constructed and passed explicitly by each caller.
+ */
+function hostedProvider(): IMastraAuthProvider {
+  return {
+    name: 'hosted',
+    getLoginUrl: mockGetLoginUrl,
+    handleCallback: mockHandleCallback,
+    // Third member `ISSOProvider` requires; the guard tests all three.
+    getLoginButtonConfig: () => ({ label: 'Sign in' }),
+    authenticateToken: mockAuthenticate,
+    authorizeUser: async () => true,
+    getLogoutUrl: mockGetLogoutUrl,
+    getClearSessionHeaders: mockGetClearSessionHeaders,
+    ensureOrganization: mockEnsureOrganization,
+    isOrganizationAdmin: mockIsOrganizationAdmin,
+  } as unknown as IMastraAuthProvider;
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  disableEnv();
   // Restore default mock behavior after clearAllMocks wipes it.
-  mockGetLoginUrl.mockReturnValue('https://workos.example/login');
-  mockHandleCallback.mockResolvedValue({ user: { email: 'a@b.com' }, cookies: ['wos_session=sealed; Path=/'] });
-  mockGetLogoutUrl.mockResolvedValue('https://workos.example/logout');
-  mockGetClearSessionHeaders.mockReturnValue({ 'Set-Cookie': 'wos_session=; Path=/; HttpOnly; Max-Age=0' });
+  mockGetLoginUrl.mockReturnValue('https://idp.example/login');
+  mockHandleCallback.mockResolvedValue({ user: { email: 'a@b.com' }, cookies: ['idp_session=sealed; Path=/'] });
+  mockGetLogoutUrl.mockResolvedValue('https://idp.example/logout');
+  mockGetClearSessionHeaders.mockReturnValue({ 'Set-Cookie': 'idp_session=; Path=/; HttpOnly; Max-Age=0' });
   mockEnsureOrganization.mockResolvedValue('org_new');
 });
 
@@ -68,31 +78,41 @@ afterEach(() => {
 /** Build a gated app where the protected catch-all returns 200 "ok". */
 function buildApp() {
   const app = new Hono();
-  const enabled = mountFactoryAuth(app, { redirectUri: 'http://localhost:4111/auth/callback' });
+  const enabled = mountFactoryAuth(app, { provider: hostedProvider() });
   app.get('*', c => c.text('ok'));
   app.post('*', c => c.text('ok'));
   return { app, enabled };
 }
 
-describe('env-implied WorkOS fallback', () => {
-  it('leaves auth disabled when env vars are missing', () => {
+describe('active provider resolution', () => {
+  it('leaves auth disabled when no provider is passed', () => {
     expect(mountFactoryAuth(new Hono())).toBe(false);
   });
 
-  it('leaves auth disabled when only one env var is set', () => {
+  it('enables auth when a provider is passed', () => {
+    expect(mountFactoryAuth(new Hono(), { provider: hostedProvider() })).toBe(true);
+  });
+
+  it('ignores the WORKOS_* environment entirely', () => {
+    // The env vars used to imply a provider all on their own, so a deployment
+    // that merely had WorkOS credentials in its environment acquired an
+    // identity provider nobody had configured. Setting all three must now do
+    // nothing at all: auth is on when, and only when, a provider was passed.
     process.env.WORKOS_API_KEY = 'sk_test';
-    expect(mountFactoryAuth(new Hono())).toBe(false);
-  });
+    process.env.WORKOS_CLIENT_ID = 'client_test';
+    process.env.WORKOS_REDIRECT_URI = 'http://localhost:4111/auth/callback';
 
-  it('enables auth when both env vars are set', () => {
-    enableEnv();
-    expect(mountFactoryAuth(new Hono())).toBe(true);
+    expect(mountFactoryAuth(new Hono())).toBe(false);
   });
 });
 
 describe('mountFactoryAuth (disabled)', () => {
   it('is a no-op and leaves routes ungated', async () => {
-    const { app, enabled } = buildApp();
+    // No provider, so no gate — the same app shape as buildApp() otherwise.
+    const app = new Hono();
+    const enabled = mountFactoryAuth(app);
+    app.get('*', c => c.text('ok'));
+    app.post('*', c => c.text('ok'));
     expect(enabled).toBe(false);
 
     const res = await app.request('/api/anything', { headers: { Accept: 'application/json' } });
@@ -102,8 +122,6 @@ describe('mountFactoryAuth (disabled)', () => {
 });
 
 describe('mountFactoryAuth gate (enabled)', () => {
-  beforeEach(enableEnv);
-
   it('redirects unauthenticated HTML navigation to /signin with returnTo', async () => {
     mockAuthenticate.mockResolvedValue(null);
     const { app } = buildApp();
@@ -274,7 +292,7 @@ describe('mountFactoryAuth gate (enabled)', () => {
   });
 
   it('passes through when the provider authenticates', async () => {
-    mockAuthenticate.mockResolvedValue({ workosId: 'user_ok', email: 'user@example.com', name: 'User' });
+    mockAuthenticate.mockResolvedValue({ id: 'user_ok', email: 'user@example.com', name: 'User' });
     const { app } = buildApp();
 
     const res = await app.request('/web/projects', { headers: { Accept: 'application/json' } });
@@ -302,13 +320,13 @@ describe('mountFactoryAuth gate (enabled)', () => {
 
   it('stashes flat-provider avatar URLs on the context for downstream routes', async () => {
     mockAuthenticate.mockResolvedValue({
-      workosId: 'user_123',
+      id: 'user_123',
       email: 'user@example.com',
       name: 'User',
       avatarUrl: 'https://avatars.example/user.png',
     });
     const app = new Hono();
-    mountFactoryAuth(app, { redirectUri: 'http://localhost:4111/auth/callback' });
+    mountFactoryAuth(app, { provider: hostedProvider() });
     app.get('/web/whoami', c => {
       const user = getFactoryAuthUser(c);
       return c.json({ userId: getFactoryAuthUserId(user), avatarUrl: user?.avatarUrl });
@@ -330,7 +348,7 @@ describe('mountFactoryAuth gate (enabled)', () => {
       },
     });
     const app = new Hono();
-    mountFactoryAuth(app, { redirectUri: 'http://localhost:4111/auth/callback' });
+    mountFactoryAuth(app, { provider: hostedProvider() });
     app.get('/web/whoami', c => {
       const user = getFactoryAuthUser(c);
       return c.json({
@@ -351,13 +369,11 @@ describe('mountFactoryAuth gate (enabled)', () => {
 });
 
 describe('mountFactoryAuth /auth routes (enabled)', () => {
-  beforeEach(enableEnv);
-
-  it('redirects /auth/login to the WorkOS login URL', async () => {
+  it('redirects /auth/login to the hosted login URL', async () => {
     const { app } = buildApp();
     const res = await app.request('/auth/login?returnTo=/dashboard');
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toBe('https://workos.example/login');
+    expect(res.headers.get('location')).toBe('https://idp.example/login');
     expect(mockGetLoginUrl).toHaveBeenCalledOnce();
   });
 
@@ -397,7 +413,7 @@ describe('mountFactoryAuth /auth routes (enabled)', () => {
     const res = await app.request(`/auth/callback?code=abc&state=${state}`);
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toBe('/dashboard');
-    expect(res.headers.get('set-cookie')).toContain('wos_session=sealed');
+    expect(res.headers.get('set-cookie')).toContain('idp_session=sealed');
     // Hono percent-decodes query values, so the provider sees the raw pipe form.
     expect(mockHandleCallback).toHaveBeenCalledWith('abc', 'uuid-1|/dashboard');
   });
@@ -452,11 +468,11 @@ describe('mountFactoryAuth /auth routes (enabled)', () => {
     expect(res.headers.get('location')).toBe('/auth/login');
   });
 
-  it('logout clears the session cookie and redirects to the WorkOS logout URL', async () => {
+  it('logout clears the session cookie and redirects to the hosted logout URL', async () => {
     const { app } = buildApp();
     const res = await app.request('/auth/logout');
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toBe('https://workos.example/logout');
+    expect(res.headers.get('location')).toBe('https://idp.example/logout');
     expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
   });
 
@@ -469,16 +485,32 @@ describe('mountFactoryAuth /auth routes (enabled)', () => {
     expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
   });
 
+  /**
+   * The descriptor this provider derives to: a hosted login with organizations,
+   * no credentials sign-in, and no server-side session (the double implements
+   * neither createSession nor validateSession). Spelled out once and shared, so
+   * a change in what the provider can do shows up as one diff rather than three.
+   */
+  const hostedDescriptor = {
+    signIn: { kind: 'hosted', providerHint: 'generic' },
+    features: { logout: true, organizations: true, refresh: false, sessionRevocation: false },
+  };
+
   it('/auth/me reports authenticated:false when no session', async () => {
     mockAuthenticate.mockResolvedValue(null);
     const { app } = buildApp();
     const res = await app.request('/auth/me');
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ authenticated: false, user: null, provider: 'workos' });
+    expect(await res.json()).toEqual({
+      authenticated: false,
+      user: null,
+      provider: 'hosted',
+      auth: hostedDescriptor,
+    });
   });
 
   it('/auth/me reports the user when authenticated', async () => {
-    mockAuthenticate.mockResolvedValue({ workosId: 'user_me', email: 'user@example.com', name: 'User' });
+    mockAuthenticate.mockResolvedValue({ id: 'user_me', email: 'user@example.com', name: 'User' });
     const { app } = buildApp();
     const res = await app.request('/auth/me');
     expect(res.status).toBe(200);
@@ -486,14 +518,15 @@ describe('mountFactoryAuth /auth routes (enabled)', () => {
       authenticated: true,
       // No-org accounts are bootstrapped into a personal org during /auth/me.
       user: { userId: 'user_me', email: 'user@example.com', name: 'User', organizationId: 'org_new' },
-      provider: 'workos',
+      provider: 'hosted',
+      auth: hostedDescriptor,
     });
     expect(mockEnsureOrganization).toHaveBeenCalledWith('user_me');
   });
 
   it('/auth/me surfaces the organization id and stable user id to the SPA', async () => {
     mockAuthenticate.mockResolvedValue({
-      workosId: 'user_1',
+      id: 'user_1',
       email: 'user@example.com',
       name: 'User',
       organizationId: 'org_a',
@@ -504,25 +537,37 @@ describe('mountFactoryAuth /auth routes (enabled)', () => {
     expect(await res.json()).toEqual({
       authenticated: true,
       user: { email: 'user@example.com', name: 'User', organizationId: 'org_a', userId: 'user_1' },
-      provider: 'workos',
+      provider: 'hosted',
+      auth: hostedDescriptor,
     });
     expect(mockEnsureOrganization).not.toHaveBeenCalled();
+  });
+
+  it('/auth/me states no sign-up field for the hosted-login provider', async () => {
+    // A hosted login has no credentials sign-in, so neither the descriptor's positive
+    // signUpEnabled nor the legacy negative signUpDisabled is claimed.
+    mockAuthenticate.mockResolvedValue(null);
+    const { app } = buildApp();
+    const body = (await (await app.request('/auth/me')).json()) as {
+      signUpDisabled?: boolean;
+      auth: { signIn: { signUpEnabled?: boolean } };
+    };
+    expect(body.auth.signIn.signUpEnabled).toBeUndefined();
+    expect(body.signUpDisabled).toBeUndefined();
   });
 });
 
 describe('org-tenant identity', () => {
-  beforeEach(enableEnv);
-
   it('getFactoryAuthOrgId reads the organization id from the user shape', () => {
-    expect(getFactoryAuthOrgId({ workosId: 'user_1', organizationId: 'org_a' })).toBe('org_a');
-    expect(getFactoryAuthOrgId({ workosId: 'user_1' })).toBeUndefined();
+    expect(getFactoryAuthOrgId({ id: 'user_1', organizationId: 'org_a' })).toBe('org_a');
+    expect(getFactoryAuthOrgId({ id: 'user_1' })).toBeUndefined();
     expect(getFactoryAuthOrgId(undefined)).toBeUndefined();
   });
 
   it('gate stashes organizationId and factoryAuthTenant returns { orgId, userId }', async () => {
-    mockAuthenticate.mockResolvedValue({ workosId: 'user_1', organizationId: 'org_a', email: 'u@e.com' });
+    mockAuthenticate.mockResolvedValue({ id: 'user_1', organizationId: 'org_a', email: 'u@e.com' });
     const app = new Hono();
-    mountFactoryAuth(app, { redirectUri: 'http://localhost:4111/auth/callback' });
+    mountFactoryAuth(app, { provider: hostedProvider() });
     app.get('/web/whoami', c => c.json(factoryAuthTenant(c) ?? { tenant: null }));
 
     const res = await app.request('/web/whoami', { headers: { Accept: 'application/json' } });
@@ -533,9 +578,9 @@ describe('org-tenant identity', () => {
   });
 
   it('gate bootstraps a no-org user so factoryAuthTenant yields the new org', async () => {
-    mockAuthenticate.mockResolvedValue({ workosId: 'user_boot', email: 'boot@example.com' });
+    mockAuthenticate.mockResolvedValue({ id: 'user_boot', email: 'boot@example.com' });
     const app = new Hono();
-    mountFactoryAuth(app, { redirectUri: 'http://localhost:4111/auth/callback' });
+    mountFactoryAuth(app, { provider: hostedProvider() });
     app.get('/web/whoami', c => c.json(factoryAuthTenant(c) ?? { tenant: null }));
 
     const res = await app.request('/web/whoami', { headers: { Accept: 'application/json' } });
@@ -544,13 +589,15 @@ describe('org-tenant identity', () => {
     expect(mockEnsureOrganization).toHaveBeenCalledWith('user_boot');
   });
 
-  it('factoryAuthTenant omits orgId for personal (no-org) users but keeps userId', async () => {
-    // Bootstrap is best-effort: when org creation fails, the user genuinely
-    // stays no-org, so the tenant must still expose a userId without an orgId.
+  it('factoryAuthTenant falls back to a private organization when bootstrap yields none', async () => {
+    // Bootstrap is best-effort. When org creation yields nothing the user has
+    // no provider organization, and the tenant resolves a deterministic private
+    // one from their id rather than leaving orgId absent for every org-gated
+    // route to refuse.
     mockEnsureOrganization.mockResolvedValue(undefined as unknown as string);
-    mockAuthenticate.mockResolvedValue({ workosId: 'user_solo', email: 'solo@e.com' });
+    mockAuthenticate.mockResolvedValue({ id: 'user_solo', email: 'solo@e.com' });
     const app = new Hono();
-    mountFactoryAuth(app, { redirectUri: 'http://localhost:4111/auth/callback' });
+    mountFactoryAuth(app, { provider: hostedProvider() });
     app.get('/web/whoami', c => {
       const tenant = factoryAuthTenant(c);
       return c.json({ orgId: tenant?.orgId ?? null, userId: tenant?.userId ?? null });
@@ -558,14 +605,14 @@ describe('org-tenant identity', () => {
 
     const res = await app.request('/web/whoami', { headers: { Accept: 'application/json' } });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ orgId: null, userId: 'user_solo' });
+    expect(await res.json()).toEqual({ orgId: 'user:user_solo', userId: 'user_solo' });
   });
 
-  it('a thrown bootstrap error leaves the user no-org instead of failing the request', async () => {
-    mockEnsureOrganization.mockRejectedValue(new Error('workos unavailable'));
-    mockAuthenticate.mockResolvedValue({ workosId: 'user_err', email: 'err@e.com' });
+  it('a thrown bootstrap error still yields a usable tenant instead of failing the request', async () => {
+    mockEnsureOrganization.mockRejectedValue(new Error('identity provider unavailable'));
+    mockAuthenticate.mockResolvedValue({ id: 'user_err', email: 'err@e.com' });
     const app = new Hono();
-    mountFactoryAuth(app, { redirectUri: 'http://localhost:4111/auth/callback' });
+    mountFactoryAuth(app, { provider: hostedProvider() });
     app.get('/web/whoami', c => {
       const tenant = factoryAuthTenant(c);
       return c.json({ orgId: tenant?.orgId ?? null, userId: tenant?.userId ?? null });
@@ -573,6 +620,216 @@ describe('org-tenant identity', () => {
 
     const res = await app.request('/web/whoami', { headers: { Accept: 'application/json' } });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ orgId: null, userId: 'user_err' });
+    expect(await res.json()).toEqual({ orgId: 'user:user_err', userId: 'user_err' });
+  });
+});
+
+/**
+ * `RouteAuth.profile()` — the port's answer to "who is this, to a reader?".
+ *
+ * It exists because the audit trail needed a name and an avatar, the port had
+ * no member that could give it one, and so the audit domain read the gate's
+ * `factoryAuthUser` context variable itself. That was the last identity read in
+ * this package that went around the port instead of through it. These tests
+ * pin the behaviour the domain now depends on; the structural guarantee that no
+ * new such read appears is `src/__tests__/route-auth-is-the-only-identity-path.test.ts`.
+ */
+describe('RouteAuth.profile', () => {
+  /** Mount the gate and expose the profile the seam resolves for the request. */
+  function profileApp() {
+    const app = new Hono();
+    mountFactoryAuth(app, { provider: hostedProvider() });
+    const auth = createFactoryRouteAuth(hostedProvider());
+    app.get('/web/whoami', c => c.json(auth.profile(c) ?? { profile: null }));
+    return app;
+  }
+
+  async function profileOf(app: Hono): Promise<unknown> {
+    const res = await app.request('/web/whoami', { headers: { Accept: 'application/json' } });
+    expect(res.status).toBe(200);
+    return res.json();
+  }
+
+  it('carries the display fields the provider supplied, under the tenant id', async () => {
+    mockAuthenticate.mockResolvedValue({
+      id: 'user_1',
+      organizationId: 'org_a',
+      name: 'Ada Lovelace',
+      email: 'ada@example.com',
+      avatarUrl: 'https://avatars.example/ada.png',
+    });
+
+    expect(await profileOf(profileApp())).toEqual({
+      id: 'user_1',
+      name: 'Ada Lovelace',
+      email: 'ada@example.com',
+      avatarUrl: 'https://avatars.example/ada.png',
+    });
+  });
+
+  it('reports an id-only profile for a provider that knows nothing else', async () => {
+    // A bearer-token provider that returns an id and no profile is a valid
+    // provider, not a broken one. The caller gets an actor it can still scope
+    // and attribute by id, rather than nothing at all.
+    mockAuthenticate.mockResolvedValue({ id: 'user_bare', organizationId: 'org_a' });
+
+    expect(await profileOf(profileApp())).toEqual({ id: 'user_bare' });
+  });
+
+  it('drops blank display fields rather than passing them through', async () => {
+    // A name of "  " renders as a missing name but is truthy in code, which is
+    // how an actor ends up looking present and nameless in the audit trail.
+    mockAuthenticate.mockResolvedValue({
+      id: 'user_blank',
+      organizationId: 'org_a',
+      name: '   ',
+      email: '',
+      avatarUrl: ' ',
+    });
+
+    expect(await profileOf(profileApp())).toEqual({ id: 'user_blank' });
+  });
+
+  it('agrees with tenant() about whether anybody is signed in', async () => {
+    // Two entry points that disagreed about the presence of a user would be
+    // worse than the context read this member replaced.
+    mockAuthenticate.mockResolvedValue(null);
+    const app = new Hono();
+    app.get('/web/whoami', c =>
+      c.json({ profile: factoryAuthProfile(c) ?? null, tenant: factoryAuthTenant(c) ?? null }),
+    );
+
+    const res = await app.request('/web/whoami', { headers: { Accept: 'application/json' } });
+    expect(await res.json()).toEqual({ profile: null, tenant: null });
+  });
+
+  it('treats a blank id as no user, exactly as tenant() does', async () => {
+    const app = new Hono();
+    app.get('/web/whoami', c => {
+      c.set('factoryAuthUser' as never, { id: '   ', name: 'Ghost' } as never);
+      return c.json({ profile: factoryAuthProfile(c) ?? null, tenant: factoryAuthTenant(c) ?? null });
+    });
+
+    const res = await app.request('/web/whoami', { headers: { Accept: 'application/json' } });
+    expect(await res.json()).toEqual({ profile: null, tenant: null });
+  });
+});
+
+/**
+ * The PKCE round trip: a verifier written as a login cookie has to be readable
+ * again at the callback.
+ *
+ * `getLoginCookies` is the write half, and the Factory has always called it.
+ * The read half is `setCallbackCookieHeader`, which was declared on no
+ * interface at all, so the Factory had no way to reach it — a PKCE provider
+ * could stash its verifier at login and then find `handleCallback` handed only
+ * `code` and `state`, with the cookie jar out of reach. That is not a
+ * documentation gap; it is a hosted login that cannot complete.
+ */
+describe('mountFactoryAuth PKCE round trip', () => {
+  /** Pull one cookie's value out of a raw `Cookie` header. */
+  function readCookieValue(header: string | null, name: string): string | undefined {
+    for (const part of header?.split(';') ?? []) {
+      const [key, ...rest] = part.trim().split('=');
+      if (key === name) return rest.join('=');
+    }
+    return undefined;
+  }
+
+  /**
+   * A PKCE-shaped hosted-login provider, built here rather than mocked, so the
+   * seam is exercised rather than asserted. The verifier lives only in the
+   * browser's cookie jar between the two requests: `handleCallback` takes no
+   * argument that could carry it, so the sole channel is the callback
+   * request's `Cookie` header arriving through `setCallbackCookieHeader`. A
+   * provider that cannot see it refuses the exchange, which is what a real one
+   * does — `auth/cloud` throws `PKCEError.missingVerifier()` at exactly this
+   * point.
+   */
+  function pkceProvider(verifier: string) {
+    const seenCookieHeaders: (string | null)[] = [];
+    let callbackCookieHeader: string | null = null;
+    const provider = {
+      name: 'pkce',
+      getLoginUrl: () => 'https://idp.example/authorize',
+      getLoginButtonConfig: () => ({ label: 'Sign in' }),
+      getLoginCookies: () => [`pkce_verifier=${verifier}; Path=/; HttpOnly; Max-Age=600`],
+      setCallbackCookieHeader(header: string | null) {
+        seenCookieHeaders.push(header);
+        callbackCookieHeader = header;
+      },
+      handleCallback: async (code: string) => {
+        const sent = readCookieValue(callbackCookieHeader, 'pkce_verifier');
+        if (!sent) throw new Error('missing PKCE code verifier');
+        return {
+          user: { id: 'u_pkce', email: 'pkce@example.com' },
+          cookies: [`idp_session=${code}.${sent}; Path=/`],
+        };
+      },
+      authenticateToken: async () => null,
+      authorizeUser: async () => true,
+    };
+    return { provider: provider as unknown as IMastraAuthProvider, seenCookieHeaders };
+  }
+
+  it('carries the verifier from the login cookie through to handleCallback', async () => {
+    const { provider } = pkceProvider('verifier-abc');
+    const app = new Hono();
+    mountFactoryAuth(app, { provider });
+
+    // Login writes the verifier the way a browser would receive it.
+    const login = await app.request('/auth/login');
+    expect(login.status).toBe(302);
+    expect(login.headers.get('set-cookie')).toContain('pkce_verifier=verifier-abc');
+
+    // The browser sends it straight back on the callback. If the provider
+    // cannot read it, handleCallback throws and the Factory bounces to
+    // /auth/login with no session cookie at all.
+    const callback = await app.request('/auth/callback?code=code-1&state=uuid-1', {
+      headers: { Cookie: 'pkce_verifier=verifier-abc' },
+    });
+
+    expect(callback.status).toBe(302);
+    expect(callback.headers.get('location')).toBe('/');
+    expect(callback.headers.get('set-cookie')).toContain('idp_session=code-1.verifier-abc');
+  });
+
+  it("hands the provider the callback request's whole Cookie header, not just the verifier", async () => {
+    const { provider, seenCookieHeaders } = pkceProvider('verifier-xyz');
+    const app = new Hono();
+    mountFactoryAuth(app, { provider });
+
+    await app.request('/auth/callback?code=code-2&state=uuid-2', {
+      headers: { Cookie: 'other=1; pkce_verifier=verifier-xyz; another=2' },
+    });
+
+    expect(seenCookieHeaders).toEqual(['other=1; pkce_verifier=verifier-xyz; another=2']);
+  });
+
+  it('passes null when the callback carries no cookies at all', async () => {
+    const { provider, seenCookieHeaders } = pkceProvider('verifier-none');
+    const app = new Hono();
+    mountFactoryAuth(app, { provider });
+
+    const res = await app.request('/auth/callback?code=code-3&state=uuid-3');
+
+    // Nothing to read, so the provider refuses and the Factory bounces — but
+    // it was still given the chance to look, which is the whole point.
+    expect(seenCookieHeaders).toEqual([null]);
+    expect(res.headers.get('location')).toBe('/auth/login');
+  });
+
+  it('leaves a provider that does not implement the read side untouched', async () => {
+    // The shared hostedProvider() double has no setCallbackCookieHeader. The
+    // member is optional, so its callback must behave exactly as before.
+    const { app } = buildApp();
+    const res = await app.request('/auth/callback?code=abc&state=uuid-1', {
+      headers: { Cookie: 'some=cookie' },
+    });
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('/');
+    expect(res.headers.get('set-cookie')).toContain('idp_session=sealed');
+    expect(mockHandleCallback).toHaveBeenCalledWith('abc', 'uuid-1');
   });
 });

@@ -3,6 +3,7 @@
  */
 
 import type { ApiRoute } from '@mastra/core/server';
+import { resolveOrganizationId } from '@mastra/factory-auth/organizations';
 import type { Context, Hono } from 'hono';
 
 import type { RouteAuth } from './route.js';
@@ -23,10 +24,20 @@ export function mountApiRoutes(app: Hono<any>, routes: ApiRoute[]): void {
   }
 }
 
-/** The user shape tests stash on the request context, mirroring the web host. */
+/**
+ * The user shape tests stash on the request context, mirroring the web host.
+ *
+ * `id` and no vendor field, matching `FactoryAuthUser`. This carried `workosId`
+ * while the host's own neutral type did; a fixture that keeps naming a vendor
+ * is how a host stays coupled to one after the production code has stopped.
+ */
 export interface TestAuthUser {
-  workosId: string;
+  id: string;
   organizationId?: string;
+  /** Display fields, surfaced through `RouteAuth.profile()`. Optional, as they are on a real provider. */
+  name?: string;
+  email?: string;
+  avatarUrl?: string;
 }
 
 /**
@@ -48,15 +59,39 @@ export function fakeRouteAuth(
   return {
     enabled: () => enabled,
     ensureUser: async c => user(c),
+    runTenant: requestContext => {
+      const raw = requestContext?.get('user') as TestAuthUser | undefined;
+      if (!raw?.id) return undefined;
+      return { orgId: resolveOrganizationId({ id: raw.id, organizationId: raw.organizationId }), userId: raw.id };
+    },
+    profile: c => {
+      const u = user(c);
+      if (!u?.id) return undefined;
+      // Blank fields dropped, matching the real seam — a fixture that sets
+      // `name: ''` must model a nameless user, not a user named nothing.
+      const name = u.name?.trim();
+      const email = u.email?.trim();
+      const avatarUrl = u.avatarUrl?.trim();
+      return {
+        id: u.id,
+        ...(name ? { name } : {}),
+        ...(email ? { email } : {}),
+        ...(avatarUrl ? { avatarUrl } : {}),
+      };
+    },
     tenant: c => {
       const u = user(c);
-      return u ? { orgId: u.organizationId, userId: u.workosId } : undefined;
+      // Through the same resolver the real seam uses, so a fixture that omits
+      // organizationId models a no-org user rather than an impossible one.
+      return u
+        ? { orgId: resolveOrganizationId({ id: u.id, organizationId: u.organizationId }), userId: u.id }
+        : undefined;
     },
     isOrganizationAdmin: async (c, organizationId) => {
       const u = user(c);
       if (!u) return false;
       try {
-        return await isAdmin(organizationId, u.workosId);
+        return await isAdmin(organizationId, u.id);
       } catch {
         return false;
       }

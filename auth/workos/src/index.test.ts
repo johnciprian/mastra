@@ -1,7 +1,44 @@
+import type { MastraAuthProviderOptions } from '@internal/auth/provider';
 import type { JwtPayload } from '@mastra/auth';
 import { verifyJwks } from '@mastra/auth';
+import type { OrganizationMembership } from '@workos-inc/node';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { MastraAuthWorkosOptions, WorkOSUser } from './types';
 import { MastraAuthWorkos } from './index';
+
+/**
+ * A complete `OrganizationMembership`.
+ *
+ * The WorkOS SDK type has eleven required fields; a test that only cares about
+ * the id and the organization overrides those two and leaves the rest real,
+ * rather than passing a two-field literal that nothing was checking.
+ */
+const membership = (overrides: Partial<OrganizationMembership> = {}): OrganizationMembership => ({
+  object: 'organization_membership',
+  id: 'om-1',
+  organizationId: 'org-1',
+  organizationName: 'Test Org',
+  role: { slug: 'member' },
+  status: 'active',
+  userId: 'user123',
+  directoryManaged: false,
+  createdAt: '2024-01-01T00:00:00.000Z',
+  updatedAt: '2024-01-01T00:00:00.000Z',
+  customAttributes: {},
+  ...overrides,
+});
+
+/**
+ * `getCurrentUser` builds a `WorkOSUser` (auth-provider.ts, "Build user with
+ * session data") and declares `Promise<EEUser | null>`, so `organizationId`,
+ * `memberships` and `workosId` - the fields this provider exists to supply -
+ * are invisible to every caller. Its sibling `getUser` declares
+ * `Promise<WorkOSUser | null>` correctly. Until the declaration is corrected in
+ * the provider, a caller has to assert; these tests do it here, in one place,
+ * so the finding is recorded rather than scattered as `as any`.
+ */
+const asWorkOSUser = (user: Awaited<ReturnType<MastraAuthWorkos['getCurrentUser']>>): WorkOSUser | null =>
+  user as WorkOSUser | null;
 
 // Mock the WorkOS class
 const mockListOrganizationMemberships = vi.fn();
@@ -245,7 +282,7 @@ describe('MastraAuthWorkos', () => {
           organizationMembershipId: 'urn:mastra:organization_membership_id',
         },
         mapJwtPayloadToUser: () => ({
-          memberships: [{ id: 'om_123', organizationId: 'org_123' }],
+          memberships: [membership({ id: 'om_123', organizationId: 'org_123' })],
         }),
       });
 
@@ -508,8 +545,8 @@ describe('MastraAuthWorkos', () => {
         fetchMemberships: true,
       });
 
-      const firstUser = await auth.getCurrentUser(new Request('https://example.com/one'));
-      const secondUser = await auth.getCurrentUser(new Request('https://example.com/two'));
+      const firstUser = asWorkOSUser(await auth.getCurrentUser(new Request('https://example.com/one')));
+      const secondUser = asWorkOSUser(await auth.getCurrentUser(new Request('https://example.com/two')));
 
       expect(firstUser?.organizationId).toBeUndefined();
       expect(firstUser).toMatchObject({
@@ -648,16 +685,30 @@ describe('MastraAuthWorkos', () => {
   });
 
   it('can be overridden with custom authorization logic', async () => {
-    const workos = new MastraAuthWorkos({
+    // The intersection is deliberate and marks a provider finding, not a test
+    // bug: `authorizeUser` is a real, working option here - the constructor
+    // hands the whole options object to `registerOptions`, which binds it - but
+    // `MastraAuthWorkosOptions` does not declare it, so a caller cannot pass it
+    // without an assertion. Nor `protected`, nor `public`, which
+    // `registerOptions` honours the same way.
+    //
+    // Nine of the eleven providers under auth/ declare
+    // `Options extends MastraAuthProviderOptions<TUser>` and have none of this
+    // problem. The two that do not - this one and `MastraAuthOktaOptions` - are
+    // exactly the two whose `registerOptions` call needs an
+    // `as MastraAuthProviderOptions<TUser>` cast, which is what has been hiding
+    // it. The fix is in src/types.ts, which this test may not make.
+    const options: MastraAuthWorkosOptions & MastraAuthProviderOptions<WorkOSUser> = {
       apiKey: mockApiKey,
       clientId: mockClientId,
       redirectUri: mockRedirectUri,
       session: { cookiePassword: mockCookiePassword },
-      async authorizeUser(user: any): Promise<boolean> {
+      async authorizeUser(user): Promise<boolean> {
         // Custom authorization logic that checks for specific permissions
-        return user?.permissions?.includes('admin') ?? false;
+        return (user as { permissions?: string[] })?.permissions?.includes('admin') ?? false;
       },
-    });
+    };
+    const workos = new MastraAuthWorkos(options);
 
     // Test with admin user
     const adminUser = { id: 'user123', workosId: 'wos123', permissions: ['admin'] };

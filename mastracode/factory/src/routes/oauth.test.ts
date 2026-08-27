@@ -55,7 +55,7 @@ let authStorage: ReturnType<typeof makeAuthStorage>;
 let seed: FactoryStorageTestSeed;
 
 function buildApp(
-  user: { workosId: string; organizationId?: string } | null,
+  user: { id: string; organizationId?: string } | null,
   opts?: {
     noCredentials?: boolean;
     enabled?: boolean;
@@ -78,8 +78,8 @@ function buildApp(
   return app;
 }
 
-const userA = { workosId: 'user-a', organizationId: 'org1' };
-const userB = { workosId: 'user-b', organizationId: 'org1' };
+const userA = { id: 'user-a', organizationId: 'org1' };
+const userB = { id: 'user-b', organizationId: 'org1' };
 const TENANT_A = { orgId: 'org1', userId: 'user-a' };
 
 const post = (app: Hono, path: string, body?: unknown) =>

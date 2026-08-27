@@ -1,0 +1,661 @@
+---
+title: "Write an auth provider | Auth"
+description: "Build a Mastra auth provider from an empty file to a green conformance suite, covering token validation, cookie sign-in, organizations, and a hosted login."
+packages:
+  - "@mastra/core"
+  - "@mastra/factory-auth"
+---
+
+# Write an auth provider
+
+This guide builds an auth provider from an empty file and finishes with a green conformance suite. Along the way it covers the four [provider obligations](/docs/auth/provider-obligations), each at the point you'd naturally write the code it constrains, so none of them arrives as a retrofit.
+
+The finished provider validates tokens and accepts a browser session cookie. It also resolves an organization and runs a hosted OAuth login. If your identity system offers no browser sign-in, skip to [Providers that can't sign a browser in](#providers-that-cant-sign-a-browser-in), which is a supported outcome rather than a failure.
+
+You need a TypeScript package and an identity system that can verify a token. Nothing here needs a running identity provider, because the conformance suite runs offline.
+
+## Install the kit
+
+`@mastra/factory-auth` carries the contract, the helpers, and the conformance suite. It re-exports the contract from `@mastra/core`, which is a required peer, so install that too. `vitest` is an optional peer of the kit, needed only by the suite, so your package manager won't install it for you:
+
+```bash npm2yarn
+npm install @mastra/core
+npm install --save-dev @mastra/factory-auth vitest
+```
+
+Inside an existing Mastra application `@mastra/core` is already there. A standalone provider package needs it named explicitly, and it belongs in `peerDependencies` when you publish so your provider and its host agree on one copy of the contract.
+
+Whether the kit is a development dependency or a runtime one depends on what you end up importing. A provider that uses the kit only for its conformance suite keeps it in `devDependencies`, which is how `@mastra/auth-supabase` and `@mastra/auth-firebase` declare it. A provider that imports a helper on the request path needs it in `dependencies`, which is how `@mastra/auth-okta` declares it after adopting the kit's OAuth state codec. Start with a development dependency and move it if the hosted-login step sends you to the codec.
+
+## Take your verifier as an argument
+
+Before any provider code, one decision shapes everything downstream. Accept whatever verifies a token as a constructor argument rather than building it inside the class:
+
+```typescript title="src/auth-provider.ts"
+export interface AcmeAuthOptions extends MastraAuthProviderOptions<AcmeUser> {
+  issuer: string
+  clientId: string
+  clientSecret: string
+  verify: (token: string) => Promise<AcmeUser | null>
+  cookieName?: string
+}
+```
+
+Injecting the verifier is how the suite runs your provider offline, with no network and no environment variables. Published providers each pick the seam that suits them. `@mastra/auth-okta` swaps its remote JWKS for a local key set built in the test file, so `jose` runs its real verification path against keys the test holds. `@mastra/auth-supabase` accepts a `client` option and receives a stand-in that answers the way GoTrue answers.
+
+Building the verifier inside the constructor works right up until you try to test it, and then it costs more to undo than it saved.
+
+:::note
+
+**Verifying an OIDC token? Don't write the crypto.** `@mastra/auth` provides `verifyJwks(token, jwksUri)` for JWKS-backed providers and `verifyHmac(token, secret)` for shared-secret JWTs. Either one is the whole body of the `verify` function above. See [Helper utilities](/docs/auth/custom-auth-provider#helper-utilities). Reaching for `SubtleCrypto` to check an RS256 signature by hand is roughly a hundred lines that these already cover.
+
+:::
+
+## Validate a token, and read the cookie
+
+The base contract is two methods. `authenticateToken` verifies a credential and resolves the user it names, or `null`. `authorizeUser` decides whether that user may proceed.
+
+Write the cookie fallback into `authenticateToken` from the beginning. A browser that follows a link into your app sends no `Authorization` header, so the host calls this method with an empty token to mean "look where a browser would have put one." Leaving it for later means releasing a redirect loop first.
+
+```typescript title="src/auth-provider.ts"
+import { MastraAuthProvider } from '@mastra/factory-auth'
+import type { MastraAuthProviderOptions, MastraAuthRequest } from '@mastra/factory-auth'
+import { getRequestHeader } from '@mastra/factory-auth/contract'
+
+export interface AcmeUser {
+  id: string
+  email?: string
+  name?: string
+}
+
+const DEFAULT_COOKIE_NAME = 'acme_session'
+
+function readCookie(header: string, name: string): string {
+  for (const pair of header.split(';')) {
+    const separator = pair.indexOf('=')
+    if (separator === -1) continue
+    if (pair.slice(0, separator).trim() !== name) continue
+    return decodeURIComponent(pair.slice(separator + 1).trim())
+  }
+  return ''
+}
+
+export class AcmeAuth extends MastraAuthProvider<AcmeUser> {
+  protected issuer: string
+  protected clientId: string
+  protected clientSecret: string
+  private verify: (token: string) => Promise<AcmeUser | null>
+  private cookieName: string
+
+  constructor(options: AcmeAuthOptions) {
+    super({ name: options.name ?? 'acme' })
+    this.issuer = options.issuer
+    this.clientId = options.clientId
+    this.clientSecret = options.clientSecret
+    this.verify = options.verify
+    this.cookieName = options.cookieName ?? DEFAULT_COOKIE_NAME
+    this.registerOptions(options)
+  }
+
+  async authenticateToken(token: string, request: MastraAuthRequest): Promise<AcmeUser | null> {
+    const header = getRequestHeader(request, 'cookie') ?? ''
+    const bearer = token || readCookie(header, this.cookieName)
+    if (!bearer) return null
+    try {
+      return await this.verify(bearer)
+    } catch {
+      return null
+    }
+  }
+
+  authorizeUser(): boolean {
+    return true
+  }
+}
+```
+
+Several details in that method matter more than their size suggests.
+
+The returned user has its id at the top level under `id`, which satisfies the `flatId` obligation. The host reads `id`, then `uid`, then `sub`, and a nested id resolves to nobody. When your identity system's payload puts the id somewhere else and you can't reshape it, implement `toIdentity` instead of flattening by hand.
+
+`getRequestHeader` reads a plain `Request`, a Hono context request, and anything shaped like one, so reading the header costs you no web-framework dependency.
+
+The `catch` returns `null` rather than rethrowing. An unknown token is the ordinary state of a public endpoint, and a host treats a throw as a bug: it logs a stack trace per unauthenticated request and answers 401 with nothing useful in it.
+
+`authorizeUser` returning `true` is the right default for a provider to publish. Authorization policy that depends on infrastructure the contract never mentions belongs in a deployment rather than in a provider's default. `@mastra/auth-supabase` changed its default to exactly this after the old one denied every request in any project lacking a `users` table with an `isAdmin` column.
+
+`registerOptions` is a `protected` method on `MastraAuthProvider`, and calling it at the end of your constructor is what lets a deployment configure your provider without subclassing it. It reads four fields off the options object you were handed:
+
+| Option | Effect |
+| - | - |
+| `authorizeUser` | Replaces your `authorizeUser` with the caller's function, bound to the provider. |
+| `mapUserToResourceId` | Installs the optional method that scopes memory resources. |
+| `protected` | Path patterns the host requires authentication for. |
+| `public` | Path patterns the host lets through unauthenticated. |
+
+Skip the call and those four options are accepted by your type and then silently ignored, which is the kind of defect nobody reports because nothing errors. [Custom auth provider](/docs/auth/custom-auth-provider#configuration-options) documents the path-pattern syntax.
+
+## Run the conformance suite now
+
+Wire the suite before writing another method. It's cheaper to keep green than to make green:
+
+```typescript title="src/conformance.test.ts"
+import { describeAuthProvider } from '@mastra/factory-auth/conformance'
+
+import { AcmeAuth } from './auth-provider'
+import type { AcmeUser } from './auth-provider'
+
+const TOKEN = 'acme-conformance-token'
+const USER_ID = 'acme_user_123'
+
+const USER: AcmeUser = { id: USER_ID, email: 'conformance@example.test' }
+
+async function verify(token: string): Promise<AcmeUser | null> {
+  return token === TOKEN ? USER : null
+}
+
+function createProvider() {
+  return new AcmeAuth({
+    issuer: 'https://idp.acme.test',
+    clientId: 'acme-client-id',
+    clientSecret: 'acme-client-secret',
+    verify,
+  })
+}
+
+describeAuthProvider({
+  name: '@acme/auth-acme',
+  createProvider,
+  token: TOKEN,
+  userId: USER_ID,
+  cookieHeader: `acme_session=${TOKEN}`,
+})
+```
+
+```bash
+npx vitest run src/conformance.test.ts
+```
+
+`name`, `createProvider`, and `token` are required, because no guard can derive them. `userId` is optional and worth setting anyway: several checks need a user id, and supplying one keeps a single broken obligation reporting a single failure instead of cascading.
+
+The run answers `1 failed | 7 passed | 10 skipped (18)`. The single failure is `organizationId`, which is the next step.
+
+Read the skips rather than scrolling past them. A check is skipped only when a structural guard says your provider doesn't declare the capability the check is about, and the skip carries its reason. Skipped and passed never look the same.
+
+Obligation 2 is among those skips for now. A browser can hold a session only for a provider offering a hosted login, a credentials sign-in, server-side sessions, or its own auth routes, and this provider offers none of them yet. The `cookieHeader` fixture above stays unused until the hosted login arrives in the step after next, at which point the check starts applying and the fixture becomes required.
+
+## Resolve an organization
+
+Every organization-scoped surface writes to a column that isn't nullable, so a provider that resolves no organization leaves each of those surfaces to invent a fallback or answer 403. The `organizationId` check is deliberately not gated on whether you implement organizations, because gating it there would skip the only check that notices.
+
+If your identity system has no organization concept, wrap the provider once where you export it:
+
+```typescript title="src/index.ts"
+import { withSyntheticOrganizations } from '@mastra/factory-auth/organizations'
+
+import { AcmeAuth } from './auth-provider'
+import type { AcmeAuthOptions } from './auth-provider'
+
+export const createAcmeAuth = (options: AcmeAuthOptions) =>
+  withSyntheticOrganizations(new AcmeAuth(options))
+```
+
+The wrapper keeps every capability the provider already had and adds `ensureOrganization`, deriving `` `user:${userId}` ``. That's a pure function of the user id with no store behind it, so separate processes agree without talking to each other.
+
+`@mastra/auth-okta` documents exactly this composition in its README, because Okta has groups rather than organizations, and its conformance suite runs against the wrapped provider rather than the bare one. Test what you tell people to deploy.
+
+Point `createProvider` at the wrapped export so the suite exercises the same composition:
+
+```typescript title="src/conformance.test.ts" docscheck=replace
+import { describeAuthProvider } from '@mastra/factory-auth/conformance'
+import { withSyntheticOrganizations } from '@mastra/factory-auth/organizations'
+
+import { AcmeAuth } from './auth-provider'
+import type { AcmeUser } from './auth-provider'
+
+const TOKEN = 'acme-conformance-token'
+const USER_ID = 'acme_user_123'
+
+const USER: AcmeUser = { id: USER_ID, email: 'conformance@example.test' }
+
+async function verify(token: string): Promise<AcmeUser | null> {
+  return token === TOKEN ? USER : null
+}
+
+function createProvider() {
+  return withSyntheticOrganizations(
+    new AcmeAuth({
+      issuer: 'https://idp.acme.test',
+      clientId: 'acme-client-id',
+      clientSecret: 'acme-client-secret',
+      verify,
+    }),
+  )
+}
+
+describeAuthProvider({
+  name: '@acme/auth-acme',
+  createProvider,
+  token: TOKEN,
+  userId: USER_ID,
+  cookieHeader: `acme_session=${TOKEN}`,
+})
+```
+
+Wrapping is worth doing even when your provider does have organizations. `ensureOrganization` is documented as best-effort and may resolve `undefined`, which a host can't store. The wrapper fills that gap and never overrides an answer you gave.
+
+## Add a hosted login
+
+A hosted login means implementing `ISSOProvider`: send the browser to a page your identity provider owns, then handle the callback. Adding it turns on the `stateCodec` obligation.
+
+The host mints `state` and hands it to `getLoginUrl`. When the identity provider echoes it back, the host passes the raw query-string value to `handleCallback`. Treat it as opaque in both directions.
+
+Here is the finished `src/auth-provider.ts`. Everything above the hosted-login methods is unchanged apart from the `implements` clause and the added `ISSOProvider` import:
+
+```typescript title="src/auth-provider.ts" docscheck=replace
+import { MastraAuthProvider } from '@mastra/factory-auth'
+import type {
+  ISSOProvider,
+  MastraAuthProviderOptions,
+  MastraAuthRequest,
+} from '@mastra/factory-auth'
+import { getRequestHeader } from '@mastra/factory-auth/contract'
+
+export interface AcmeUser {
+  id: string
+  email?: string
+  name?: string
+}
+
+export interface AcmeAuthOptions extends MastraAuthProviderOptions<AcmeUser> {
+  issuer: string
+  clientId: string
+  clientSecret: string
+  verify: (token: string) => Promise<AcmeUser | null>
+  cookieName?: string
+}
+
+const DEFAULT_COOKIE_NAME = 'acme_session'
+
+function readCookie(header: string, name: string): string {
+  for (const pair of header.split(';')) {
+    const separator = pair.indexOf('=')
+    if (separator === -1) continue
+    if (pair.slice(0, separator).trim() !== name) continue
+    return decodeURIComponent(pair.slice(separator + 1).trim())
+  }
+  return ''
+}
+
+export class AcmeAuth extends MastraAuthProvider<AcmeUser> implements ISSOProvider<AcmeUser> {
+  protected issuer: string
+  protected clientId: string
+  protected clientSecret: string
+  private verify: (token: string) => Promise<AcmeUser | null>
+  private cookieName: string
+  private states = new Map<string, { redirectUri: string }>()
+
+  constructor(options: AcmeAuthOptions) {
+    super({ name: options.name ?? 'acme' })
+    this.issuer = options.issuer
+    this.clientId = options.clientId
+    this.clientSecret = options.clientSecret
+    this.verify = options.verify
+    this.cookieName = options.cookieName ?? DEFAULT_COOKIE_NAME
+    this.registerOptions(options)
+  }
+
+  async authenticateToken(token: string, request: MastraAuthRequest): Promise<AcmeUser | null> {
+    const header = getRequestHeader(request, 'cookie') ?? ''
+    const bearer = token || readCookie(header, this.cookieName)
+    if (!bearer) return null
+    try {
+      return await this.verify(bearer)
+    } catch {
+      return null
+    }
+  }
+
+  authorizeUser(): boolean {
+    return true
+  }
+
+  getLoginUrl(redirectUri: string, state: string): string {
+    this.states.set(state, { redirectUri })
+    const url = new URL(`${this.issuer}/authorize`)
+    url.searchParams.set('client_id', this.clientId)
+    url.searchParams.set('response_type', 'code')
+    url.searchParams.set('redirect_uri', redirectUri)
+    url.searchParams.set('state', state)
+    return url.toString()
+  }
+
+  async handleCallback(code: string, state: string) {
+    const stored = this.states.get(state)
+    if (stored === undefined) throw new Error('Unknown or expired OAuth state.')
+
+    // RFC 6749 requires a form-encoded body here. A JSON body is rejected by
+    // every conforming token endpoint.
+    const response = await fetch(`${this.issuer}/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: this.clientId,
+        client_secret: this.clientSecret,
+        redirect_uri: stored.redirectUri,
+        code,
+      }),
+    })
+    const tokens = (await response.json()) as { access_token: string; expires_in?: number }
+    const user = await this.verify(tokens.access_token)
+    if (user === null) throw new Error('The token exchange returned a token this provider rejects.')
+
+    return {
+      user,
+      tokens: {
+        accessToken: tokens.access_token,
+        // `expiresAt` is a Date, while OAuth reports `expires_in` in seconds.
+        expiresAt:
+          tokens.expires_in === undefined
+            ? undefined
+            : new Date(Date.now() + tokens.expires_in * 1000),
+      },
+      cookies: [
+        `${this.cookieName}=${encodeURIComponent(tokens.access_token)}; Path=/; HttpOnly; SameSite=Lax`,
+      ],
+    }
+  }
+
+  getLoginButtonConfig() {
+    return { provider: 'acme', text: 'Sign in with Acme' }
+  }
+}
+```
+
+`getLoginButtonConfig` and `handleCallback` carry no return type annotation, and that's deliberate. `@mastra/core/server` exports the capability interfaces but not the payload types they traffic in, so the `implements` clause is what constrains those returns. TypeScript checks them against the interface without an import you can't make.
+
+Both shapes inside `handleCallback` catch people out, and neither is guessable from the method signature. RFC 6749 requires a form-encoded body at the token endpoint, so a JSON body is refused by every conforming identity provider. And `tokens.expiresAt` is a `Date`, while an OAuth response reports `expires_in` as a number of seconds, so it needs converting rather than passing through.
+
+The `cookies` array is how a browser ends up holding the session your `authenticateToken` already knows how to read. Both halves now use the same credential and the same verification path, which is what keeps the cookie and the header from naming different people.
+
+Most `stateCodec` failures come from one of the following mistakes, and neither reports itself clearly.
+
+Re-encoding `state` into a format of your own degrades every post-login redirect to `/`, and nothing errors. Put the value you were handed into the URL unchanged, and let `URLSearchParams` encode it. Building the URL by string concatenation sends a raw `|`, which isn't a legal URI character.
+
+Keying a state store on one substring and reading it with another rejects every sign-in with "invalid or expired state", forever. The example above stores under the whole `state` and reads the whole `state`, which is the simplest way to agree with yourself.
+
+When a host hands you the id half instead of the whole value, normalize both sides through the kit's codec rather than slicing by hand:
+
+```typescript title="src/state-key.ts"
+import { parseStateId } from '@mastra/factory-auth/oauth-state'
+
+/** Both halves of the round trip agree on this key, whichever spelling arrives. */
+function stateStoreKey(state: string): string {
+  return parseStateId(state) ?? state
+}
+```
+
+That's the fix `@mastra/auth-okta` adopted after its conformance run went red. It stores and reads under `stateStoreKey`, so the raw value and the id half normalize to the same key. Taking the codec on is what moved the kit into that package's runtime `dependencies`.
+
+## Carry a PKCE verifier across the round trip
+
+The provider above is a confidential client: it holds a `client_secret` and sends it at the token endpoint. A public client can't keep a secret, so it proves it started the login another way. Proof Key for Code Exchange (PKCE) is that proof. The login request carries the hash of a random code verifier, and the token request carries the verifier itself.
+
+The verifier has to survive from the login redirect to the callback. Those are two separate requests, and a load balancer can route them to two separate processes, so in-process memory won't hold it. `ISSOProvider` gives you a cookie for it, in two halves:
+
+- `getLoginCookies(redirectUri, state)` runs right after `getLoginUrl` on the login redirect. Whatever it returns, the host sets on the response as `Set-Cookie`.
+- `setCallbackCookieHeader(cookieHeader)` runs on the callback, before `handleCallback`. It hands over the request's raw `Cookie` header.
+
+The second exists because `handleCallback` receives only `code` and `state`. It never sees the request, so a verifier it stored in a cookie has no other way back.
+
+Implement both or neither. A provider that writes a verifier and can't read one back fails every callback, and the host's recovery path sends the browser to the login route, which re-enters the identity provider. What a person sees is a redirect loop; what the logs say is that a verifier was missing, which points at the callback, where nothing is wrong.
+
+```typescript title="src/pkce-provider.ts"
+import { MastraAuthProvider } from '@mastra/factory-auth'
+import type {
+  ISSOProvider,
+  MastraAuthProviderOptions,
+  MastraAuthRequest,
+} from '@mastra/factory-auth'
+import { getRequestHeader } from '@mastra/factory-auth/contract'
+
+export interface AcmeUser {
+  id: string
+  email?: string
+  name?: string
+}
+
+export interface AcmePkceOptions extends MastraAuthProviderOptions<AcmeUser> {
+  issuer: string
+  clientId: string
+  /** The callback URL registered with the identity provider. */
+  redirectUri: string
+  verify: (token: string) => Promise<AcmeUser | null>
+}
+
+const SESSION_COOKIE = 'acme_session'
+const VERIFIER_COOKIE = 'acme_pkce_verifier'
+
+function base64url(bytes: Uint8Array): string {
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+function readCookie(header: string, name: string): string {
+  for (const pair of header.split(';')) {
+    const separator = pair.indexOf('=')
+    if (separator === -1) continue
+    if (pair.slice(0, separator).trim() !== name) continue
+    return decodeURIComponent(pair.slice(separator + 1).trim())
+  }
+  return ''
+}
+
+export class AcmePkceAuth extends MastraAuthProvider<AcmeUser> implements ISSOProvider<AcmeUser> {
+  protected issuer: string
+  protected clientId: string
+  protected redirectUri: string
+  private verify: (token: string) => Promise<AcmeUser | null>
+
+  /** Verifiers minted in `getLoginUrl`, collected once by `getLoginCookies`. */
+  private pending = new Map<string, string>()
+
+  /** Filled by `setCallbackCookieHeader`, read by `handleCallback`. */
+  private callbackCookieHeader: string | null = null
+
+  constructor(options: AcmePkceOptions) {
+    super({ name: options.name ?? 'acme' })
+    this.issuer = options.issuer
+    this.clientId = options.clientId
+    this.redirectUri = options.redirectUri
+    this.verify = options.verify
+    this.registerOptions(options)
+  }
+
+  async authenticateToken(token: string, request: MastraAuthRequest): Promise<AcmeUser | null> {
+    const header = getRequestHeader(request, 'cookie') ?? ''
+    const bearer = token || readCookie(header, SESSION_COOKIE)
+    if (!bearer) return null
+    try {
+      return await this.verify(bearer)
+    } catch {
+      return null
+    }
+  }
+
+  authorizeUser(): boolean {
+    return true
+  }
+
+  async getLoginUrl(redirectUri: string, state: string): Promise<string> {
+    const verifier = base64url(crypto.getRandomValues(new Uint8Array(32)))
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))
+    this.pending.set(state, verifier)
+
+    const url = new URL(`${this.issuer}/authorize`)
+    url.searchParams.set('client_id', this.clientId)
+    url.searchParams.set('response_type', 'code')
+    url.searchParams.set('redirect_uri', redirectUri)
+    url.searchParams.set('state', state)
+    url.searchParams.set('code_challenge', base64url(new Uint8Array(digest)))
+    url.searchParams.set('code_challenge_method', 'S256')
+    return url.toString()
+  }
+
+  getLoginCookies(_redirectUri: string, state: string): string[] | undefined {
+    const verifier = this.pending.get(state)
+    if (verifier === undefined) return undefined
+    this.pending.delete(state)
+    return [`${VERIFIER_COOKIE}=${verifier}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`]
+  }
+
+  setCallbackCookieHeader(cookieHeader: string | null): void {
+    this.callbackCookieHeader = cookieHeader
+  }
+
+  async handleCallback(code: string, _state: string) {
+    const verifier = readCookie(this.callbackCookieHeader ?? '', VERIFIER_COOKIE)
+    if (!verifier)
+      throw new Error('The PKCE verifier cookie was missing from the callback request.')
+
+    const response = await fetch(`${this.issuer}/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: this.clientId,
+        redirect_uri: this.redirectUri,
+        code_verifier: verifier,
+        code,
+      }),
+    })
+    const tokens = (await response.json()) as { access_token: string; expires_in?: number }
+    const user = await this.verify(tokens.access_token)
+    if (user === null) throw new Error('The token exchange returned a token this provider rejects.')
+
+    return {
+      user,
+      tokens: {
+        accessToken: tokens.access_token,
+        expiresAt:
+          tokens.expires_in === undefined
+            ? undefined
+            : new Date(Date.now() + tokens.expires_in * 1000),
+      },
+      cookies: [
+        `${SESSION_COOKIE}=${encodeURIComponent(tokens.access_token)}; Path=/; HttpOnly; SameSite=Lax`,
+        `${VERIFIER_COOKIE}=; Path=/; HttpOnly; Max-Age=0`,
+      ],
+    }
+  }
+
+  getLoginButtonConfig() {
+    return { provider: 'acme', text: 'Sign in with Acme' }
+  }
+}
+```
+
+Each of the details below has its own way of failing quietly.
+
+`getLoginUrl` mints the verifier and `getLoginCookies` only collects it. Nothing that can fail belongs in `getLoginCookies`: a throw there is a 500 on the route the sign-in button points at, so no login starts at all. The `pending` map bridges the two calls within the one login request and is cleared on collection, which is why it doesn't need to survive a restart. The cookie is what crosses the request boundary.
+
+Return complete `Set-Cookie` header values, `name=value` first and attributes after. A value made only of attributes sets no cookie, and the browser discards it before the callback happens. `HttpOnly` keeps the verifier away from scripts, and a short `Max-Age` bounds how long an abandoned login stays replayable.
+
+`setCallbackCookieHeader` stores and does nothing else. Parsing belongs in `handleCallback`, where a failure can be reported against the exchange it belongs to.
+
+Read the verifier under the name you wrote it. Reading a different name, or looking for it on a `Request` object that `handleCallback` never receives, produces the same silent miss.
+
+The conformance suite proves the loop for you. `sso/pkce-round-trip` plays the identity provider and runs the whole thing offline:
+
+1. Mint a login URL through `getLoginUrl`.
+1. Collect whatever `getLoginCookies` hands back.
+1. Turn those `Set-Cookie` values into the `Cookie` header a browser would return.
+1. Pass that header to `setCallbackCookieHeader`.
+1. Call `handleCallback`, and require it to reach the token exchange.
+
+```
+✓ hosted login (ISSOProvider) > a cookie set at login comes back readable at the callback
+```
+
+The check is gated on `getLoginCookies` alone. A provider without it skips, with a reason attached, because a confidential client carries nothing across and has nothing to read back. A provider that has it and returns nothing passes, so green here isn't by itself evidence that PKCE works, only that no cookie went missing. Declaring `getLoginCookies` and omitting `setCallbackCookieHeader` is the case the check exists to catch, and it fails with `sso/pkce-round-trip#no-read-side`.
+
+The suite watches global `fetch` to decide whether the exchange was reached. If your token request goes through `node:https`, or through an SDK that carries its own HTTP agent, pass `sso.reachedTokenExchange` and answer `true` for the error your transport throws when it can't reach the issuer.
+
+## Providers that can't sign a browser in
+
+Some identity systems can't offer a server-side hosted login at all. Firebase drives sign-in from a client SDK, so its Admin SDK has no authorization URL to return. Supabase's `signInWithOAuth` can't carry the host's `state`, and its code verifier lives in client storage rather than in a store shared between the login and callback requests.
+
+A provider in that position validates bearer tokens and does nothing else, and that's a first-class supported shape. `toAuthDescriptor` reports `signIn.kind: 'none'` for it, and the conformance suite skips obligations 2 and 3 with reasons attached rather than failing them.
+
+Declare the limit in the open rather than leaving it to be inferred from a missing method. Both published bearer-only providers export a constant saying so:
+
+```typescript title="src/index.ts" docscheck=replace
+export const FACTORY_BROWSER_SIGN_IN = {
+  supported: false,
+  reason: 'Acme issues tokens to clients and has no server-side hosted login.',
+  alternative: 'Send Acme access tokens as `Authorization: Bearer <token>`.',
+} as const
+```
+
+Then assert the shape, so a later change that adds a hosted login fails these tests and tells you this file needs rewriting:
+
+```typescript title="src/browser-flow.test.ts"
+import { toAuthDescriptor } from '@mastra/factory-auth/capabilities'
+import { withSyntheticOrganizations } from '@mastra/factory-auth/organizations'
+import { describe, expect, it } from 'vitest'
+
+import { AcmeAuth } from './auth-provider'
+import { FACTORY_BROWSER_SIGN_IN } from './index'
+
+const createProvider = () =>
+  withSyntheticOrganizations(
+    new AcmeAuth({
+      issuer: 'https://idp.acme.test',
+      clientId: 'acme-client-id',
+      clientSecret: 'acme-client-secret',
+      verify: async () => null,
+    }),
+  )
+
+describe('the Factory browser flow', () => {
+  it('declares that it cannot sign anybody in from a browser', () => {
+    const descriptor = toAuthDescriptor(createProvider())
+
+    expect(descriptor.signIn.kind).toBe('none')
+    expect(descriptor.features.logout).toBe(false)
+    expect(descriptor.features.organizations).toBe(true)
+    expect(FACTORY_BROWSER_SIGN_IN.supported).toBe(false)
+  })
+})
+```
+
+Omit `cookieHeader` from your suite options for this shape. Obligation 2 doesn't apply, so there's no browser request to send.
+
+A user interface reading `signIn.kind: 'none'` has to explain that this deployment takes API tokens and point at whoever issues them. An empty sign-in box is the wrong rendering, and a page implying the person is already through is worse.
+
+## What a finished run looks like
+
+`AcmeAuth`, wrapped for organizations, answers with all four obligations green:
+
+```
+ Test Files  1 passed (1)
+      Tests  12 passed | 7 skipped (19)
+```
+
+Every skip in that run is a capability that provider never declared, such as credentials, server-side sessions, its own auth routes, the init hook, and the login cookie the PKCE check needs. The bearer-only provider from [Providers that can't sign a browser in](#providers-that-cant-sign-a-browser-in) answers `8 passed | 11 skipped (19)` instead, with obligations 2 and 3 among the skips. `AcmePkceAuth` declares one capability more and answers `13 passed | 6 skipped (19)`.
+
+Add `--reporter=verbose` to see one line per check with every skip reason attached:
+
+```bash
+npx vitest run src/conformance.test.ts --reporter=verbose
+```
+
+Failures name the obligation in the test path before you read the message. Each one states what the suite did, what came back, why the obligation exists, and the fix as code.
+
+## Next steps
+
+- Grow the capability surface. [Auth capability interfaces](/reference/auth/capability-interfaces) lists what each optional interface obliges you to implement, and which provider satisfies which.
+- Register the provider on your Mastra instance. [Custom auth provider](/docs/auth/custom-auth-provider) covers path patterns, custom authorization, and the `@mastra/auth` token helpers.
+- Read the obligations in full when a check goes red. [Provider obligations](/docs/auth/provider-obligations) explains what each one prevents.

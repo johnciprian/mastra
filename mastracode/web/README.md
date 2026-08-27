@@ -1,6 +1,6 @@
 # MastraCode web host
 
-`mastracode/web` wires environment-specific storage, authentication, integrations, event bus, and sandboxes into [`@mastra/factory`](../factory/README.md). React code belongs in [`factory-ui`](../factory-ui/README.md).
+`mastracode/web` wires environment-specific storage, authentication, integrations, event bus, and sandboxes into [`@mastra/factory`](../factory/README.md). React code belongs in [`factory-ui`](../factory-ui/README.md). The auth provider contract and its conformance suite live in [`factory-auth`](../factory-auth/README.md).
 
 This is a separate pnpm project with its own lockfile and `link:` dependencies to monorepo packages.
 

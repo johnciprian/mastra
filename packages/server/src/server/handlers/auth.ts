@@ -488,10 +488,7 @@ export const GET_SSO_CALLBACK_ROUTE = createPublicRoute({
       }
 
       // Pass cookie header to provider for PKCE validation (if supported)
-      const reqCookieHeader = request.headers.get('cookie');
-      if (typeof (auth as any).setCallbackCookieHeader === 'function') {
-        (auth as any).setCallbackCookieHeader(reqCookieHeader);
-      }
+      auth.setCallbackCookieHeader?.(request.headers.get('cookie'));
 
       const result = (await auth.handleCallback(code, stateId)) as SSOCallbackResult<EEUser>;
       const user = result.user as EEUser;

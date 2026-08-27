@@ -226,6 +226,64 @@ jobs:
           include-hidden-files: true
           retention-days: 1
 
+  factory-ui-test:
+    name: Factory UI MSW Test
+    # Unconditional on any code change, like the factory-auth job in lint.yml.
+    # These 131 files are the SPA's only coverage of its data layer, and nothing
+    # in the sharded unit job can run them, so there is no "affected" selection
+    # to fall back on when this is skipped.
+    if: inputs.has_code == 'true'
+    runs-on: starsling-ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ secrets.TURBO_TEAM }}
+      TURBO_CACHE: ${{ secrets.TURBO_TOKEN == '' && 'local:rw' || 'remote:rw' }}
+      NODE_OPTIONS: --max-old-space-size=8192
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@e8d4307400f9427dba7cb98e488d6ab85f1cec5f
+        timeout-minutes: 20
+        with:
+          ref: ${{ inputs.head_sha }}
+          fetch-depth: 2
+
+      - name: Setup pnpm and Node.js
+        uses: ./.github/actions/setup-pnpm-node
+
+      - name: Cache turbo build setup
+        if: ${{ env.TURBO_TOKEN == '' }}
+        uses: actions/cache@v6
+        with:
+          path: .turbo/cache
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-
+
+      - name: Build the factory-ui dependency graph
+        run: pnpm turbo build --filter ./mastracode/factory-ui
+
+      # WHY THIS SUITE HAS A JOB AND THE REST OF mastracode/ DOES NOT
+      #
+      # `mastracode/factory` and `unit:factory-ui` join the sharded unit job
+      # through the root project list, and are green there. `msw:factory-ui`
+      # cannot: it is jsdom + React + MSW and is sensitive to the directory
+      # vitest was started from. Run from the package it is 131 files and 698
+      # tests green; run from the repository root, the identical config and the
+      # identical files fail 7 tests in 4 files on accessible-name lookups,
+      # reproducibly, with no test or source change between the two.
+      #
+      # So until that resolution difference is understood, this runs the suite
+      # the way it is known to work — from the package directory, through the
+      # package's own script, which is also what mastracode/factory-ui/AGENTS.md
+      # tells a human to run. Its own job also parallelises it: ~3 minutes of
+      # jsdom sits beside the unit shards instead of landing inside one of them.
+      - name: Run the factory-ui MSW UI suite
+        run: pnpm --filter ./mastracode/factory-ui test:msw
+
   merge-reports:
     name: Merge Test Reports
     runs-on: starsling-ubuntu-24.04

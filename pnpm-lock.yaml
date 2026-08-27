@@ -467,6 +467,9 @@ importers:
       '@internal/types-builder':
         specifier: workspace:*
         version: link:../../packages/_types-builder
+      '@mastra/factory-auth':
+        specifier: workspace:*
+        version: link:../../mastracode/factory-auth
       '@types/node':
         specifier: 22.19.15
         version: 22.19.15
@@ -510,6 +513,9 @@ importers:
       '@internal/types-builder':
         specifier: workspace:*
         version: link:../../packages/_types-builder
+      '@mastra/factory-auth':
+        specifier: workspace:*
+        version: link:../../mastracode/factory-auth
       '@types/node':
         specifier: 22.19.15
         version: 22.19.15
@@ -550,6 +556,9 @@ importers:
       '@internal/types-builder':
         specifier: workspace:*
         version: link:../../packages/_types-builder
+      '@mastra/factory-auth':
+        specifier: workspace:*
+        version: link:../../mastracode/factory-auth
       '@types/node':
         specifier: 22.19.15
         version: 22.19.15
@@ -590,6 +599,9 @@ importers:
       '@internal/types-builder':
         specifier: workspace:*
         version: link:../../packages/_types-builder
+      '@mastra/factory-auth':
+        specifier: workspace:*
+        version: link:../../mastracode/factory-auth
       '@types/node':
         specifier: 22.19.15
         version: 22.19.15
@@ -627,6 +639,9 @@ importers:
       '@internal/types-builder':
         specifier: workspace:*
         version: link:../../packages/_types-builder
+      '@mastra/factory-auth':
+        specifier: workspace:*
+        version: link:../../mastracode/factory-auth
       '@types/node':
         specifier: 22.19.15
         version: 22.19.15
@@ -667,6 +682,9 @@ importers:
       '@internal/types-builder':
         specifier: workspace:*
         version: link:../../packages/_types-builder
+      '@mastra/factory-auth':
+        specifier: workspace:*
+        version: link:../../mastracode/factory-auth
       '@types/node':
         specifier: 22.19.15
         version: 22.19.15
@@ -704,6 +722,9 @@ importers:
       '@mastra/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@mastra/factory-auth':
+        specifier: workspace:*
+        version: link:../../mastracode/factory-auth
       '@types/node':
         specifier: 22.19.15
         version: 22.19.15
@@ -728,6 +749,9 @@ importers:
 
   auth/okta:
     dependencies:
+      '@mastra/factory-auth':
+        specifier: workspace:*
+        version: link:../../mastracode/factory-auth
       '@okta/okta-sdk-nodejs':
         specifier: ^8.0.0
         version: 8.1.0(encoding@0.1.13)(supports-color@10.2.2)
@@ -783,6 +807,9 @@ importers:
       '@internal/types-builder':
         specifier: workspace:*
         version: link:../../packages/_types-builder
+      '@mastra/factory-auth':
+        specifier: workspace:*
+        version: link:../../mastracode/factory-auth
       '@types/node':
         specifier: 22.19.15
         version: 22.19.15
@@ -820,6 +847,9 @@ importers:
       '@internal/types-builder':
         specifier: workspace:*
         version: link:../../packages/_types-builder
+      '@mastra/factory-auth':
+        specifier: workspace:*
+        version: link:../../mastracode/factory-auth
       '@types/node':
         specifier: 22.19.15
         version: 22.19.15
@@ -869,6 +899,9 @@ importers:
       '@internal/types-builder':
         specifier: workspace:*
         version: link:../../packages/_types-builder
+      '@mastra/factory-auth':
+        specifier: workspace:*
+        version: link:../../mastracode/factory-auth
       '@types/node':
         specifier: 22.19.15
         version: 22.19.15
@@ -2306,15 +2339,15 @@ importers:
       '@mastra/auth-studio':
         specifier: workspace:*
         version: link:../../auth/studio
-      '@mastra/auth-workos':
-        specifier: workspace:*
-        version: link:../../auth/workos
       '@mastra/code-sdk':
         specifier: workspace:*
         version: link:../sdk
       '@mastra/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@mastra/factory-auth':
+        specifier: workspace:*
+        version: link:../factory-auth
       '@mastra/slack':
         specifier: workspace:*
         version: link:../../channels/slack
@@ -2352,6 +2385,42 @@ importers:
       eslint:
         specifier: ^10.7.0
         version: 10.7.0(jiti@2.7.0)(supports-color@10.2.2)
+      tsdown:
+        specifier: 0.22.9
+        version: 0.22.9(@volar/typescript@2.4.23(typescript@6.0.3))(oxc-resolver@11.20.0)(tsx@4.23.1)(typescript@6.0.3)
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      typescript-eslint:
+        specifier: ^8.57.0
+        version: 8.59.2(eslint@10.7.0(jiti@2.7.0)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3)
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@22.19.15)(@vitest/coverage-v8@4.1.10)(@vitest/ui@4.1.10)(jsdom@27.4.0(@noble/hashes@2.2.0)(bufferutil@4.1.0)(supports-color@10.2.2))(msw@2.14.6(@types/node@22.19.15)(typescript@6.0.3))(vite@7.3.6(@types/node@22.19.15)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.1)(tsx@4.23.1)(yaml@2.9.0))
+
+  mastracode/factory-auth:
+    devDependencies:
+      '@internal/lint':
+        specifier: workspace:*
+        version: link:../../packages/_config
+      '@internal/types-builder':
+        specifier: workspace:*
+        version: link:../../packages/_types-builder
+      '@mastra/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@types/node':
+        specifier: 22.19.15
+        version: 22.19.15
+      '@vitest/coverage-v8':
+        specifier: 'catalog:'
+        version: 4.1.10(vitest@4.1.10)
+      eslint:
+        specifier: ^10.7.0
+        version: 10.7.0(jiti@2.7.0)(supports-color@10.2.2)
+      madge:
+        specifier: ^8.0.0
+        version: 8.0.0(supports-color@10.2.2)(typescript@6.0.3)
       tsdown:
         specifier: 0.22.9
         version: 0.22.9(@volar/typescript@2.4.23(typescript@6.0.3))(oxc-resolver@11.20.0)(tsx@4.23.1)(typescript@6.0.3)
@@ -31574,6 +31643,7 @@ packages:
   typescript@6.0.3:
     resolution: {integrity: sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==}
     engines: {node: '>=14.17'}
+    hasBin: true
 
   typical@4.0.0:
     resolution: {integrity: sha512-VAH4IvQ7BDFYglMd7BPRDfLgxZZX4O4TFcRDA6EN5X7erNJJq+McIEp8np9aVtxrCJ6qx4GTYVfOWNjcqwZgRw==}
@@ -44975,7 +45045,7 @@ snapshots:
       '@stryker-mutator/util': 10.0.0
       semver: 7.8.5
       tslib: 2.8.1
-      vitest: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@22.19.15)(@vitest/coverage-v8@4.1.10)(@vitest/ui@4.1.10)(jsdom@26.1.0(bufferutil@4.1.0)(supports-color@10.2.2))(msw@2.14.6(@types/node@22.19.15)(typescript@6.0.3))(vite@7.3.6(@types/node@22.19.15)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.1)(tsx@4.23.1)(yaml@2.9.0))
+      vitest: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@22.19.15)(@vitest/coverage-v8@4.1.10)(@vitest/ui@4.1.10)(jsdom@27.4.0(@noble/hashes@2.2.0)(bufferutil@4.1.0)(supports-color@10.2.2))(msw@2.14.6(@types/node@22.19.15)(typescript@6.0.3))(vite@7.3.6(@types/node@22.19.15)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.1)(tsx@4.23.1)(yaml@2.9.0))
 
   '@supabase/auth-js@2.111.0':
     dependencies:

@@ -19,6 +19,13 @@ export type {
   ValidationErrorHook,
   StudioConfig,
   Middleware,
+  // Exported so a host can declare its stored-resource scope against its own
+  // user type. The types were reachable only through `dist/server/types.d.ts`,
+  // which is not a published subpath, so the generic parameter added to
+  // `StoredResourceScopeConfig` would have had no way to be named.
+  StoredResourceScopeConfig,
+  StoredResourceScopeResolver,
+  StoredResourcesConfig,
 } from './types';
 export {
   MastraAuthProvider,
@@ -29,6 +36,7 @@ export {
   isOrganizationsProvider,
   isAuthHttpHandler,
   hasAuthInit,
+  canClearSession,
 } from './auth';
 export type {
   IMastraAuthProvider,
@@ -38,6 +46,7 @@ export type {
   IAuthInit,
   ICredentialsProvider,
   IOrganizationsProvider,
+  ISessionClearer,
   ISessionProvider,
   ISSOProvider,
   IUserProvider,

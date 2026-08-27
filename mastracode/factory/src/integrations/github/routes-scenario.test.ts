@@ -359,7 +359,7 @@ function deferred<T = void>() {
   return { promise, resolve, reject };
 }
 
-function buildApp(user: { workosId: string; organizationId?: string } | null) {
+function buildApp(user: { id: string; organizationId?: string } | null) {
   const app = new Hono();
   app.use('*', async (c, next) => {
     if (user) c.set('factoryAuthUser' as never, user as never);
@@ -437,7 +437,7 @@ describe('S1: full write-back journey through the real route handlers', () => {
         sandboxWorkdir: '/workspace/hello',
       }),
     );
-    const app = buildApp({ workosId: 'u1', organizationId: 'org1' });
+    const app = buildApp({ id: 'u1', organizationId: 'org1' });
 
     // Seed the per-(project-repository,user) sandbox binding the way `ensure`
     // would persist it (provisioning itself is mocked).
@@ -533,7 +533,7 @@ describe('S1: full write-back journey through the real route handlers', () => {
   });
 
   it('rejects PR creation when no originating session is supplied', async () => {
-    const app = buildApp({ workosId: 'u1', organizationId: 'org1' });
+    const app = buildApp({ id: 'u1', organizationId: 'org1' });
     const projectId = 'project-compat';
     tables.projectRepositories.push(
       projectRepositoryRow({
@@ -610,7 +610,7 @@ describe('S2: concurrent pushes', () => {
 
   it('serializes pushes for the same project session', async () => {
     seed('p1');
-    const app = buildApp({ workosId: 'u1', organizationId: 'org1' });
+    const app = buildApp({ id: 'u1', organizationId: 'org1' });
 
     const gate = deferred();
     let active = 0;
@@ -640,7 +640,7 @@ describe('S2: concurrent pushes', () => {
   it('allows pushes for different projects to overlap', async () => {
     seed('p1');
     seed('p2');
-    const app = buildApp({ workosId: 'u1', organizationId: 'org1' });
+    const app = buildApp({ id: 'u1', organizationId: 'org1' });
 
     const gate = deferred();
     let active = 0;

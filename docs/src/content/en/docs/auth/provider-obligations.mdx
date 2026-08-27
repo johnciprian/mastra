@@ -1,0 +1,292 @@
+---
+title: "Provider obligations | Auth"
+description: "What every Mastra auth provider must satisfy beyond the capability interfaces, and how to check your own provider against it."
+packages:
+  - "@mastra/core"
+  - "@mastra/factory-auth"
+---
+
+# Provider obligations
+
+A provider that implements the base contract and satisfies every capability guard can still fail to run a deployment. Some requirements never made it into an interface, because each one describes what the host does with a value the provider returned rather than the shape of a method.
+
+This page states those requirements as a contract. Every section below names the host behavior that creates the requirement. It then covers what a person using the app sees when a provider misses it, and how to satisfy it, including the helper the kit gives you when the direct route isn't open.
+
+The obligations carry stable names, exported in order as `AUTH_OBLIGATIONS` from `@mastra/factory-auth/testing`:
+
+| Obligation | The rule |
+| - | - |
+| `flatId` | `authenticateToken` returns a payload with a flat, resolvable id. |
+| `cookieAuth` | `authenticateToken` reads the `Cookie` header when the bearer token is empty. |
+| `stateCodec` | Login and callback both leave the OAuth `state` value intact. |
+| `organizationId` | Every identity resolves to an organization id. |
+
+For the interfaces themselves, which method each declares, and which published provider satisfies which, see [Auth capability interfaces](/reference/auth/capability-interfaces).
+
+## Why these sit outside the interfaces
+
+An interface can require that a method exists and can constrain its types. None of the four requirements below is expressible that way.
+
+`authenticateToken` is declared to resolve to `Promise<TUser | null>`, where `TUser` is whatever the provider chose. No type can say "and the host has to find an id in it." The `state` parameter is a `string` going in and a `string` coming back, and nothing in a signature says the second has to equal the first. `ensureOrganization` is declared to return `Promise<string | undefined>`, and the `undefined` is documented as legitimate, so a provider that always returns it satisfies the type while giving the host nothing to store.
+
+Every requirement here was real long before anyone wrote it down. The [conformance suite](#check-your-work) checks all of them, so a provider built from this page passes on the first run.
+
+## flatId
+
+The host reads one value out of every `authenticateToken` result: an id. That id becomes the storage key for everything the deployment keeps about a person:
+
+- agent state
+- stored model credentials
+- run history
+- the organization fallback
+
+`toAuthIdentity` from `@mastra/factory-auth/identity` performs the read. It looks for `id`, then `uid`, then `sub`, at the top level of the payload. For a `{ session, user }` pair it reads inside the `user` half. A blank or whitespace-only value counts as absent, and resolving nothing produces `null`, which the host treats as "this payload names nobody."
+
+### What breaks
+
+The request authenticates, and then fails somewhere unrelated with a message about whatever ran next. Nothing in the failure mentions identity. `{ data: { user: { id } } }` is the shape that actually reaches production and triggers this.
+
+The worse variant resolves the wrong field. A `{ session, user }` payload carries a `session.id` at the top level that's a session id, so a host reading the top level keys that user's data under a value that changes every time they sign in. The request succeeds. The data lands under the wrong key, and yesterday's work stays in storage where the person can't see it.
+
+### How to satisfy it
+
+Return the id at the top level, under `id`, `uid`, or `sub`:
+
+```typescript title="src/auth-provider.ts" docscheck=member docscheck-scaffold=oidc-provider
+async authenticateToken(token: string) {
+  const claims = await this.verify(token)
+  if (claims === null) return null
+  return { id: claims.sub, email: claims.email }
+}
+```
+
+Precedence is `id`, then `uid`, then `sub`, so a payload carrying both `id` and `sub` with different values always resolves to `id`.
+
+When you can't change the payload shape, implement `IIdentityProvider` and map it yourself. `toAuthIdentity` hands the whole job to a provider that implements `toIdentity`:
+
+```typescript title="src/auth-provider.ts" docscheck=member docscheck-scaffold=provider
+toIdentity(raw: unknown) {
+  const user = (raw as { data?: { user?: { id?: string; email?: string } } }).data?.user
+  return user?.id ? { id: user.id, email: user.email } : null
+}
+```
+
+Declare the capability on the class with `implements IIdentityProvider`, importing the type from `@mastra/factory-auth/identity`.
+
+Your mapper's answer is final, including when it's `null`. The built-in shape detection doesn't run as a fallback, because a mapper returns `null` for reasons only it knows. The payload might be a service account. A required custom claim might be missing. Every such payload still carries a `sub`, so a fallback would hand back an identity the provider had already refused, and the refusal would be invisible. To opt into the built-in behavior for shapes you don't handle, call `toAuthIdentity(raw)` yourself with no provider argument.
+
+If you also implement the optional `mapUserToResourceId`, return the same value the identity resolves to. Memory resources are stored under that method's answer and everything else under the identity's `id`, so a disagreement gives one person two identities, with each half of the app seeing only one.
+
+## cookieAuth
+
+A browser that follows a link into your app sends no `Authorization` header. It sends cookies. The host still calls `authenticateToken`, passing an empty string as the token, which is how it says "this request carried no bearer token, so look where a browser would have put one."
+
+Nothing upstream can do this read for you, because only your provider knows what its token looks like.
+
+### What breaks
+
+The person sees "signed in, then immediately signed out." A provider that reads only the bearer token authenticates every browser navigation as nobody, so the host redirects to the sign-in page, the sign-in succeeds, the next navigation authenticates as nobody again, and the loop repeats. Nothing in the logs says why.
+
+### How to satisfy it
+
+Fall back to the `Cookie` header when `token` is empty. `getRequestHeader` is re-exported from the kit and reads a plain `Request`, a Hono context request, and anything shaped like one, so it costs you no web-framework dependency:
+
+```typescript title="src/auth-provider.ts" docscheck=member docscheck-scaffold=provider
+import { getRequestHeader } from '@mastra/factory-auth/contract'
+
+async authenticateToken(token: string, request: MastraAuthRequest) {
+  const header = getRequestHeader(request, 'cookie') ?? ''
+  const bearer = token || readMyCookie(header)
+  if (!bearer) return null
+  return this.verify(bearer)
+}
+```
+
+Resolve the cookie to the same token you would have accepted as a bearer, then run a single verification path over it. Verifying the cookie separately is how the two credentials drift into naming different people.
+
+Returning `null` when there's nothing to read is the other half of this. An empty token with no recognizable cookie is an anonymous request, and a provider that returns a user there authenticates every anonymous request in the deployment.
+
+If you'd rather the host own the cookie than parse your own, `@mastra/factory-auth/cookie` mints and reads a signed, `HttpOnly` cookie under a name it declares. Use `readSessionCookie` to read it and `sessionCookieName(site)` to ask for the name rather than hardcoding it, since the name depends on the deployment shape.
+
+## stateCodec
+
+`state` is the only value that survives the whole hosted-login round trip. The host mints it, hands it to `getLoginUrl`, the identity provider echoes it back on the callback, and the host passes the raw query-string value to `handleCallback`. Because it's the one channel crossing that boundary, the host uses it to carry where the person was going before they were bounced to a login screen.
+
+The format is an id, a `|`, and a percent-encoded destination. Encoding `/agents/42` under the id `abc-123` gives `abc-123|%2Fagents%2F42`. Only the first `|` acts as the delimiter, so a destination containing a pipe round trips unchanged.
+
+This obligation applies to any provider that implements `ISSOProvider`.
+
+### What breaks
+
+Neither failure mode here gets filed as a bug.
+
+A provider that re-encodes `state` into a format of its own degrades every post-login redirect to `/`. The app looks forgetful, and nothing errors.
+
+A provider that keys its own state store on one substring and looks it up under another rejects the callback outright with "invalid or expired state", on every sign-in, forever. Nothing in that message points at the keying.
+
+### How to satisfy it
+
+Treat `state` as opaque. Put exactly what you were handed into the authorization URL:
+
+```typescript title="src/auth-provider.ts" docscheck=member docscheck-scaffold=provider
+getLoginUrl(redirectUri: string, state: string) {
+  const url = new URL(`${this.issuer}/authorize`)
+  url.searchParams.set('redirect_uri', redirectUri)
+  url.searchParams.set('state', state)
+  return url.toString()
+}
+```
+
+`URLSearchParams` percent-encodes the value for you, which it needs to do: `|` isn't a legal URI character, so a provider that concatenates the value into a URL string by hand sends a raw pipe that an intermediary may reject or rewrite.
+
+If you keep a state store, key it on the same value the callback hands back. The host passes `handleCallback` the raw `state` from the query string, so that whole string is the key:
+
+```typescript title="src/auth-provider.ts" docscheck=member docscheck-scaffold=provider
+getLoginUrl(redirectUri: string, state: string) {
+  this.states.set(state, { redirectUri })
+  // ...
+}
+
+async handleCallback(code: string, state: string) {
+  const stored = this.states.get(state) // the same string, not a slice of it
+  // ...
+}
+```
+
+To read the two halves, use the codec from `@mastra/factory-auth/oauth-state` rather than splitting by hand. `parseStateId(state)` gives the id, and `decodeState(state).returnTo` gives the destination:
+
+```typescript title="src/auth-routes.ts" docscheck=statements docscheck-scaffold=provider
+import { decodeState, encodeState, parseStateId } from '@mastra/factory-auth/oauth-state'
+
+// At login. Stash `stateId` somewhere the browser can't forge.
+const stateId = crypto.randomUUID()
+const state = encodeState(returnTo, stateId)
+
+// On the callback, with `raw` read from the query string.
+if (parseStateId(raw) !== stateId) throw new Error('State mismatch: refuse the callback.')
+const { returnTo: destination } = decodeState(raw)
+```
+
+Omit the second argument and `encodeState` generates a UUID, which carries the destination correctly but leaves you nothing to compare against.
+
+`decodeState` never throws and always returns a destination safe to hand straight to a redirect. Hand it over verbatim. It has already been percent-decoded once, and decoding again would turn `/%2F%2Fevil.com` back into `//evil.com`.
+
+The `state` value is unsigned and unauthenticated. The id half exists so you can build cross-site request forgery protection on top of it by stashing the id somewhere the browser can't write and comparing on the callback, but the codec performs no such check itself.
+
+## organizationId
+
+Every organization-scoped surface writes to one column that isn't nullable. The host calls `ensureOrganization` on sign-in, and everything organization-scoped is written under whatever comes back.
+
+Having no organization concept isn't the problem here, and it isn't a reason to fail this. Plenty of identity systems have no such primitive. Resolving to nothing is the problem.
+
+### What breaks
+
+Each organization-scoped surface either invents its own fallback or answers 403, and historically they've done both. The same person stores a model credential and is then refused the page that reads it back.
+
+A non-deterministic `ensureOrganization` fails differently and worse. An id that changes per call partitions one person against themselves: yesterday's work is still in storage and they can't see it, with nothing reporting an error anywhere.
+
+### How to satisfy it
+
+If your provider has no organizations, wrap it once. Every capability it had is preserved and one is added:
+
+```typescript title="src/mastra/index.ts" docscheck-scaffold=auth-provider
+import { withSyntheticOrganizations } from '@mastra/factory-auth/organizations'
+
+export const auth = withSyntheticOrganizations(new MyProvider())
+```
+
+The id it derives is `` `user:${userId}` ``, a pure function of the user id with no store behind it, so two processes agree without talking to each other.
+
+If your provider does have organizations, implement `IOrganizationsProvider` and make `ensureOrganization` deterministic. The same user id must get the same organization id on every call and in every process. Derive the id, or look it up and create only when it's missing.
+
+Wrapping is still worth doing for a provider that has organizations. `ensureOrganization` is documented as best-effort and may return `undefined`, which a host can't store. The wrapper supplies the synthetic id exactly when your implementation declines to supply one, and never overrides an answer you gave. A delegate that throws counts as one that declined, so a transient failure in your organization lookup degrades to a private organization rather than failing the request.
+
+On the host side, `resolveOrganizationId(identity)` answers the same question for code holding an identity rather than a provider. A declared `organizationId` always wins, and the return type is a plain `string`, so no caller has to write the branch that 403s.
+
+### Where a session-shaped payload's organization comes from
+
+If your `authenticateToken` returns a `{ session, user }` wrapper, `toAuthIdentity` takes the organization from `session.activeOrganizationId` and from nowhere else. An `organizationId` sitting on the `user` half isn't read as a fallback.
+
+That's deliberate, and it's the one rule to know if your provider has organizations a person can belong to several of. `user.organizationId` says the person is a _member_ of that organization. It doesn't say this session was switched into it, and a session that never activated an organization must not reach that organization's shared data. Membership isn't activation.
+
+A session that names no active organization resolves to no organization, and `resolveOrganizationId` then returns the private partition `` `user:${userId}` ``, the same answer any caller without an organization gets. The cost is worth stating plainly: someone who belongs to exactly one organization and hasn't switched into it sees their private partition rather than their team's. Set the active organization on the session when you mint it and that case doesn't arise.
+
+## When each obligation is enforced
+
+The [conformance suite](#check-your-work) skips a check only when a structural guard says the provider doesn't declare the capability that check is about. A check is never skipped because a provider declared a capability and then didn't deliver it.
+
+Applying that rule to the four gives a deliberate asymmetry:
+
+| Obligation | Enforced |
+| - | - |
+| `flatId` | Always. Every provider authenticates somebody. |
+| `cookieAuth` | Once a browser can hold a session for this provider, which is `toAuthDescriptor(provider).features.logout`. |
+| `stateCodec` | Once `isSSOProvider` is true, because a provider with no hosted login has no authorization URL to put a `state` in. |
+| `organizationId` | Always, and deliberately not gated on `isOrganizationsProvider`. |
+
+Read the two ends of that table together, because they pull in opposite directions on purpose.
+
+`cookieAuth` is gated, and the gate is generous. `features.logout` is true for a provider that offers any of these:
+
+- a hosted login
+- a credentials sign-in
+- server-side sessions
+- its own auth routes
+
+A provider with none of them validates bearer tokens only. That's a supported shape. A browser never holds a session for such a provider, so requiring it to read a cookie would require it to invent a cookie nobody sets. The check applies the moment that provider grows one of the capabilities above.
+
+`organizationId` skips the guard that would seem to fit it. Gating it on `isOrganizationsProvider` would make it self-fulfilling, because every provider without organizations would skip the one check that exists to notice exactly that. Failing that guard is the finding, and `withSyntheticOrganizations` is the one-line fix.
+
+## Check your work
+
+`@mastra/factory-auth/conformance` registers a vitest suite that asserts the contract your provider declares plus all four obligations. It runs offline, with no identity provider and no environment variables:
+
+```typescript title="src/conformance.test.ts"
+import { describeAuthProvider } from '@mastra/factory-auth/conformance'
+import { createAuth } from './auth-provider'
+
+const TOKEN = 'a-token-my-verifier-accepts'
+
+describeAuthProvider({
+  name: '@mastra/auth-my-provider',
+  createProvider: () => createAuth(async token => (token === TOKEN ? { sub: 'user_123' } : null)),
+  token: TOKEN,
+  userId: 'user_123',
+  cookieHeader: `my_session=${TOKEN}`,
+})
+```
+
+Failures name the obligation in the test path before you read the message, and each one carries what the suite did, what came back, why the obligation exists, and the fix as code.
+
+`cookieHeader` deliberately has no default. It becomes required once your provider can put a session in a browser. Only you know which cookie it reads. A suite that guessed a name would report the guess missing as an obligation failure, and a false red looks exactly like a true one.
+
+Set `sso.reachedTokenExchange` only if your token exchange bypasses global `fetch`, since the suite replaces `fetch` to make "reached the network" observable.
+
+`rejectedToken` names a token your provider must refuse, and defaults to `'conformance-rejected-token'`. Override it only if that string means something to your provider.
+
+Taking your verifier as a constructor argument rather than building one inside the class is what lets the suite run your provider offline. That's worth doing for its own sake, and it's the same setup your unit tests already need.
+
+### Releasing with a check you can't fix yet
+
+A provider can be real, useful, and not conforming, where the defect is well understood and the fix isn't small. Record the failure rather than hiding it:
+
+```typescript title="src/conformance.test.ts" docscheck=skip docscheck-reason="an options fragment, shown without the surrounding describeAuthProvider call it belongs to"
+knownFailures: [
+  {
+    check: 'sessions/round-trip',
+    code: 'sessions/round-trip#validate-rejects-fresh-session',
+    reason: 'validateSession returns null unconditionally. Tracked in ACME-482.',
+  },
+],
+```
+
+An entry isn't an exclusion. The suite checks it in both directions on every run and fails when a recorded check starts passing, when it stops applying, or when it fails for a reason other than the one recorded. The entry therefore can't outlive the defect, and it can't quietly spread to cover a second one. Fixing the defect forces you to delete its entry in the same change.
+
+Without this, a team facing one red check picks from three bad options. They can weaken the suite. They can leave the build red until people stop reading it. They can drop the provider from conformance. All three end with nobody knowing the provider is broken.
+
+## Related
+
+- [Write an auth provider](/docs/auth/write-a-provider): Build a provider end to end, satisfying each obligation at the point you write the code it constrains.
+- [Auth capability interfaces](/reference/auth/capability-interfaces): Which interface unlocks which behavior, and which provider satisfies which.
+- [Custom auth provider](/docs/auth/custom-auth-provider): Build a provider on the base contract.
+- [Auth](/docs/auth/overview): Pick an auth strategy and configure it.

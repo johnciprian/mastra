@@ -7,7 +7,7 @@
 
 import { createSign } from 'node:crypto';
 
-import type { IRBACProvider, RoleMapping } from '@internal/auth/ee';
+import type { EEUser, IRBACProvider, RoleMapping } from '@internal/auth/ee';
 import { matchesPermission, resolvePermissionsFromMapping } from '@internal/auth/ee';
 import { LRUCache } from 'lru-cache';
 
@@ -25,8 +25,8 @@ interface GroupsListResponse {
   nextPageToken?: string;
 }
 
-export class MastraRBACGoogle implements IRBACProvider<GoogleUser> {
-  private options: MastraRBACGoogleOptions;
+export class MastraRBACGoogle<TUser extends EEUser = GoogleUser> implements IRBACProvider<TUser> {
+  private options: MastraRBACGoogleOptions<TUser>;
   private rolesCache: LRUCache<string, Promise<string[]>>;
   private accessToken?: string;
   private tokenExpiresAt = 0;
@@ -36,7 +36,7 @@ export class MastraRBACGoogle implements IRBACProvider<GoogleUser> {
     return this.options.roleMapping;
   }
 
-  constructor(options: MastraRBACGoogleOptions) {
+  constructor(options: MastraRBACGoogleOptions<TUser>) {
     if (!options.roleMapping) {
       throw new Error('Google RBAC roleMapping is required.');
     }
@@ -49,9 +49,13 @@ export class MastraRBACGoogle implements IRBACProvider<GoogleUser> {
     });
   }
 
-  async getRoles(user: GoogleUser): Promise<string[]> {
-    if (Array.isArray(user.groups)) {
-      return user.groups;
+  async getRoles(user: TUser): Promise<string[]> {
+    // Read through `Partial<GoogleUser>` rather than off `TUser`: with a
+    // cross-provider `TUser` the field is not declared, and the check is a
+    // runtime one either way.
+    const attachedGroups = (user as Partial<GoogleUser>).groups;
+    if (Array.isArray(attachedGroups)) {
+      return attachedGroups;
     }
 
     const userKey = this.resolveUserKey(user);
@@ -73,12 +77,12 @@ export class MastraRBACGoogle implements IRBACProvider<GoogleUser> {
     return rolesPromise;
   }
 
-  async hasRole(user: GoogleUser, role: string): Promise<boolean> {
+  async hasRole(user: TUser, role: string): Promise<boolean> {
     const roles = await this.getRoles(user);
     return roles.includes(role);
   }
 
-  async getPermissions(user: GoogleUser): Promise<string[]> {
+  async getPermissions(user: TUser): Promise<string[]> {
     const roles = await this.getRoles(user);
     if (roles.length === 0) {
       return this.options.roleMapping['_default'] ?? [];
@@ -86,17 +90,17 @@ export class MastraRBACGoogle implements IRBACProvider<GoogleUser> {
     return resolvePermissionsFromMapping(roles, this.options.roleMapping);
   }
 
-  async hasPermission(user: GoogleUser, permission: string): Promise<boolean> {
+  async hasPermission(user: TUser, permission: string): Promise<boolean> {
     const permissions = await this.getPermissions(user);
     return permissions.some(granted => matchesPermission(granted, permission));
   }
 
-  async hasAllPermissions(user: GoogleUser, permissions: string[]): Promise<boolean> {
+  async hasAllPermissions(user: TUser, permissions: string[]): Promise<boolean> {
     const userPermissions = await this.getPermissions(user);
     return permissions.every(required => userPermissions.some(granted => matchesPermission(granted, required)));
   }
 
-  async hasAnyPermission(user: GoogleUser, permissions: string[]): Promise<boolean> {
+  async hasAnyPermission(user: TUser, permissions: string[]): Promise<boolean> {
     const userPermissions = await this.getPermissions(user);
     return permissions.some(required => userPermissions.some(granted => matchesPermission(granted, required)));
   }
@@ -126,7 +130,7 @@ export class MastraRBACGoogle implements IRBACProvider<GoogleUser> {
     };
   }
 
-  private resolveUserKey(user: GoogleUser): string | undefined {
+  private resolveUserKey(user: TUser): string | undefined {
     if (this.options.getUserKey) {
       return this.options.getUserKey(user);
     }

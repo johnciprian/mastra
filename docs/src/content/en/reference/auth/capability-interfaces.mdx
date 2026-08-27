@@ -1,0 +1,362 @@
+---
+title: "Reference: Auth capability interfaces | Auth"
+description: "Reference for the optional Mastra auth capability interfaces, the structural guards that detect them, and which auth provider satisfies each one."
+packages:
+  - "@mastra/core"
+  - "@mastra/factory-auth"
+---
+
+# Auth capability interfaces
+
+Every Mastra auth provider implements one base contract, `IMastraAuthProvider`. It verifies a token and authorizes the user that token names. Optional capability interfaces sit on top of it and describe what else a provider can do, such as run a hosted login, hold a server-side session, accept an email and password, or resolve an organization.
+
+A host detects capabilities with structural guards rather than `instanceof`, so any object carrying the right methods qualifies. Use this page to look up which interface covers which behavior and what it obliges you to implement. The [provider capability matrix](#provider-capability-matrix) records which provider satisfies which.
+
+`@mastra/core/server` exports the base class `MastraAuthProvider`, the capability guards, and eleven types. `@mastra/factory-auth` re-exports those same symbols through a single import site and adds an identity normalizer, a capability descriptor, and a provider conformance suite.
+
+## Capability guards
+
+`@mastra/core/server` exports eight guards. Each answers one question: does this provider declare this capability?
+
+Each guard tests every member its interface requires, and no optional one.
+
+| Guard | Narrows to | Methods it tests |
+| - | - | - |
+| `isSSOProvider` | `ISSOProvider` | `getLoginUrl`, `handleCallback`, `getLoginButtonConfig` |
+| `isSessionProvider` | `ISessionProvider` | `createSession`, `validateSession`, `destroySession`, `refreshSession`, `getSessionIdFromRequest`, `getSessionHeaders`, `getClearSessionHeaders` |
+| `isUserProvider` | `IUserProvider` | `getCurrentUser`, `getUser` |
+| `isCredentialsProvider` | `ICredentialsProvider` | `signIn`, `signUp` |
+| `isOrganizationsProvider` | `IOrganizationsProvider` | `ensureOrganization`, `isOrganizationAdmin` |
+| `isAuthHttpHandler` | `IAuthHttpHandler` | `handleAuthRequest` |
+| `hasAuthInit` | `IAuthInit` | `init` |
+| `canClearSession` | `ISessionClearer` | `getClearSessionHeaders` |
+
+Watch the naming before you write a lookup of your own. Two guards break the `is` prefix the other six use: `hasAuthInit` and `canClearSession`. And no guard exists for `IMastraAuthProvider`, because implementing the base contract is what makes an object a provider in the first place.
+
+Every guard checks `typeof provider.someMethod === 'function'` against a non-null object. Nothing uses `instanceof`, so the guards keep working when a dependency tree holds two copies of `@mastra/core`, and a plain object with the right methods passes.
+
+## The base contract
+
+`IMastraAuthProvider` is what a provider has to implement before any capability applies.
+
+| Member | Type | Required |
+| - | - | - |
+| `authenticateToken` | `(token: string, request: MastraAuthRequest) => Promise<TUser \| null>` | Yes |
+| `authorizeUser` | `(user: TUser, request: MastraAuthRequest) => Promise<boolean> \| boolean` | Yes |
+| `name` | `string` | No |
+| `protected` | Path patterns that require authentication | No |
+| `public` | Path patterns that bypass authentication | No |
+| `mapUserToResourceId` | `(user: TUser) => string \| undefined \| null` | No |
+
+`authenticateToken` resolves to `null` for a credential it doesn't recognize. Rejection is the ordinary state of a public endpoint, so a throw reads to a host as a bug rather than as a denial.
+
+Implement `mapUserToResourceId` as an ordinary prototype method on your subclass. `MastraAuthProvider` assigns the constructor option of the same name only when one is supplied, so a subclass method stays reachable when it isn't. `@mastra/auth-firebase` implements it that way. A supplied option still replaces the method, which is the documented override.
+
+For a walkthrough of building on this contract, see [Custom auth provider](/docs/auth/custom-auth-provider).
+
+## What each interface requires
+
+Each section below lists every member the interface declares. A member marked optional carries a `?` in the source, and a host has to check for it before calling.
+
+### `ISSOProvider`
+
+Run a hosted login by sending the browser to a page the identity provider owns, then handling the callback it returns to.
+
+| Member | Signature | Required |
+| - | - | - |
+| `getLoginUrl` | `(redirectUri: string, state: string) => string \| Promise<string>` | Yes |
+| `handleCallback` | `(code: string, state: string) => Promise<SSOCallbackResult<TUser>>` | Yes |
+| `getLoginButtonConfig` | `() => SSOLoginConfig` | Yes |
+| `getLogoutUrl` | `(redirectUri: string, request?: Request) => string \| null \| Promise<string \| null>` | No |
+| `getLoginCookies` | `(redirectUri: string, state: string) => string[] \| undefined` | No |
+| `setCallbackCookieHeader` | `(cookieHeader: string \| null) => void` | No |
+
+`SSOLoginConfig` carries `provider: string` and `text: string`, plus optional `icon: string` and `description: string`. `SSOCallbackResult` carries the authenticated `user`, an optional `cookies: string[]` of `Set-Cookie` values, and a `tokens` object:
+
+| Field | Type | Required |
+| - | - | - |
+| `accessToken` | `string` | Yes |
+| `refreshToken` | `string` | No |
+| `idToken` | `string` | No |
+| `expiresAt` | `Date` | No |
+
+`expiresAt` is a `Date`, while an OAuth token response reports `expires_in` as a number of seconds. Convert rather than pass through: `new Date(Date.now() + expires_in * 1000)`.
+
+Neither `SSOLoginConfig` nor `SSOCallbackResult` is exported from `@mastra/core/server` or from the kit, so you can't import either to annotate a return. Declare `implements ISSOProvider<TUser>` on your class and let the interface constrain the returns instead.
+
+Treat `state` as opaque. The host mints it, and the value has to survive the round trip unchanged. See [Obligations the interfaces don't state](#obligations-the-interfaces-dont-state).
+
+#### The login cookie round trip
+
+`getLoginCookies` and `setCallbackCookieHeader` are the two halves of one loop. Proof Key for Code Exchange (PKCE) is what the loop exists for: `getLoginUrl` mints a code verifier and sends its hash to the identity provider, `getLoginCookies` hands the verifier to the browser as one or more `Set-Cookie` values, and `handleCallback` needs the verifier back to complete the token exchange.
+
+`handleCallback` receives only `code` and `state`, so it can't read the callback request itself. The raw `Cookie` header arrives through `setCallbackCookieHeader` instead, which a host calls before `handleCallback` on every hosted-login callback.
+
+Implement both or neither. A provider that writes a login cookie and declares no way to read one back fails every sign-in at the callback, and the host's error recovery sends the browser to the login route, which re-enters the identity provider as a redirect loop.
+
+A confidential client authenticating with a `client_secret` has no verifier to carry, so it needs neither member. That shape is fully supported.
+
+For a working provider built end to end, see [Carry a PKCE verifier across the round trip](/docs/auth/write-a-provider#carry-a-pkce-verifier-across-the-round-trip).
+
+### `ISessionProvider`
+
+Server-side sessions the provider creates, validates, and revokes. All seven members are required.
+
+| Member | Signature |
+| - | - |
+| `createSession` | `(userId: string, metadata?: Record<string, unknown>) => Promise<TSession>` |
+| `validateSession` | `(sessionId: string) => Promise<TSession \| null>` |
+| `destroySession` | `(sessionId: string) => Promise<void>` |
+| `refreshSession` | `(sessionId: string) => Promise<TSession \| null>` |
+| `getSessionIdFromRequest` | `(request: Request) => string \| null` |
+| `getSessionHeaders` | `(session: TSession) => Record<string, string>` |
+| `getClearSessionHeaders` | `() => Record<string, string>` |
+
+A `Session` holds `id`, `userId`, `createdAt`, `expiresAt`, and optional `metadata`.
+
+### `ISessionClearer`
+
+One member, `getClearSessionHeaders() => Record<string, string>`, returning `Set-Cookie` values that expire the cookies this provider set.
+
+`ISessionProvider` extends this, so a full session provider satisfies `canClearSession` too and the member is declared in one place. The narrower interface exists because a provider can have only this one. A hosted-login provider mints its own cookie during `handleCallback` and has to clear it on logout, while creating no session a host can address by id, so the other six members mean nothing to it. `@mastra/auth-better-auth` is that shape.
+
+Return one cookie where you can. A host that receives several joined into one comma-separated value has to split them apart again, and an `Expires` date contains a comma of its own.
+
+### `IUserProvider`
+
+Look a user up by identifier, or read the current one off a request.
+
+| Member | Signature | Required |
+| - | - | - |
+| `getCurrentUser` | `(request: Request) => Promise<TUser \| null>` | Yes |
+| `getUser` | `(userId: string) => Promise<TUser \| null>` | Yes |
+| `getUsers` | `(userIds: string[]) => Promise<Array<TUser \| null>>` | No |
+| `getUserProfileUrl` | `(user: TUser) => string` | No |
+
+Implement `getUsers` when a surface enriches many authors at once, so the lookup runs as one batch instead of one call per row.
+
+### `ICredentialsProvider`
+
+Email and password sign-in, and optional registration and password reset.
+
+| Member | Signature | Required |
+| - | - | - |
+| `signIn` | `(email: string, password: string, request: Request) => Promise<CredentialsResult<TUser>>` | Yes |
+| `signUp` | `(email: string, password: string, name: string \| undefined, request: Request) => Promise<CredentialsResult<TUser>>` | Yes |
+| `requestPasswordReset` | `(email: string) => Promise<void>` | No |
+| `resetPassword` | `(token: string, newPassword: string) => Promise<void>` | No |
+| `isSignUpEnabled` | `() => boolean` | No |
+
+`CredentialsResult` carries the `user`, plus an optional `token` and an optional `cookies` array of `Set-Cookie` values.
+
+`signIn` and `signUp` throw on failure rather than resolving `null`. `isSignUpEnabled` is synchronous and defaults to sign-up being on when the method is absent. Returning a promise from it counts as a failure, because a promise is truthy and a loose reader would show a sign-up link on a deployment that turned sign-up off.
+
+### `IOrganizationsProvider`
+
+Resolve which organization a user belongs to, and whether they administer it. Both members are required.
+
+| Member | Signature |
+| - | - |
+| `ensureOrganization` | `(userId: string) => Promise<string \| undefined>` |
+| `isOrganizationAdmin` | `(organizationId: string, userId: string) => Promise<boolean>` |
+
+`ensureOrganization` bootstraps a personal organization on first use and must be idempotent under concurrent and retried first logins. Repeated calls for one user have to answer the same id, in every process. `isOrganizationAdmin` resolves `false` on a provider error rather than throwing.
+
+### `IAuthHttpHandler`
+
+One member, `handleAuthRequest(request: Request) => Promise<Response>`.
+
+Implement it when the provider brings its own HTTP surface, such as a library that already serves `/api/auth/*`. A host mounts the handler as a catch-all under its own auth prefix, so it receives every path underneath, including ones from stale clients and scanners. Answer `new Response(null, { status: 404 })` for a path you don't serve instead of throwing.
+
+### `IAuthInit`
+
+One member, `init(ctx: AuthInitContext) => Promise<void>`.
+
+A host calls `init` once during server preparation, before it serves anything. `AuthInitContext` has three fields and all three are optional:
+
+| Field | Type | Description |
+| - | - | - |
+| `database` | `unknown` | Database handle for providers that persist their own auth tables. The shape is provider-defined. |
+| `publicUrl` | `string` | Browser-facing origin, with no trailing slash. |
+| `allowedOrigins` | `string[]` | Extra browser origins allowed to reach the API. Providers that enforce their own origin allowlist have to honor these. |
+
+Fail fast here for a requirement only satisfiable at prepare time. Don't fail because a field the host didn't pass is missing, since none of the three is guaranteed.
+
+## Satisfying a guard isn't implementing the interface
+
+Each guard tests every member its interface requires, and no optional member.
+
+| Interface | Members declared | Required members | Members the guard tests |
+| - | - | - | - |
+| `ISSOProvider` | 6 | 3 | 3 |
+| `ISessionProvider` | 7 | 7 | 7 |
+| `IUserProvider` | 4 | 2 | 2 |
+| `ICredentialsProvider` | 5 | 2 | 2 |
+| `IOrganizationsProvider` | 2 | 2 | 2 |
+| `ISessionClearer` | 1 | 1 | 1 |
+| `IAuthHttpHandler` | 1 | 1 | 1 |
+| `IAuthInit` | 1 | 1 | 1 |
+
+That equality is enforced rather than maintained. Adding a required member to one of these interfaces fails the build until its guard tests the new member too.
+
+The optional members are the gap that remains, and it's deliberate: `ISSOProvider` declares six members and requires three, so `isSSOProvider` says nothing about whether `getLogoutUrl` is there. Requiring the optional half would reject providers the interface accepts.
+
+A guard therefore tells you the provider has the members the interface requires, and nothing more:
+
+- When you need an optional member, check for that member rather than for the guard. `toAuthDescriptor` does exactly this for `refreshSession` and `destroySession`.
+- A guard can't tell you a member does anything. A provider can satisfy `isSessionProvider` with seven methods that return `null` and do nothing, and a surface offering "sign out everywhere" on the strength of the guard alone would call a method that runs and has no effect. Only the conformance suite, below, exercises behavior.
+- TypeScript narrows to the full interface, optional members included. Reaching for one of those on a narrowed provider compiles whether or not it's there.
+
+## The capability descriptor
+
+`toAuthDescriptor(provider)` from `@mastra/factory-auth/capabilities` reduces a provider to a record a browser can render, so a sign-in screen branches on declared capability instead of on a provider name.
+
+```typescript title="src/auth/me.ts" docscheck=statements docscheck-scaffold=provider
+import { toAuthDescriptor } from '@mastra/factory-auth/capabilities'
+
+const descriptor = toAuthDescriptor(provider)
+// {
+//   signIn: { kind: 'hosted', providerHint: 'generic' },
+//   features: { logout: true, organizations: false, refresh: false, sessionRevocation: false },
+// }
+```
+
+The call is synchronous and never throws. It inspects the provider rather than calling it, with one exception: `isSignUpEnabled` runs when the provider declares credentials.
+
+`signIn.kind` comes from two guards:
+
+| `isSSOProvider` | `isCredentialsProvider` | `signIn.kind` |
+| - | - | - |
+| `true` | `true` | `both` |
+| `true` | `false` | `hosted` |
+| `false` | `true` | `credentials` |
+| `false` | `false` | `none` |
+
+Read `none` carefully. It means the provider can't take somebody from a blank browser to a session, because it implements neither a hosted login nor a credentials sign-in. It's still a working, enforcing provider that validates bearer tokens and rejects unauthenticated requests. A deployment with auth switched off is a different state, and it has no descriptor at all, because it has no provider.
+
+`features` holds four booleans:
+
+| Field | Derived from |
+| - | - |
+| `logout` | `signIn.kind !== 'none'`, or `isSessionProvider`, or `isAuthHttpHandler` |
+| `organizations` | `isOrganizationsProvider` |
+| `refresh` | `isSessionProvider` and `typeof provider.refreshSession === 'function'` |
+| `sessionRevocation` | `isSessionProvider` and `typeof provider.destroySession === 'function'` |
+
+## Obligations the interfaces don't state
+
+Beyond the interfaces, a provider owes a host four requirements that no interface states. A provider can satisfy every guard and still fail one.
+
+| Obligation | Rule | Conformance checks |
+| - | - | - |
+| `flatId` | `authenticateToken` resolves to a payload with a flat, resolvable id, read as `id`, then `uid`, then `sub`. | `obligation/flatId` |
+| `cookieAuth` | `authenticateToken` reads the `Cookie` header when the bearer token is empty. | `obligation/cookieAuth` |
+| `stateCodec` | Login and callback both agree with `encodeState` and `decodeState`, so an echoed `state` still parses. | `obligation/stateCodec/login-url`, `obligation/stateCodec/callback` |
+| `organizationId` | Every identity resolves to an organization id, from the provider or from `withSyntheticOrganizations`. | `obligation/organizationId/declared`, `obligation/organizationId/deterministic` |
+
+The names are stable string literals, exported in order as `AUTH_OBLIGATIONS` from `@mastra/factory-auth/testing`.
+
+[Provider obligations](/docs/auth/provider-obligations) states each one as a contract. It covers the host behavior that creates the requirement, what a person using the app sees when a provider misses it, how to satisfy it, and when the conformance suite enforces it.
+
+## Provider capability matrix
+
+Which guards each published provider satisfies. `Yes` means the guard returns `true` for a constructed instance. `Optional` means the provider attaches those methods at construction only when its own configuration enables them.
+
+| Package | SSO | Session | User | Credentials | Organizations | HTTP handler | Init |
+| - | - | - | - | - | - | - | - |
+| `@mastra/auth-auth0` | Optional | Optional | Yes | No | No | No | No |
+| `@mastra/auth-better-auth` | No | No | Yes | Yes | Yes | Yes | Yes |
+| `@mastra/auth-clerk` | Optional | Optional | Yes | No | No | No | No |
+| `@mastra/auth-cloud` | Yes | Yes | Yes | No | No | No | No |
+| `@mastra/auth-firebase` | No | No | No | No | Yes | No | No |
+| `@mastra/auth-google` | Optional | Optional | Yes | No | No | No | No |
+| `@mastra/auth-neon` | No | Yes | Yes | Yes | No | No | No |
+| `@mastra/auth-okta` | Yes | Yes | Yes | No | No | No | No |
+| `@mastra/auth-studio` | Yes | Yes | Yes | No | Yes | No | No |
+| `@mastra/auth-supabase` | No | No | No | No | Yes | No | No |
+| `@mastra/auth-workos` | Yes | Yes | Yes | No | Yes | No | Yes |
+
+Notes on the rows that need one:
+
+- **`Optional` in Auth0, Clerk, and Google.** Each attaches its hosted-login and session methods to the instance in its constructor, and only when OAuth credentials are configured. Auth0 and Clerk gate on a client id and a client secret together. Google gates on a client secret. Without those, the guards return `false` and the provider validates bearer tokens only.
+- **Better Auth has no session capability.** It defines `getClearSessionHeaders` but neither `createSession` nor `validateSession`, so `isSessionProvider` returns `false`. It's the only published provider that serves its own auth routes.
+- **Firebase and Supabase validate bearer tokens and resolve an organization.** Neither satisfies any sign-in guard, so `toAuthDescriptor` reports `signIn.kind: 'none'` and `features.logout: false` for each. Both packages declare that shape in the open, as a `FACTORY_BROWSER_SIGN_IN` export carrying the reason and the alternative. See [Providers that can't sign a browser in](/docs/auth/write-a-provider#providers-that-cant-sign-a-browser-in).
+- **Okta reaches organizations through the wrapper rather than on its own.** Okta has groups instead of organizations, so the package documents `withSyntheticOrganizations` as the way to mount it, and its conformance suite runs against that composition. Any provider in the No column can do the same.
+
+### Which providers carry a login cookie
+
+`getLoginCookies` and `setCallbackCookieHeader` sit below the guards, so `isSSOProvider` says nothing about either. Only one published provider moves a value across the round trip.
+
+| Package | Writes a login cookie | Reads the callback header |
+| - | - | - |
+| `@mastra/auth-cloud` | Yes, a Proof Key for Code Exchange verifier | Yes |
+| `@mastra/auth-auth0` | Declared, returns none | No |
+| `@mastra/auth-clerk` | Declared, returns none | No |
+| `@mastra/auth-google` | Declared, returns none | No |
+| `@mastra/auth-okta` | Declared, returns none | No |
+| `@mastra/auth-studio` | Declared, returns none | Declared, ignores it |
+| Every other package | No | No |
+
+Auth0, Clerk, and Google attach `getLoginCookies` on the same condition as their hosted login, so it's absent entirely when OAuth credentials aren't configured. Those three and Okta are confidential clients authenticating with a `client_secret`, so none of them has a verifier to carry. Studio delegates the whole OAuth flow to the shared Mastra API, which holds the verifier on its side.
+
+## Checking your own provider
+
+`@mastra/factory-auth/conformance` registers a vitest suite that asserts the contract your provider declares, plus the four obligations. It runs offline with no identity provider and no environment variables.
+
+```typescript title="src/conformance.test.ts"
+import { describeAuthProvider } from '@mastra/factory-auth/conformance'
+import { createAuth } from './auth-provider'
+
+const TOKEN = 'a-token-my-verifier-accepts'
+
+describeAuthProvider({
+  name: '@mastra/auth-my-provider',
+  createProvider: () => createAuth(async token => (token === TOKEN ? { sub: 'user_123' } : null)),
+  token: TOKEN,
+  userId: 'user_123',
+  cookieHeader: `my_session=${TOKEN}`,
+})
+```
+
+The suite holds 19 checks, grouped like this:
+
+| Group | Checks |
+| - | - |
+| Base contract | 6 |
+| Obligations | 6 |
+| Declared capabilities | 7 |
+
+A check is skipped, with its reason attached, only when a guard says the provider doesn't declare the capability the check is about. It's never skipped because a provider declared a capability and then didn't deliver it.
+
+All eleven published providers run the suite in their own package, each as a `src/conformance.test.ts`.
+
+`authConformanceChecks(options)` returns the same list as data, so a script or a different runner can walk the checks without depending on vitest.
+
+### Reading the PKCE check
+
+`sso/pkce-round-trip` plays the identity provider and runs the loop offline:
+
+1. Mint a login URL through `getLoginUrl`.
+1. Collect whatever `getLoginCookies` hands back.
+1. Turn those `Set-Cookie` values into the `Cookie` header a browser would return.
+1. Pass that header to `setCallbackCookieHeader`.
+1. Call `handleCallback`, and require it to reach the token exchange.
+
+Reaching the exchange is what proves the verifier survived. The outcomes below invite the wrong conclusion:
+
+- **Green doesn't mean PKCE works.** A provider that declares `getLoginCookies` and returns nothing passes, because the check applied, ran, and found no cookie to hold anybody to. Auth0, Clerk, Google, Okta, and Studio are all green on exactly those terms. Only `@mastra/auth-cloud` passes by carrying a real verifier across.
+- **A skip isn't a failure.** The check is gated on the write half alone. A provider with no `getLoginCookies` skips, which is the correct result for a confidential client holding a `client_secret`. Gating on the read half instead would skip the one provider the check exists to catch: the one that writes a verifier and declares no way to read it back.
+
+### When a check can't pass yet
+
+Pass `knownFailures` to record a failure you can't fix now, naming the check, its failure code, and why. The suite then stays green while reporting the entry on every run. The record is checked in both directions. A failure that stops happening turns the suite red, and so does one that begins failing for a different reason, which keeps an entry from quietly becoming a permanent exemption. Sixteen such records exist today across six packages: Auth0, Clerk, Cloud, Google and Neon carry three each, and WorkOS one. Studio carried four and now carries none.
+
+For setup, fixtures, and the failure messages the suite emits, see the [`@mastra/factory-auth` README](https://github.com/mastra-ai/mastra/blob/main/mastracode/factory-auth/README.md).
+
+## Related
+
+- [Write an auth provider](/docs/auth/write-a-provider): Build a provider end to end, from an empty file to a green conformance suite.
+- [Provider obligations](/docs/auth/provider-obligations): What a provider owes a host beyond the interfaces.
+- [Custom auth provider](/docs/auth/custom-auth-provider): Build a provider on the base contract.
+- [Auth](/docs/auth/overview): Pick an auth strategy and configure it.
+- [Composite auth](/docs/auth/composite-auth): Combine several providers behind one contract.

@@ -35,7 +35,7 @@ const project2SourceId = sourceId('workspace-2', 'project-2');
 function fakeAuth(tenant: { orgId?: string; userId: string } | undefined = { orgId: 'org-1', userId: 'user-1' }) {
   return {
     enabled: () => true,
-    ensureUser: vi.fn(async () => ({ workosId: tenant?.userId ?? 'user-1', organizationId: tenant?.orgId })),
+    ensureUser: vi.fn(async () => ({ id: tenant?.userId ?? 'user-1', organizationId: tenant?.orgId })),
     tenant: () => tenant,
     isOrganizationAdmin: vi.fn(async () => true),
   };
