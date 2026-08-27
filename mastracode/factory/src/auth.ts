@@ -46,90 +46,11 @@ import { timedAboveThreshold } from './timing.js';
  * - `ISessionClearer` — session cookie clearing on logout, which a provider can
  *   implement on its own without the rest of `ISessionProvider`
  *
- * One behavioural switch lives here: {@link isAuthIdentityV2Enabled}, now on by
- * default and kept for one release as the rollback for the identity, session
- * and logout migration. See its doc comment.
+ * There is no behavioural switch left in here. Identity, the session cookie and
+ * logout each have exactly one path, through the kit; the environment decides
+ * only whether this host has a secret to sign its own session cookie with (see
+ * {@link hostOwnsSessionCookie}), never which reader runs.
  */
-
-/**
- * Name of the compat flag for the v2 identity path. On unless explicitly
- * disabled — see {@link isAuthIdentityV2Enabled}.
- */
-export const AUTH_IDENTITY_V2_ENV_VAR = 'MASTRACODE_AUTH_IDENTITY_V2';
-
-/**
- * Parse the compat flag's value. Opt-**out** only: `0` and `false` (any case,
- * any surrounding whitespace) turn it off, and every other value leaves it on —
- * `1`, `true`, an unset variable, the empty string, and anything unrecognized
- * alike.
- *
- * WHY THE SAFE DIRECTION FLIPPED
- *
- * This started opt-in, and rejected unrecognized values for a reason worth
- * restating rather than deleting: the default was the shipped path, so a
- * mistyped value had to land there instead of opting a deployment into a
- * migration nobody had chosen.
- *
- * Both halves of that have now moved. The v2 path is the shipped path — it is
- * what the suite runs, what the conformance suite checks providers against, and
- * the only path where a `{ uid }` or `{ sub }` provider authenticates at all.
- * The legacy reader is the exception, kept reachable for one release so an
- * operator who hits a surprise has a way back. So the value that must never be
- * reached by accident is now the *old* one: a typo like `MASTRACODE_AUTH_IDENTITY_V2=flase`
- * must leave the process on v2, not silently drop it onto a path with known
- * defects. The rule is unchanged in spirit — an unrecognized value never
- * selects the non-default path — and the non-default path is the other one now.
- *
- * Exported so the parsing rules are testable without reloading the module.
- */
-export function readAuthIdentityV2Env(raw: string | undefined): boolean {
-  const normalized = raw?.trim().toLowerCase();
-  return !(normalized === '0' || normalized === 'false');
-}
-
-/**
- * The flag's value for this process, captured once at module load. See
- * {@link isAuthIdentityV2Enabled} for why it is read here and not per request.
- */
-const AUTH_IDENTITY_V2 = readAuthIdentityV2Env(process.env[AUTH_IDENTITY_V2_ENV_VAR]);
-
-/**
- * Whether the v2 identity path is enabled for this process
- * (`MASTRACODE_AUTH_IDENTITY_V2`), defaulting to **on**.
- *
- * The identity, session and logout changes land together, and together they are
- * the only part of this module that can break a live sign-in: they change how a
- * provider's `authenticateToken` result becomes a {@link FactoryAuthUser}, which
- * is the value every ownership check in the app compares against. A wrong answer
- * there does not throw — it reads as "this session belongs to somebody else" at
- * each check, and looks like data loss rather than an auth bug.
- *
- * That is why this is still a switch after the default flipped. The release is
- * a soak, not a finished migration: set the variable to `false`, restart, and
- * the process is back on the reader that shipped before. {@link legacyFactoryAuthUser}
- * stays for exactly that, and the dual-path tests stay with it — deleting either
- * is a separate decision, taken after the soak rather than as part of it.
- *
- * This is the single read site for the flag. Everything else branches on this
- * function rather than reaching for `process.env` again, so that "what is this
- * process running?" has exactly one answer.
- *
- * READ ONCE, AT MODULE LOAD, AND THAT IS DELIBERATE
- *
- * A flag re-read per request can change value inside a running process, and a
- * session resolved on the v2 path but re-checked on the v1 path is precisely the
- * half-migrated state the flag exists to prevent. The gate also runs this on
- * every protected request, so one read is the cheaper shape besides.
- *
- * The cost is paid by tests: assigning to `process.env` after this module has
- * been imported does nothing. Reach the other path by reloading the module —
- * `vi.resetModules()` then `await import('./auth.js')` — as the compat-flag
- * suite in `auth-seam.test.ts` does. {@link readAuthIdentityV2Env} is exported
- * separately so the parsing rules need no reload at all.
- */
-export function isAuthIdentityV2Enabled(): boolean {
-  return AUTH_IDENTITY_V2;
-}
 
 /**
  * Minimal shape of the signed-in user surfaced to the SPA (no tokens).
@@ -138,8 +59,7 @@ export function isAuthIdentityV2Enabled(): boolean {
  * meant every consumer had to decide which of the two was the real key — and a
  * vendor name in the neutral type is the tell that identity was never really
  * abstracted. Whatever the provider called its identifier, it arrives here as
- * {@link id}; see {@link legacyFactoryAuthUser} for how the pre-kit reader folds
- * `workosId` into it without changing which value wins.
+ * {@link id} — see {@link toFactoryAuthUser} for the keys that become it.
  */
 export interface FactoryAuthUser {
   /** Stable provider user id, used to scope per-user data (GitHub installs etc.). */
@@ -218,7 +138,7 @@ function requestAuthToken(c: Context): string {
   const bearer = getBearerToken(c.req.header('Authorization'));
   if (bearer) return bearer;
   const secret = authSessionSecret();
-  if (!isAuthIdentityV2Enabled() || secret === undefined) return '';
+  if (secret === undefined) return '';
   try {
     return readSessionCookie(c.req.raw, { secret }) ?? '';
   } catch {
@@ -250,11 +170,10 @@ export const AUTH_SESSION_SECRET_ENV_VAR = 'MASTRACODE_AUTH_SESSION_SECRET';
 /**
  * The host session-cookie secret, or `undefined` when none is configured.
  *
- * Read per call rather than captured at module load, unlike the compat flag:
- * this one is a credential, and a process that rotates it (or a test that sets
- * it) should not have to be restarted to be believed. It is read on the
- * callback and on each gated request, which is a `process.env` lookup — cheaper
- * than the HMAC it guards.
+ * Read per call rather than captured at module load: this is a credential, and
+ * a process that rotates it (or a test that sets it) should not have to be
+ * restarted to be believed. It is read on the callback and on each gated
+ * request, which is a `process.env` lookup — cheaper than the HMAC it guards.
  */
 function authSessionSecret(): string | undefined {
   const secret = process.env[AUTH_SESSION_SECRET_ENV_VAR];
@@ -265,22 +184,20 @@ function authSessionSecret(): string | undefined {
  * Whether this process mints, reads and clears its own session cookie through
  * the kit, rather than leaving all three to the provider.
  *
- * Two conditions, and both are deliberate:
+ * One condition, and it is deliberate: a configured secret.
+ * {@link mintSessionCookie} refuses to sign with a weak one and there is no
+ * safe default to invent, so a deployment that has not set
+ * `MASTRACODE_AUTH_SESSION_SECRET` goes on leaving the cookie to its provider
+ * rather than failing every sign-in — the direction that degrades safely.
  *
- * - the identity compat flag, because a change to the session cookie is a
- *   change to who is signed in, and it ships with the rest of that migration;
- * - a configured secret, because {@link mintSessionCookie} refuses to sign with
- *   a weak one and there is no safe default to invent. A deployment that turns
- *   the flag on without setting the secret keeps the behaviour it had rather
- *   than failing every sign-in, which is the direction that degrades safely.
- *
- * NOTE ON UPGRADING: the cookie the kit mints is not the cookie a provider
- * minted, so sessions do not survive switching this on. Everyone signs in once
- * more. That is a one-time cost of the host owning its own session, and it is
- * why this is behind a flag rather than simply shipped.
+ * NOTE ON TURNING IT ON: the cookie the kit mints is not the cookie a provider
+ * minted, so sessions do not survive configuring the secret on a deployment
+ * that had none. Everyone signs in once more. That is the one-time cost of the
+ * host owning its own session, and it is why the secret is opt-in rather than
+ * invented.
  */
 function hostOwnsSessionCookie(): boolean {
-  return isAuthIdentityV2Enabled() && authSessionSecret() !== undefined;
+  return authSessionSecret() !== undefined;
 }
 
 /**
@@ -332,9 +249,9 @@ export function getFactoryAuthUserFromContext(
  * Resolve the stable user id from an authenticated user shape.
  *
  * One field now, because {@link FactoryAuthUser} has one. This used to read
- * `workosId ?? id`, and that precedence is preserved where it mattered: the
- * legacy reader folds `workosId` into `id` with the same precedence, so the
- * value this returns is unchanged on both flag paths.
+ * `workosId ?? id`; the kit's identity carries no vendor field, so `id` is the
+ * only source left. That is a no-op against the real WorkOS provider, which
+ * always emits both and sets them to the same value.
  */
 export function getFactoryAuthUserId(user: FactoryAuthUser | undefined): string | undefined {
   return user?.id;
@@ -375,12 +292,13 @@ export function getFactoryAuthOrgId(user: FactoryAuthUser | undefined): string |
 export function factoryAuthTenant(c: Context): FactoryAuthTenant | undefined {
   const user = getFactoryAuthUser(c);
   const userId = getFactoryAuthUserId(user);
-  // Blank counts as absent. The pre-kit reader accepts a whitespace-only id and
-  // hands it back verbatim, so this is reachable with the compat flag off — and
-  // an id that is all spaces is a storage key every such user would share.
-  // `resolveOrganizationId` refuses to derive an organization from one and
-  // throws, which on a gated route is a 500 rather than the 401 the request
-  // deserves. Answering "no tenant" here keeps the refusal and drops the crash.
+  // Blank counts as absent. The kit rejects a whitespace-only id, so nothing
+  // this module resolves reaches here holding one — but the user is read back
+  // out of an untyped context slot, and an id that is all spaces is a storage
+  // key every such user would share. `resolveOrganizationId` refuses to derive
+  // an organization from one and throws, which on a gated route is a 500 rather
+  // than the 401 the request deserves. Answering "no tenant" here keeps the
+  // refusal and drops the crash.
   if (!userId || userId.trim() === '') return undefined;
   return { orgId: resolveOrganizationId({ id: userId, organizationId: getFactoryAuthOrgId(user) }), userId };
 }
@@ -419,67 +337,48 @@ export function factoryAuthProfile(c: Context): RouteAuthProfile | undefined {
 }
 
 /**
- * Map a provider `authenticateToken` result onto the neutral SPA user shape.
+ * Map a provider `authenticateToken` result onto the neutral SPA user shape,
+ * through the kit's {@link toAuthIdentity}. One reader, for every provider.
  *
- * Two implementations, chosen by {@link isAuthIdentityV2Enabled}: the kit's
- * {@link toAuthIdentity} when the flag is on, and {@link legacyFactoryAuthUser}
- * — the code that shipped — when it is off.
+ * WHICH KEYS BECOME AN IDENTITY
  *
- * WHAT THE KIT CHANGES, MEASURED RATHER THAN ASSUMED
+ * A `{ session, user }` wrapper is recognized first and never falls through to
+ * the flat reader; every other result is read at the top level. Inside either:
  *
- * The two agree on structure: a `{ session, user }` wrapper is recognized
- * first, it never falls through to the flat reader, and the flat reader
- * otherwise takes the top level. They disagree on which keys count, and the
- * differences were enumerated by running both over a payload corpus rather than
- * by reading the two functions side by side.
+ * - the id is read as `id` → `uid` → `sub`, not `id` alone. The reader that
+ *   shipped before took `id`, so a provider returning `{ uid }` (Firebase) or
+ *   `{ sub }` (raw OIDC claims) authenticated as nobody and then failed
+ *   somewhere unrelated with a message about state;
+ * - a numeric or bigint id is coerced to its decimal string rather than
+ *   rejected — a serial primary key behind a self-hosted provider is ordinary;
+ * - a blank or whitespace-only id is treated as absent, so a user with one
+ *   authenticates as nobody instead of sharing a storage key with every other
+ *   such user;
+ * - `workosId` is not an id key. `AuthIdentity` carries no vendor field, so
+ *   whatever the provider called its identifier it arrives as `id`. That is a
+ *   no-op against the real WorkOS provider, which emits both and sets them to
+ *   the same value; it is observable only where a deployment mapped `workosId`
+ *   to a *different* JWT claim than the user id.
  *
- * Mostly the kit resolves users the old reader turned into `null`, which is the
- * point of the change — a provider returning `{ uid }` (Firebase) or `{ sub }`
- * (raw OIDC claims) authenticated as nobody, then failed somewhere unrelated
- * with a message about state:
+ * ORGANIZATION SCOPE IS NEVER WIDENED HERE
  *
- * - ids are read as `id` → `uid` → `sub`, not `id` alone;
- * - the same three keys are read inside a `{ session, user }` wrapper, where
- *   the old reader accepted only `user.id`;
- * - a numeric or bigint id is coerced to its decimal string, rather than
- *   rejected — a serial primary key behind a self-hosted provider is ordinary.
+ * A wrapper's organization comes from `session.activeOrganizationId` and from
+ * nowhere else. The kit briefly fell back to the `user` half for an
+ * organization the session had not activated, and P12 settled that closed:
+ * membership is not activation, so a session that has activated none resolves
+ * to the user's own private partition rather than to their team's data.
  *
- * None of them widens organization scope. The kit briefly did, by falling back
- * to a wrapper's `user` half for an organization the session had not activated;
- * P12 settled that closed, so both readers now take a wrapper's organization
- * from `session.activeOrganizationId` and from nowhere else. A session that has
- * activated none resolves to the user's private partition under either reader,
- * which is why no assertion in this package's suite changes when the flag does.
- *
- * Two narrow it, both fail-closed and both fixes:
- *
- * - a blank or whitespace-only `id` is treated as absent. The old reader
- *   returned it verbatim, so every user with a blank id shared one storage key;
- * - `workosId` is not an id key. See below, because this is the one with a
- *   production edge.
- *
- * THE `workosId` EDGE, AND WHY IT IS NARROW
- *
- * The old flat reader accepted `workosId` as an id, and {@link getFactoryAuthUserId}
- * preferred it over `id`. `AuthIdentity` has no vendor field, so under the flag
- * the key is simply `id`.
- *
- * That is a no-op against the real provider, which always emits both and sets
- * `workosId` to the same value as `id`. It is observable only where a
- * deployment has mapped `workosId` to a *different* JWT claim than the user id,
- * and there the storage key moves from the one to the other. That is exactly
- * the class of change the flag exists to make reversible.
+ * `provider` is passed through so a provider implementing the kit's
+ * `toIdentity` can map its own payload — see {@link authenticateRequest}.
  */
 function toFactoryAuthUser(result: unknown, provider?: unknown): FactoryAuthUser | null {
-  if (isAuthIdentityV2Enabled()) return fromAuthIdentity(toAuthIdentity(result, provider));
-  return legacyFactoryAuthUser(result);
+  return fromAuthIdentity(toAuthIdentity(result, provider));
 }
 
 /**
- * Widen an {@link AuthIdentity} to the shape the rest of this module still
- * passes around. Field-for-field, minus `workosId`, which the kit's identity
- * does not carry — so under the flag {@link getFactoryAuthUserId} resolves `id`,
- * its only remaining source. B4 removes the field and this gap with it.
+ * Widen an {@link AuthIdentity} to the shape the rest of this module passes
+ * around. Field for field: the two types agree, and this exists only because
+ * {@link FactoryAuthUser} is the neutral shape routes and the SPA already read.
  */
 function fromAuthIdentity(identity: AuthIdentity | null): FactoryAuthUser | null {
   if (!identity) return null;
@@ -493,69 +392,13 @@ function fromAuthIdentity(identity: AuthIdentity | null): FactoryAuthUser | null
 }
 
 /**
- * The identity reader that shipped, kept reachable while the flag defaults off.
- * Deleted once `MASTRACODE_AUTH_IDENTITY_V2` stops being a switch.
- *
- * Two result families:
- * - flat provider users (WorkOS `WorkOSUser` et al.): `id`/`workosId`/`email`/
- *   `name`/`organizationId` directly on the object;
- * - session-shaped results (better-auth `BetterAuthUser`): `{ session, user }`
- *   with the active org on the session.
- */
-function legacyFactoryAuthUser(result: unknown): FactoryAuthUser | null {
-  if (!result || typeof result !== 'object') return null;
-  const record = result as Record<string, unknown>;
-
-  // Session-shaped results: { session, user }. A result carrying both halves and
-  // top-level identity fields is read as session-shaped: the session half is the
-  // authenticated one, and preferring it keeps the org and the id from coming
-  // from two different places.
-  if (record.user && typeof record.user === 'object' && record.session && typeof record.session === 'object') {
-    const user = record.user as { id?: unknown; email?: unknown; name?: unknown; avatarUrl?: unknown };
-    const session = record.session as { activeOrganizationId?: unknown };
-    if (typeof user.id !== 'string') return null;
-    return {
-      id: user.id,
-      email: typeof user.email === 'string' ? user.email : undefined,
-      name: typeof user.name === 'string' ? user.name : undefined,
-      avatarUrl: typeof user.avatarUrl === 'string' ? user.avatarUrl : undefined,
-      organizationId: typeof session.activeOrganizationId === 'string' ? session.activeOrganizationId : undefined,
-    };
-  }
-
-  // Flat provider users.
-  const flat = record as {
-    id?: unknown;
-    workosId?: unknown;
-    email?: unknown;
-    name?: unknown;
-    avatarUrl?: unknown;
-    organizationId?: unknown;
-  };
-  const id = typeof flat.id === 'string' ? flat.id : undefined;
-  const workosId = typeof flat.workosId === 'string' ? flat.workosId : undefined;
-  if (!id && !workosId) return null;
-  return {
-    // `workosId` first, then `id`. The neutral shape no longer has a vendor
-    // field, so the vendor key is folded into `id` here instead — in the order
-    // `getFactoryAuthUserId` used to apply itself, which is what keeps the
-    // resolved user id identical for every payload this reader accepts.
-    id: workosId ?? id,
-    email: typeof flat.email === 'string' ? flat.email : undefined,
-    name: typeof flat.name === 'string' ? flat.name : undefined,
-    avatarUrl: typeof flat.avatarUrl === 'string' ? flat.avatarUrl : undefined,
-    organizationId: typeof flat.organizationId === 'string' ? flat.organizationId : undefined,
-  };
-}
-
-/**
  * Resolve the authenticated user for a request via the provider. Never throws:
  * ordinary invalid/expired sessions resolve to `null`.
  *
- * The provider is handed to {@link toFactoryAuthUser} as well as called. Under
- * the v2 path that lets a provider implementing the kit's `toIdentity` map its
- * own payload — the escape hatch for a token shape the kit does not recognize,
- * such as an id under a custom claim namespace. A mapper that throws is caught
+ * The provider is handed to {@link toFactoryAuthUser} as well as called, which
+ * lets a provider implementing the kit's `toIdentity` map its own payload — the
+ * escape hatch for a token shape the kit does not recognize, such as an id
+ * under a custom claim namespace. A mapper that throws is caught
  * here like any other provider failure and resolves to `null`, which is the
  * fail-closed direction: an unreadable payload authenticates nobody.
  */
@@ -937,31 +780,26 @@ function isNavigationRequest(path: string, accept: string | undefined): boolean 
  *
  * `auth` is the capability descriptor: what this provider can do, in the shape
  * `@mastra/factory-auth` declares, so `/signin` can branch on capabilities
- * instead of on a vendor name. `provider` is the old answer — a bare name the
- * SPA still switches on — and it stays for one release so a browser holding a
- * cached bundle keeps working across the deploy. U9 removes it.
+ * instead of on a vendor name. It is the only input to the sign-in decision —
+ * which controls the page offers, how the hosted one is labelled, and whether
+ * sign-up is available (`auth.signIn.signUpEnabled`, positive, matching the
+ * provider method `isSignUpEnabled`).
  *
- * THE TWO SIGN-UP FIELDS, AND WHY THEY ARE DERIVED RATHER THAN COMPUTED TWICE
+ * WHY THE BARE `provider` NAME IS STILL HERE
  *
- * This response carries the same fact under two names of opposite polarity for
- * one release: `auth.signIn.signUpEnabled` is positive (it matches the provider
- * method, `isSignUpEnabled`), and the legacy `signUpDisabled` is negative. That
- * is the shape `factory-ui` reads today, so it cannot simply be dropped, and
- * U9 is where it goes.
+ * Not for `/signin`, which stopped reading it: a name is not a capability, and
+ * branching on one is what showed a GitHub button to deployments that had never
+ * heard of GitHub. It is for the account settings screen, which asks a
+ * different question — "which system holds my identity?" — that the descriptor
+ * deliberately cannot answer. `providerHint` is documented as explicitly *not*
+ * a provider name and the kit refuses to derive `signIn.label` from
+ * `provider.name`, so there is no capability field to render there instead.
  *
- * The hazard is a missing `!`. A sign-up link rendered on a deployment that
- * deliberately disabled sign-up looks like a working page from every angle —
- * nothing errors, nothing logs, and the only symptom is accounts that should
- * not exist. So `signUpDisabled` is *derived from* the descriptor here rather
- * than computed a second time from the provider: there is exactly one call to
- * `isSignUpEnabled` behind both fields, one negation between them, and no way
- * for the pair to drift apart as the code around them changes.
- *
- * That negation is also stricter than the expression it replaces, deliberately.
- * `toAuthDescriptor` answers `false` for a provider whose `isSignUpEnabled`
- * throws or returns a non-boolean (an `async` implementation returns a Promise,
- * which is truthy), where the old inline `=== false` let both cases through as
- * "sign-up is on". Both fields now fail closed on a misbehaving provider.
+ * There used to be a second, negative sign-up field beside the descriptor
+ * (`signUpDisabled`) for browsers holding a pre-descriptor bundle. It is gone:
+ * one response no longer states the same fact twice in opposite directions, so
+ * a dropped `!` can no longer render a sign-up link on a deployment that
+ * switched sign-up off.
  *
  * `credentialsBasePath` is left at the kit's default, `/auth`, because that is
  * where {@link registerAuthRoutes} and {@link buildAuthRoutes} mount this
@@ -977,11 +815,8 @@ function authMeta(provider: IMastraAuthProvider): {
    */
   provider: string | undefined;
   auth: AuthDescriptor;
-  signUpDisabled?: true;
 } {
-  const auth = toAuthDescriptor(provider);
-  const signUpDisabled = auth.signIn.signUpEnabled === false;
-  return { provider: provider.name, auth, ...(signUpDisabled ? { signUpDisabled: true } : {}) };
+  return { provider: provider.name, auth: toAuthDescriptor(provider) };
 }
 
 /**
