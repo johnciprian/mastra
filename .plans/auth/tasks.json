@@ -637,7 +637,7 @@
     },
     {
       "id": "B19",
-      "status": "pending",
+      "status": "done",
       "title": "Delete the flag and the legacy sniffer",
       "lane": "B",
       "size": "S",
@@ -647,7 +647,7 @@
       "files": [
         "mastracode/factory/src/auth.ts"
       ],
-      "detail": "Remove the flag, the old toFactoryAuthUser, and the dual-path tests. Deferred deliberately - this is the one task that should wait a release.",
+      "detail": "Remove the flag, the old toFactoryAuthUser, and the dual-path tests. Deferred deliberately - this is the one task that should wait a release. DONE at 454091c9. THE GATE COULD NEVER HAVE FIRED: every release workflow is guarded if github.repository == mastra-ai/mastra, this fork has zero tags, and nothing runs it, so \"one shipped release\" was a condition inherited from a plan written for upstream. With no operator the compat layer protected nobody. Flag, env reader, isAuthIdentityV2Enabled and legacyFactoryAuthUser removed; three call sites collapsed; flag out of web/.env.schema. Where a dual-path test collapsed its assertion survived - the differential identity table's four subjects moved into the exit gate, which runs the same payloads over real HTTP.",
       "doneWhen": "One identity path remains."
     },
     {
@@ -775,7 +775,7 @@
     },
     {
       "id": "U9",
-      "status": "pending",
+      "status": "done",
       "title": "Remove the legacy name fallback",
       "lane": "U",
       "size": "S",
@@ -787,7 +787,7 @@
         "mastracode/factory-ui/src/ui/pages/SignInPage.tsx",
         "mastracode/factory/src/auth.ts"
       ],
-      "detail": "After one release, drop the name branch in the SPA and the name field from /auth/me. Deferred with B19 for the same reason.",
+      "detail": "After one release, drop the name branch in the SPA and the name field from /auth/me. Deferred with B19 for the same reason. DONE at 454091c9. THE TASK TEXT UNDERSOLD IT: two legacy wire fields, not one. signUpDisabled is gone from /auth/me and from the SPA, and isSignUpEnabled reads the descriptor alone while keeping the typeof === boolean test so a deliberate false stays distinct from not-stated. AND A CORRECTION TO THE MAP: FactoryAuthState.provider was claimed by its own doc to have no reader but the legacy sign-in fallback. False - AccountSettingsSection renders authProviderLabel(state.provider), and the descriptor deliberately cannot answer that question, since providerHint is documented as not a provider name and the kit refuses to derive signIn.label from provider.name. So the field stays and its doc now names the real reader; what was removed is the name BRANCH. doneWhen still holds: the descriptor is the only input to the sign-in decision.",
       "doneWhen": "Descriptor is the only input to the sign-in decision."
     },
     {
@@ -1034,7 +1034,7 @@
     },
     {
       "id": "R3",
-      "status": "pending",
+      "status": "done",
       "title": "Deferred cleanup release",
       "lane": "R",
       "size": "S",
@@ -1043,7 +1043,7 @@
         "U9"
       ],
       "files": [],
-      "detail": "The one-release-later tasks: flag removal and legacy fallback deletion. Tracked here so they are not forgotten.",
+      "detail": "The one-release-later tasks: flag removal and legacy fallback deletion. Tracked here so they are not forgotten. DONE at 454091c9 with B19 and U9 in one commit.",
       "doneWhen": "Both deferred deletions shipped."
     },
     {
@@ -1510,6 +1510,21 @@
       ],
       "detail": "Found by P21 once the provider test files were typechecked, and asserted around there rather than fixed, because a test may not change a published provider. (1) `MastraAuthWorkosOptions` does not declare `authorizeUser`, and the option works: the constructor passes the options through `registerOptions`, which binds `authorizeUser`, `mapUserToResourceId`, `protected` and `public`. So three options are honoured at run time and untypeable for a caller. Nine of the eleven providers declare `Options extends MastraAuthProviderOptions<TUser>` and have none of this. The two that do not - workos and okta - are exactly the two whose `registerOptions` call carries an `as MastraAuthProviderOptions<TUser>` cast, which is what hid it. Okta has the identical defect and no test exercised it, so it produced no error. The fix is `src/types.ts` in both packages. (2) `MastraAuthWorkos.getCurrentUser` declares `Promise<EEUser | null>` while its body builds and returns a `WorkOSUser`, and the sibling `getUser` on the same class declares `WorkOSUser` correctly. `organizationId`, `memberships`, `organizationMembershipId` and `workosId` - the fields this provider exists to supply - are invisible to every caller of `getCurrentUser`. DONE. Both option types now extend MastraAuthProviderOptions, and getCurrentUser declares WorkOSUser. Proved as a consumer would hit it, against the package source rather than by reading: a scratch file passing authorizeUser, protected and public to each constructor failed TS2353 before and compiles after. Widening the return is safe for callers because WorkOSUser extends EEUser, so the class still satisfies IUserProvider<EEUser>. Nothing changes at run time - registerOptions was already binding all four.",
       "doneWhen": "A caller can type `authorizeUser`, `protected` and `public` on both workos and okta, and `getCurrentUser`'s declared return type matches what it returns."
+    },
+    {
+      "id": "P31",
+      "status": "pending",
+      "title": "Remove the deprecated GET /auth/logout shim",
+      "lane": "B",
+      "size": "S",
+      "deps": [
+        "B19"
+      ],
+      "files": [
+        "mastracode/factory/src/auth.ts"
+      ],
+      "detail": "A FOURTH compat item, found while clearing B19/U9/R3 and tracked by no task until now. B10 moved sign-out to POST and left GET /auth/logout reachable, with an isLogoutNavigation shim that reads Sec-Fetch-Dest to tell a top-level navigation from an <img> or <script> load. The changeset late-comics-yell promises it works \"for one release\" - a release that cannot happen in this fork, the same defect that made B19/U9/R3 unclearable. Unlike those two, this compat protects clients in the wild (a bookmarked link, an existing <a href>) rather than a deployment mid-upgrade; with nothing running this fork there are no such clients either. Removing it also CLOSES a residual security gap the code names itself: a request with no Sec-Fetch-Dest is allowed through, because browsers predating the header exist and refusing them would break sign-out rather than protect anybody. The comment says as much - \"why this is a shim on a deprecated route rather than the answer\". POST /auth/logout needs no such inference.",
+      "doneWhen": "GET /auth/logout is gone, isLogoutNavigation with it, and no route ends a session on a GET."
     }
   ],
   "criticalPath": [

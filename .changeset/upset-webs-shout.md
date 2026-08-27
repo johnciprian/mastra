@@ -24,7 +24,7 @@
 }
 ```
 
-**Two sign-up fields for one release** The payload states the same fact twice with opposite polarity: the new `auth.signIn.signUpEnabled` is positive, matching the provider's `isSignUpEnabled`, while the existing `signUpDisabled` is negative. Read the descriptor — it is authoritative, and `signUpDisabled` is removed in a later release. If you read both, mind the polarity: getting it backwards shows a sign-up link on a deployment that disabled sign-up, and nothing about that looks broken.
+**Sign-up is stated once, positively** `auth.signIn.signUpEnabled` matches the provider's own `isSignUpEnabled`, and it is the only field on the payload describing sign-up — the older negative `signUpDisabled` is gone. Treat an absent field as "not stated", whose default is enabled; the descriptor omits it entirely for providers with no credentials sign-in.
 
 **One behaviour change** A provider whose `isSignUpEnabled` throws, or returns something that is not a boolean (an `async` implementation returns a Promise), is now treated as having sign-up off. It previously fell through as sign-up on.
 

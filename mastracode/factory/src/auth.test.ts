@@ -544,16 +544,15 @@ describe('mountFactoryAuth /auth routes (enabled)', () => {
   });
 
   it('/auth/me states no sign-up field for the hosted-login provider', async () => {
-    // A hosted login has no credentials sign-in, so neither the descriptor's positive
-    // signUpEnabled nor the legacy negative signUpDisabled is claimed.
+    // A hosted login has no credentials sign-in, so the descriptor claims
+    // nothing about sign-up — and nothing else on the payload does either.
     mockAuthenticate.mockResolvedValue(null);
     const { app } = buildApp();
     const body = (await (await app.request('/auth/me')).json()) as {
-      signUpDisabled?: boolean;
       auth: { signIn: { signUpEnabled?: boolean } };
     };
     expect(body.auth.signIn.signUpEnabled).toBeUndefined();
-    expect(body.signUpDisabled).toBeUndefined();
+    expect(Object.keys(body).sort()).toEqual(['auth', 'authenticated', 'provider', 'user']);
   });
 });
 

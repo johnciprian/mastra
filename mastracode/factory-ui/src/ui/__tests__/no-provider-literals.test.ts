@@ -31,11 +31,14 @@
  * into a map that is supposed to be free of it. So that rule is scoped to the
  * sign-in page and the auth domain.
  *
- * THE ONE EXEMPTION
+ * THERE IS NO LONGER AN EXEMPTION
  *
- * A single `LEGACY:` … `END LEGACY` region in `SignInPage.tsx` serves servers
- * that predate the descriptor. It is asserted to be the only one, so a second
- * cannot be opened quietly, and it goes when the legacy branch does.
+ * `SignInPage.tsx` used to carry one `LEGACY:` … `END LEGACY` region, for
+ * servers that predated the descriptor, and the scanner still understands the
+ * markers — because that is what lets the last case below assert that no such
+ * region exists anywhere. Reopening one would be the way to smuggle a provider
+ * name back past the two rules above, so its absence is checked rather than
+ * assumed, and the machinery that would skip it stays in place to check it.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -61,7 +64,7 @@ function isAuthSurface(relativePath: string): boolean {
   return relativePath === 'ui/pages/SignInPage.tsx' || relativePath.startsWith('ui/domains/auth/');
 }
 
-/** Production source only — fixtures must be able to name providers to test the legacy path at all. */
+/** Production source only — fixtures must be able to name providers to stub a wire payload at all. */
 function isProductionSource(relativePath: string): boolean {
   if (relativePath.includes('__tests__/')) return false;
   if (/\.test\.tsx?$/.test(relativePath)) return false;
@@ -165,7 +168,7 @@ describe('the SPA does not branch on auth provider identity', () => {
     expect(scannedFiles.map(file => file.relativePath)).toContain('ui/pages/SignInPage.tsx');
   });
 
-  it('uses no auth provider name as code outside the legacy region', () => {
+  it('uses no auth provider name as code anywhere in the SPA', () => {
     const violations = scannedFiles.flatMap(file =>
       file.lines.flatMap(line =>
         AUTH_PROVIDER_IDS.filter(id => containsToken(line.text, id)).map(
@@ -177,7 +180,7 @@ describe('the SPA does not branch on auth provider identity', () => {
     expect(violations).toEqual([]);
   });
 
-  it('puts no vendor mark on the auth surface outside the legacy region', () => {
+  it('puts no vendor mark on the auth surface', () => {
     const violations = scannedFiles
       .filter(file => isAuthSurface(file.relativePath))
       .flatMap(file =>
@@ -191,11 +194,15 @@ describe('the SPA does not branch on auth provider identity', () => {
     expect(violations).toEqual([]);
   });
 
-  it('keeps the legacy exemption to exactly one region, in the sign-in page', () => {
+  it('carves out no exempt region at all, so the two rules above have no hole', () => {
+    // The sign-in page's LEGACY region is gone. Any file reintroducing one
+    // would have its contents skipped by `scan` and so be exempt from both
+    // rules above — which is exactly why "none" is asserted rather than left
+    // to be noticed in review.
     const withLegacy = scannedFiles
       .filter(file => file.legacyRegions > 0)
       .map(file => `${file.relativePath} (${file.legacyRegions})`);
 
-    expect(withLegacy).toEqual(['ui/pages/SignInPage.tsx (1)']);
+    expect(withLegacy).toEqual([]);
   });
 });

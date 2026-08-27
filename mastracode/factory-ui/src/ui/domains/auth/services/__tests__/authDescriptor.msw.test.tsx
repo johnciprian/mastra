@@ -1,7 +1,7 @@
 /**
- * What `fetchAuthState` makes of the two `/auth/me` payload shapes that are on
- * the wire at the same time: one carrying the capability descriptor, and one
- * from a server that predates it.
+ * What `fetchAuthState` makes of a `/auth/me` payload: the capability
+ * descriptor is the only thing it reads to decide how sign-in works, and a
+ * payload it cannot act on has to degrade rather than throw.
  *
  * Real `fetchAuthState`, real `fetch`, MSW at the network boundary only — so
  * these assert the actual wire contract rather than a re-description of the
@@ -38,7 +38,6 @@ describe('fetchAuthState descriptor parsing', () => {
           },
           features: { logout: true, organizations: true, refresh: true, sessionRevocation: false },
         },
-        signUpDisabled: true,
       });
 
       const state = await fetchAuthState(TEST_BASE_URL);
@@ -93,19 +92,32 @@ describe('fetchAuthState descriptor parsing', () => {
     });
   });
 
-  describe('given a server that predates the descriptor', () => {
-    it('reports no descriptor and keeps the provider name for the legacy fallback', async () => {
-      stubAuthMe({ authenticated: false, user: null, provider: 'better-auth', signUpDisabled: true });
+  describe('given a legacy negative sign-up field on the wire', () => {
+    // The Factory no longer emits `signUpDisabled`, but a proxy or a
+    // mixed-version deployment can still put one on the response. It is not an
+    // input to the decision any more, and these are what pin that: the field
+    // does not survive parsing, and it does not move the answer in either
+    // direction. A reader that started consulting it again would reintroduce
+    // the two-polarities-in-one-payload hazard this removal closed.
+    it('drops it rather than carrying it onto the auth state', async () => {
+      stubAuthMe({
+        authenticated: false,
+        user: null,
+        auth: {
+          signIn: { kind: 'credentials', signUpEnabled: true },
+          features: { logout: true, organizations: false, refresh: false, sessionRevocation: false },
+        },
+        signUpDisabled: true,
+      });
 
       const state = await fetchAuthState(TEST_BASE_URL);
 
-      expect(state.auth).toBeUndefined();
-      expect(state.provider).toBe('better-auth');
-      expect(isSignUpEnabled(state)).toBe(false);
+      expect(state).not.toHaveProperty('signUpDisabled');
+      expect(isSignUpEnabled(state)).toBe(true);
     });
 
-    it('leaves sign-up enabled when the legacy field is absent', async () => {
-      stubAuthMe({ authenticated: false, user: null, provider: 'better-auth' });
+    it('does not disable sign-up on a server that sends no descriptor either', async () => {
+      stubAuthMe({ authenticated: false, user: null, provider: 'some-provider', signUpDisabled: true });
 
       const state = await fetchAuthState(TEST_BASE_URL);
 
@@ -115,7 +127,7 @@ describe('fetchAuthState descriptor parsing', () => {
   });
 
   describe('given a descriptor this build cannot act on', () => {
-    // Rejecting routes the page to its legacy provider-name fallback, which
+    // Rejecting leaves `SignInPage` on its neutral hosted-login fallback, which
     // still renders something a user can act on. Accepting a kind we cannot
     // branch on would drop the payload into whichever branch happens to be last.
     it.each([
@@ -124,13 +136,15 @@ describe('fetchAuthState descriptor parsing', () => {
       ['no signIn block', { features: {} }],
       ['a null descriptor', null],
       ['a non-object descriptor', 'hosted'],
-    ])('rejects %s and falls back to the provider name', async (_label, auth) => {
-      stubAuthMe({ authenticated: false, user: null, provider: 'better-auth', auth });
+    ])('rejects %s', async (_label, auth) => {
+      stubAuthMe({ authenticated: false, user: null, provider: 'some-provider', auth });
 
       const state = await fetchAuthState(TEST_BASE_URL);
 
       expect(state.auth).toBeUndefined();
-      expect(state.provider).toBe('better-auth');
+      // The name still rides along for the account settings row; it is simply
+      // not what decides anything about signing in.
+      expect(state.provider).toBe('some-provider');
     });
 
     it('still yields a complete feature record when features are missing', async () => {
