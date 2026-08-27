@@ -301,7 +301,9 @@ export interface AuthDescriptorOverrides {
  * now tests all seven members `ISessionProvider` requires, `refreshSession` and
  * `destroySession` among them, so `guard && hasMethod` is just `guard` and all
  * three fields would move together. Worse, a provider carrying six of the seven
- * would report no session features at all, including the ones it does have.
+ * would report no session features at all, including the ones it does have —
+ * and that provider now has a name, `ISessionManager`, and a published example
+ * in `@mastra/auth-workos`, which revokes and refreshes but cannot mint.
  * Ungated, the two fields stay independent of each other and of the guard,
  * which is what a UI branching on them needs.
  *

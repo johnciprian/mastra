@@ -41,15 +41,44 @@ export interface ISessionClearer {
 }
 
 /**
- * Provider interface for session management.
+ * A provider that can work with sessions it already issued: read one off a
+ * request, check it, extend it, end it, and set or clear its cookie.
+ *
+ * Everything except minting one. That is the line, and it is where a real
+ * provider divides. An identity service issues a session in exchange for a
+ * credential a person presented — a password, a code from an SSO round trip —
+ * and offers no way to conjure one from a user id alone. `@mastra/auth-workos`
+ * is exactly that: `revokeSession` and the sealed cookie give it all six
+ * members below, while `createSession(userId)` has no call behind it in the
+ * WorkOS SDK at all.
+ *
+ * Before this interface existed such a provider had two options, and both were
+ * dishonest. Declare `ISessionProvider` and stub `createSession`, which makes
+ * every guard report a capability the provider does not have. Or declare
+ * nothing, and lose revocation, refresh and cookie handling that all work. The
+ * same bind `ISessionClearer` was split out to solve, one level up.
+ *
+ * `ISessionProvider` extends this, so every full session provider satisfies
+ * `canManageSessions` too and the six members are declared in one place.
  */
-export interface ISessionProvider<TSession extends Session = Session> extends ISessionClearer {
-  createSession(userId: string, metadata?: Record<string, unknown>): Promise<TSession>;
+export interface ISessionManager<TSession extends Session = Session> extends ISessionClearer {
   validateSession(sessionId: string): Promise<TSession | null>;
   destroySession(sessionId: string): Promise<void>;
   refreshSession(sessionId: string): Promise<TSession | null>;
   getSessionIdFromRequest(request: Request): string | null;
   getSessionHeaders(session: TSession): Record<string, string>;
+}
+
+/**
+ * Provider interface for session management, including minting a session for a
+ * user id.
+ *
+ * The whole of {@link ISessionManager} plus `createSession`. Declare this only
+ * if the provider can really mint: a host that sees `isSessionProvider` may
+ * create a session on sign-in rather than taking the one a callback returned.
+ */
+export interface ISessionProvider<TSession extends Session = Session> extends ISessionManager<TSession> {
+  createSession(userId: string, metadata?: Record<string, unknown>): Promise<TSession>;
 }
 
 export { MemorySessionProvider, type MemorySessionProviderOptions } from './memory';

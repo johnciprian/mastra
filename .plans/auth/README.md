@@ -68,12 +68,18 @@ so the boundary is a build error rather than a code-review habit.
 
 ## Status
 
-**All 65 original tasks done**, plus **31 post-plan follow-ups** (`P1`–`P31`) filed by
-the re-grade and by the work since, of which **27 are done, 3 open** (`P24`,
-`P28`, `P31`) and one — `P13` — is **will-not-do**: required status checks need an
-upgraded GitHub plan, and this is a free account. Both gates still run and still fail
-loudly on every pull request; only the enforcement that would block a merge past a red one
-is missing. Each task in
+**All 65 original tasks done**, plus **33 post-plan follow-ups** (`P1`–`P33`) filed by
+the re-grade and by the work since. **Nothing is open.** 32 are done and one — `P13` —
+is **will-not-do**: required status checks need an upgraded GitHub plan, and this is a
+free account. Both gates still run and still fail loudly on every pull request; only the
+enforcement that would block a merge past a red one is missing.
+
+The last four were the ones that needed a maintainer rather than an implementer: `P24`
+(the guard tightening is a **major** on `@mastra/core`), `P28` (WorkOS backs its readable
+session members with AuthKit) and `P33` (split `ISessionManager` out of `ISessionProvider`,
+which is what let `auth/workos` stop declaring a capability it never had). `P32` came out
+of `P31`'s measurement rather than the plan: the CSRF hole sign-out shared with every other
+mutating route on a cross-origin deployment. Each task in
 `tasks.json` carries a `status` field (`done` / `pending` / `held` / `wont-do`) — that
 file is the source of truth for progress; update it when a task merges or is decided
 against.

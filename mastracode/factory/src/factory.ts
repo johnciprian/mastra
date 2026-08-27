@@ -29,7 +29,7 @@ import type { IMastraAuthProvider } from '@mastra/core/server';
 import type { FactoryStorage } from '@mastra/core/storage';
 import type { MastraVector } from '@mastra/core/vector';
 import type { WorkspaceSandbox } from '@mastra/core/workspace';
-import { buildAuthRoutes, createFactoryAuthGate, createFactoryRouteAuth } from './auth.js';
+import { buildAuthRoutes, createCsrfGuard, createFactoryAuthGate, createFactoryRouteAuth } from './auth.js';
 import type { FactoryIntegration, IntegrationPostToolContext, IntegrationTools } from './integrations/base.js';
 import type { GithubIntegration } from './integrations/github/integration.js';
 import {
@@ -890,18 +890,22 @@ export class MastraFactory {
 
           // Ordered middleware. The deployer applies these AFTER its context
           // middleware sets `c.set('mastra', mastra)` and BEFORE routes, so:
-          //   1. gate   — validates the auth session, stashes the user, and 401s /
+          //   1. csrf   — refuses a state-changing request that spends the
+          //               browser's session cookie for another site. First, so a
+          //               refused request never reaches authentication.
+          //   2. gate   — validates the auth session, stashes the user, and 401s /
           //               redirects unauthenticated requests. Skips public `/auth/*`.
-          //   2. primers — hydrate the caller's model-credential and custom
+          //   3. primers — hydrate the caller's model-credential and custom
           //               provider snapshots so the request's first model call
           //               resolves tenant credentials and custom providers.
-          //   3. spa    — serves the built UI for everything the server doesn't own.
+          //   4. spa    — serves the built UI for everything the server doesn't own.
           // `auth` also lands on `server.auth` so the core auth middleware (and
           // Studio's dual-auth routing — see `studio.auth` on the returned args)
           // authenticates core `/api/*` routes with the same provider.
           return {
             auth,
             middleware: [
+              createCsrfGuard(),
               createFactoryAuthGate(auth),
               createTenantCredentialPrimer({ auth: routeAuth, credentials: modelCredentialsStorage }),
               createCustomProvidersPrimer({

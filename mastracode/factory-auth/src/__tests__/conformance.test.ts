@@ -62,6 +62,7 @@ import type {
 } from '../conformance/index.js';
 import {
   canClearSession,
+  canManageSessions,
   hasAuthInit,
   isAuthHttpHandler,
   isCredentialsProvider,
@@ -907,6 +908,18 @@ interface CapabilityCase {
 
   /** Checks that go red alongside, when one member of this interface is taken away. */
   readonly alsoFails?: readonly string[];
+
+  /**
+   * The code a partial carry of this interface is reported under, when that is
+   * not {@link code}.
+   *
+   * `code` answers "what slug does this interface contribute to the check's own
+   * roster", and `ISessionManager` contributes none - half of it is half an
+   * `ISessionProvider` too, so a slug of its own would name one defect twice.
+   * But it is still reported, under the wider interface's slug, and the subset
+   * test below needs to know which. Two questions that used to have one field.
+   */
+  readonly reportsAs?: string;
 }
 
 const CAPABILITY_CASES: readonly CapabilityCase[] = [
@@ -929,12 +942,51 @@ const CAPABILITY_CASES: readonly CapabilityCase[] = [
       'getClearSessionHeaders',
     ],
     code: `${WHOLE_CAPABILITIES}#partial-sessions`,
-    // The one legitimate proper subset in the contract, and the reason this
-    // whole check could not be written before P11. `ISessionProvider extends
-    // ISessionClearer`, so a provider carrying `getClearSessionHeaders` alone
-    // is the whole of a declared interface rather than a seventh of a bigger
-    // one - which is exactly what `@mastra/auth-better-auth` ships.
-    wholeSubsets: [['getClearSessionHeaders']],
+    // The two legitimate proper subsets in the contract, and the reason this
+    // whole check could not be written before P11. The session interfaces are a
+    // chain - `ISessionProvider extends ISessionManager extends ISessionClearer`
+    // - so each rung is the whole of a declared interface rather than a fraction
+    // of a bigger one. `@mastra/auth-better-auth` sits on the first,
+    // `@mastra/auth-workos` on the second.
+    wholeSubsets: [
+      ['getClearSessionHeaders'],
+      [
+        'validateSession',
+        'destroySession',
+        'refreshSession',
+        'getSessionIdFromRequest',
+        'getSessionHeaders',
+        'getClearSessionHeaders',
+      ],
+    ],
+  },
+  {
+    name: 'ISessionManager',
+    guard: canManageSessions,
+    members: [
+      'validateSession',
+      'destroySession',
+      'refreshSession',
+      'getSessionIdFromRequest',
+      'getSessionHeaders',
+      'getClearSessionHeaders',
+    ],
+    // Reported as `#partial-sessions`, because half an `ISessionManager` is
+    // necessarily half an `ISessionProvider` too. A slug here would name one
+    // defect twice.
+    code: null,
+    reportsAs: `${WHOLE_CAPABILITIES}#partial-sessions`,
+    // No whole subsets FROM THIS FRAME, even though `ISessionManager extends
+    // ISessionClearer` at the type level. `carrying` strips members of the case's
+    // own list and leaves the rest of the fully-capable fake alone, so every
+    // subset here still carries `createSession` - which makes it a partial
+    // `ISessionProvider` whatever else it has. The clearer-alone exemption is
+    // real and is exercised from the `ISessionProvider` frame above, where all
+    // seven come off.
+    // Every member of this one is a member of `ISessionProvider`, so taking any
+    // away leaves a partial of that. Same finding from the other end, as with
+    // `ISessionClearer` below.
+    alsoFails: [WHOLE_CAPABILITIES],
   },
   {
     name: 'ISessionClearer',
@@ -1035,6 +1087,7 @@ describe('the capability roster the general check reads', () => {
         isSSOProvider,
         isSessionProvider,
         canClearSession,
+        canManageSessions,
         isUserProvider,
         isCredentialsProvider,
         isOrganizationsProvider,
@@ -1092,16 +1145,17 @@ describe.each(CAPABILITY_CASES.map(capability => [capability.name, capability] a
     const subsets = properSubsets(capability.members);
     if (subsets.length > 0) {
       it(`answers for every one of the ${subsets.length} ways to carry part of it`, async () => {
+        // What a partial carry reports under, which is this interface's own slug
+        // where it has one and the wider interface's where it does not.
+        const reportedAs = capability.code ?? capability.reportsAs ?? null;
         for (const subset of subsets) {
           const outcome = await wholeCapabilitiesOutcome(carrying(capability, subset));
-          const passes = capability.code === null || isWholeSubset(capability, subset);
+          const passes = reportedAs === null || isWholeSubset(capability, subset);
           expect(outcome.status, `carrying [${subset.join(', ')}]: ${JSON.stringify(outcome)}`).toBe(
             passes ? 'passed' : 'failed',
           );
           if (!passes) {
-            expect(outcome.status === 'failed' && outcome.code, `carrying [${subset.join(', ')}]`).toBe(
-              capability.code,
-            );
+            expect(outcome.status === 'failed' && outcome.code, `carrying [${subset.join(', ')}]`).toBe(reportedAs);
           }
         }
       });
@@ -1115,10 +1169,18 @@ describe.each(CAPABILITY_CASES.map(capability => [capability.name, capability] a
       'goes red exactly where the defect is when %s is missing',
       async (member: string) => {
         const outcomes = await runChecks(optionsFor(() => lacking([member])));
+        // Taking one member off can land on a smaller declared interface rather
+        // than on a fraction of this one - dropping `createSession` from
+        // `ISessionProvider` leaves a whole `ISessionManager`. That is the
+        // supported shape, so nothing is red. Asked as a rule rather than
+        // spelled out per member, so a subset declared later is covered the day
+        // it lands.
+        const remainder = capability.members.filter(other => other !== member);
+        const stillWhole = isWholeSubset(capability, remainder);
         const expected = [
-          ...(capability.code === null ? [] : [WHOLE_CAPABILITIES]),
+          ...(capability.code === null || stillWhole ? [] : [WHOLE_CAPABILITIES]),
           ...(capability.reportedFor?.[member] === undefined ? [] : [capability.reportedFor[member]]),
-          ...(capability.alsoFails ?? []),
+          ...(stillWhole ? [] : (capability.alsoFails ?? [])),
         ];
         expect(
           failures(outcomes)

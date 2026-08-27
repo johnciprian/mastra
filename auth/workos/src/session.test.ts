@@ -351,28 +351,38 @@ describe('refreshSession', () => {
 });
 
 describe('getSessionHeaders', () => {
-  it('emits nothing for a session that carries no cookie', async () => {
-    // Including everything createSession returns. Emitting a cookie built from
-    // one would put a value in the browser that authenticates nobody.
+  it('emits nothing for a session that carries no cookie', () => {
+    // Only handleCallback and refreshSession attach one. Building a cookie from
+    // a session that has none would put a value in the browser that
+    // authenticates nobody.
     const auth = provider();
-    const invented = await auth.createSession('user_01H');
+    const foreign = { id: 'not-from-here', userId: 'user_01H', createdAt: new Date(), expiresAt: new Date() };
 
-    expect(auth.getSessionHeaders(invented)).toEqual({});
+    expect(auth.getSessionHeaders(foreign)).toEqual({});
   });
 });
 
 describe('createSession', () => {
-  it('is the member AuthKit cannot back, and validateSession says so', async () => {
-    // Asserted, not aspirational: a WorkOS session comes from an authenticated
-    // token exchange, so nothing minted from a user id alone can be accepted.
-    // This is the recorded `sessions/round-trip` conformance failure, and it
-    // survives P28(b) on purpose.
+  it('does not exist, which is what ISessionManager means', () => {
+    // P33. This used to be a stub returning a record nothing would accept, and
+    // its presence made isSessionProvider report a capability that was not
+    // there. A WorkOS session comes from an authenticated token exchange, so
+    // there is nothing to mint from a user id alone -- the member is gone
+    // rather than lying, and the interface says so.
     const auth = provider();
 
-    const invented = await auth.createSession('user_01H');
+    expect('createSession' in auth).toBe(false);
+    expect((auth as unknown as Record<string, unknown>).createSession).toBeUndefined();
+  });
 
-    expect(invented.userId).toBe('user_01H');
-    expect(await auth.validateSession(invented.id)).toBeNull();
+  it('leaves the provider managing sessions without claiming to mint them', async () => {
+    // The guards are the contract's own answer to the line above, so assert on
+    // them rather than only on the missing member.
+    const { canManageSessions, isSessionProvider } = await import('@mastra/factory-auth/contract');
+    const auth = provider();
+
+    expect(canManageSessions(auth)).toBe(true);
+    expect(isSessionProvider(auth)).toBe(false);
   });
 });
 

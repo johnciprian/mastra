@@ -393,30 +393,25 @@ async function createProvider(): Promise<MastraAuthWorkos> {
 }
 
 /**
- * The one defect this provider ships with, recorded so the suite can be green
- * without being a lie. The `reason` is a pointer plus a sentence; the
- * diagnosis lives in this file's header, which is where a reader of the
- * failing check already lands.
+ * EMPTY, and that is the finish line rather than a formality.
  *
- * Checked in both directions on every run: give this provider real sessions,
- * or stop declaring `ISessionProvider`, and the suite fails until this entry
- * is deleted in the same change.
+ * This provider carried one recorded failure for the whole of this series -
+ * `sessions/round-trip#validate-rejects-fresh-session` - and it is gone because
+ * the interface it was measured against was wrong, not because anything was
+ * hidden. `sessions/round-trip` begins by minting a session, this provider
+ * declares `ISessionManager` and therefore does not claim to mint, and the
+ * section skips with a message saying which member is missing and why.
+ *
+ * The two ways to get here that were NOT taken: stub `createSession` so the
+ * check runs (which is what shipped for a year, and made every guard report a
+ * capability that did not exist), or back it with an in-memory map so the round
+ * trip passes (which would make `validateSession` accept a session WorkOS never
+ * issued - a green worth less than the red).
+ *
+ * `knownFailures` fails in both directions on every run, so this staying empty
+ * is checked rather than assumed.
  */
-const knownFailures = [
-  {
-    check: 'sessions/round-trip',
-    code: 'sessions/round-trip#validate-rejects-fresh-session',
-    reason:
-      'createSession(userId) alone. It cannot mint a session validateSession could accept: a WorkOS ' +
-      'session is created by an authenticated token exchange, and the SDK has no call that mints one ' +
-      'from a user id. The other five ISessionProvider members are backed by AuthKit as of P28 - ' +
-      'destroySession really calls revokeSession, so features.sessionRevocation is now true in fact ' +
-      'rather than in name - and are covered by sessions.test in this package. Backing this one with ' +
-      'an in-memory store would turn the check green by making validateSession accept a session ' +
-      'WorkOS never issued, which is worse than the red. Closing it properly means splitting minting ' +
-      'out of ISessionProvider (P33), not deleting the five that work.',
-  },
-];
+const knownFailures: [] = [];
 
 describeAuthProvider({
   name: '@mastra/auth-workos',

@@ -683,6 +683,70 @@ function refuseForeignOrigin(c: Context): Response {
   return c.json({ error: 'Request origin is not allowed' }, 403);
 }
 
+/** Methods that change something, and therefore need to have been asked for. */
+const STATE_CHANGING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/**
+ * Whether this request would spend a credential the browser attached by itself.
+ *
+ * That is the entire precondition for CSRF, and keying on it rather than on
+ * which route is being called is what makes the guard below both complete and
+ * safe. Complete, because a route added tomorrow is covered without anyone
+ * remembering to list it. Safe, because the three kinds of caller that must not
+ * be refused all fail this test on their own merits:
+ *
+ * - An inbound webhook (GitHub, Slack) sends no cookies and authenticates by
+ *   HMAC over its body. `createFactoryAuthGate` has to name those paths one by
+ *   one because it runs before route matching and cannot read `requiresAuth`;
+ *   this needs no such list, because a signature is not ambient authority.
+ * - An API client sending `Authorization` is not spending anything ambient —
+ *   and a cross-site page cannot set that header without a preflight the
+ *   deployment's CORS policy has to allow first.
+ * - A signed-out browser has no session cookie to spend.
+ *
+ * `Cookie` in general rather than the session cookie in particular, because the
+ * name is not always ours to know: only the host-owned cookie has a name this
+ * package chose, and a provider-minted one is whatever the provider called it.
+ * The cost of the broader test is refusing a cross-site POST that carried some
+ * unrelated cookie and would have failed authentication anyway.
+ */
+function spendsAmbientCredential(c: Context): boolean {
+  if (!STATE_CHANGING_METHODS.has(c.req.method.toUpperCase())) return false;
+  if (getBearerToken(c.req.header('Authorization'))) return false;
+  return c.req.header('Cookie') !== undefined;
+}
+
+/**
+ * Refuse any state-changing request that spends the browser's session cookie on
+ * behalf of another site.
+ *
+ * `SameSite` covers this on a same-origin deployment and only there. Setting
+ * `MASTRACODE_ALLOWED_ORIGINS` moves the session cookie to
+ * `SameSite=None; Secure` so a separately hosted SPA can use it, and from that
+ * moment every cross-site request carries it too. CORS does not stand in the
+ * way: it withholds the response from a disallowed origin, it does not stop the
+ * request, and a request whose `Content-Type` is one of the three CORS-simple
+ * values is never preflighted at all.
+ *
+ * Nor does requiring JSON help, which is the assumption worth naming because it
+ * is the one most people stop at. `c.req.json()` parses the body it is given
+ * without consulting `Content-Type`, so `text/plain` carrying JSON reaches every
+ * route that reads a JSON body — measured, not assumed. A cross-site page can
+ * therefore drive any mutating route with the victim's cookie attached.
+ *
+ * Mounted ahead of {@link createFactoryAuthGate}, so a refused request never
+ * reaches authentication and cannot be counted, logged, or rate-limited as a
+ * real attempt.
+ */
+export function createCsrfGuard() {
+  return async (c: Context, next: () => Promise<void>): Promise<Response | void> => {
+    if (spendsAmbientCredential(c) && !isAllowedRequestOrigin(c)) {
+      return refuseForeignOrigin(c);
+    }
+    return next();
+  };
+}
+
 /**
  * Every `Set-Cookie` a sign-out should emit: the provider's own clearing
  * cookies, plus this host's when it owns one.

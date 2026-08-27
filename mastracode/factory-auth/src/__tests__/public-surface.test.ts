@@ -83,6 +83,7 @@ const CONTRACT: Omit<Surface, 'module'> = {
   values: [
     'MastraAuthProvider',
     'canClearSession',
+    'canManageSessions',
     'getRequestHeader',
     'getWebRequest',
     'hasAuthInit',
@@ -103,6 +104,7 @@ const CONTRACT: Omit<Surface, 'module'> = {
     'IOrganizationsProvider',
     'ISSOProvider',
     'ISessionClearer',
+    'ISessionManager',
     'ISessionProvider',
     'IUserProvider',
     'MastraAuthProviderOptions',
@@ -284,7 +286,7 @@ const SURFACE: Readonly<Record<string, Surface>> = {
  * A single number, so that "one export appeared and another vanished" cannot net
  * out to a green run across nine separate list comparisons.
  */
-const TOTAL_DISTINCT_EXPORTS = 130;
+const TOTAL_DISTINCT_EXPORTS = 132;
 
 // ============================================================================
 // Reading the built declarations
