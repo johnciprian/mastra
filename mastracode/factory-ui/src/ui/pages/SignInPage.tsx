@@ -1,8 +1,6 @@
 import { Button } from '@mastra/playground-ui/components/Button';
 import { Input } from '@mastra/playground-ui/components/Input';
-import { LogoWithoutText } from '@mastra/playground-ui/components/Logo';
 import { Txt } from '@mastra/playground-ui/components/Txt';
-import { GithubIcon } from '@mastra/playground-ui/icons/GithubIcon';
 import { Building2, KeyRound, LogIn, Mail, ShieldCheck } from 'lucide-react';
 import { useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
@@ -13,6 +11,7 @@ import { useApiConfig } from '../../api/config';
 import { useFactoryAuth } from '../../hooks/useFactoryAuth';
 import {
   credentialsBasePath,
+  DEFAULT_PROVIDER_HINT,
   isSignUpEnabled,
   navigateAfterSignIn,
   redirectToLogin,
@@ -46,10 +45,12 @@ export function safeReturnTo(raw?: string): string {
  * (which set the session cookie), then does a full navigation to `returnTo` so
  * the app boots with the fresh session.
  *
- * `signUpEnabled` is deliberately **positive**, matching the descriptor and the
- * provider method behind it. The wire still carries a negative legacy field for
- * one release; `isSignUpEnabled` reconciles the two so that the `!` lives in one
- * place instead of at every call site.
+ * `signUpEnabled` is **positive**, matching the descriptor and the provider
+ * method behind it, and it is the only polarity on the wire — the response used
+ * to carry a negative legacy field beside it, which is where a dropped `!`
+ * could render this form's sign-up control on a deployment that had switched
+ * sign-up off. `isSignUpEnabled` still owns the read, so the default for an
+ * unstated field lives in one place rather than at every call site.
  */
 function CredentialSignInForm({
   returnTo,
@@ -169,7 +170,7 @@ interface HostedPresentation {
  * whole point: adding an identity provider server-side must never mean editing
  * this file. So nothing here may become a vendor logo — a token that resolved to
  * the GitHub mark would reintroduce exactly the coupling the descriptor removes,
- * and is the bug the legacy block below documents.
+ * which is the bug described at {@link NO_DESCRIPTOR_SIGN_IN_KIND}.
  *
  * Every icon is therefore neutral and describes the *shape of the flow*: a
  * building for an organization's IdP, a shield for a redirect to a consumer
@@ -210,47 +211,25 @@ function hostedPresentation(signIn: AuthSignInDescriptor): HostedPresentation {
   return signIn.label ? { ...base, label: signIn.label } : base;
 }
 
-/* ───────────────────────────── LEGACY: provider-name fallback ─────────────────────────────
- *
- * Everything down to the END LEGACY marker exists only for servers that predate
- * the capability descriptor, and is deleted wholesale once every server emits
- * one. It is the ONLY place in `factory-ui/src` that may name a provider; the CI
- * gate banning provider-name literals carves out exactly this block.
- *
- * None of it is reached when `auth.data.auth` is present.
- */
-const LEGACY_CREDENTIALS_PROVIDER = 'better-auth';
-const LEGACY_PLATFORM_PROVIDER = 'mastra-studio';
-
-/** Pre-descriptor rule: one provider hosted the credential form, everything else redirected. */
-function legacySignInKind(provider: string | undefined): AuthSignInKind {
-  return provider === LEGACY_CREDENTIALS_PROVIDER ? 'credentials' : 'hosted';
-}
-
 /**
- * Pre-descriptor button copy — and a record of the failure this change removes.
+ * What the page offers when there is no descriptor to read: while `/auth/me` is
+ * still in flight, and on a response this build cannot act on (an older server,
+ * or a newer one sending a `signIn.kind` this build has no branch for).
  *
- * Every unrecognized provider fell through to the GitHub branch, so a deployment
- * on any other identity provider was told to "Continue with GitHub" under a
- * GitHub logo. That is preserved here unchanged, because a server that sends no
- * descriptor must keep rendering what it renders today; it is not preserved
- * anywhere a descriptor can reach.
+ * A hosted-login button in its neutral treatment, which is the control that
+ * works for the widest range of providers and names none of them.
+ *
+ * WHAT THIS REPLACED, BECAUSE IT IS THE REASON THE DESCRIPTOR EXISTS
+ *
+ * The fallback used to be a provider-name lookup: one name got the credential
+ * form, one got a Mastra Platform button, and *every other name fell through to
+ * a GitHub branch* — so a deployment on an identity provider this SPA had never
+ * heard of told its users to "Continue with GitHub", under a GitHub logo. It
+ * worked on whichever deployment the author had tested and was wrong
+ * everywhere else. Nothing here may name a provider again; the gate in
+ * `ui/__tests__/no-provider-literals.test.ts` fails the build if it does.
  */
-function legacyHostedPresentation(provider: string | undefined): HostedPresentation {
-  if (provider === LEGACY_PLATFORM_PROVIDER) {
-    return {
-      icon: <LogoWithoutText className="w-4" aria-hidden="true" />,
-      label: 'Sign in with Mastra Platform',
-      pendingLabel: 'Opening Mastra Platform…',
-    };
-  }
-  return {
-    icon: <GithubIcon aria-hidden="true" />,
-    label: 'Continue with GitHub',
-    pendingLabel: 'Opening GitHub…',
-  };
-}
-/* ─────────────────────────────────── END LEGACY ─────────────────────────────────── */
+const NO_DESCRIPTOR_SIGN_IN_KIND: AuthSignInKind = 'hosted';
 
 /**
  * `signIn.kind === 'none'`: the provider works, enforces, and validates API
@@ -285,11 +264,12 @@ function SignInUnavailable() {
  * Dedicated `/signin` route rendered when web auth is enabled and the session is
  * unauthenticated.
  *
- * The page branches on the provider's declared **capability**, not its identity:
- * `signIn.kind` decides which controls exist, and `providerHint` decides how the
- * hosted one looks. A provider the SPA has never heard of therefore gets a
- * correct screen without this file changing. The provider name is consulted only
- * when the server sent no descriptor at all — see the LEGACY block above.
+ * The page branches on the provider's declared **capability**, and on nothing
+ * else: `signIn.kind` decides which controls exist, and `providerHint` decides
+ * how the hosted one looks. A provider the SPA has never heard of therefore
+ * gets a correct screen without this file changing, and the provider's *name*
+ * is not read here at all — see {@link NO_DESCRIPTOR_SIGN_IN_KIND} for what
+ * happens when there is no descriptor to read.
  *
  * Every kind preserves where the user was headed via `?returnTo=`.
  */
@@ -303,13 +283,13 @@ export function SignInPage() {
   const authErrorDescription = searchParams.get('error_description');
   const accessDenied = authError === 'access_denied';
 
-  // The descriptor decides what this page offers. While the query is still
-  // pending there is no descriptor and no name, which resolves to the hosted
-  // button in its disabled state — the same thing this page showed while
-  // loading before, and never the `none` panel.
+  // The descriptor decides what this page offers, and it is the only thing
+  // that does. While the query is still pending there is no descriptor, which
+  // resolves to the hosted button in its disabled state — the same thing this
+  // page shows while loading, and never the `none` panel.
   const descriptor = auth.data?.auth;
-  const signInKind: AuthSignInKind = descriptor?.signIn.kind ?? legacySignInKind(auth.data?.provider);
-  const hosted = descriptor ? hostedPresentation(descriptor.signIn) : legacyHostedPresentation(auth.data?.provider);
+  const signInKind: AuthSignInKind = descriptor?.signIn.kind ?? NO_DESCRIPTOR_SIGN_IN_KIND;
+  const hosted = descriptor ? hostedPresentation(descriptor.signIn) : HOSTED_PRESENTATION[DEFAULT_PROVIDER_HINT];
   const showCredentials = signInKind === 'credentials' || signInKind === 'both';
   const showHostedLogin = signInKind === 'hosted' || signInKind === 'both';
 

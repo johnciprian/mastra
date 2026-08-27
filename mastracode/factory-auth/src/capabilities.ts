@@ -199,27 +199,18 @@ export interface AuthFeatureDescriptor {
  * //   features: { logout: true, organizations: false, refresh: false, sessionRevocation: false } }
  * ```
  *
- * A `signUpEnabled` POLARITY WARNING, AND IT IS NOT DECORATIVE
+ * A `signUpEnabled` POLARITY NOTE, AND IT IS NOT DECORATIVE
  *
- * Three layers of this system express the same fact with two different
- * polarities, and one of them is about to ride alongside the other:
- *
- * - the provider method is positive: `isSignUpEnabled()`;
- * - the wire field the SPA reads today is negative: `signUpDisabled`;
- * - {@link AuthSignInDescriptor.signUpEnabled} here is positive again.
- *
- * The `/auth/me` payload carries both fields for one release, so for that
- * release a single response contains two fields of opposite polarity describing
- * the same thing. A missing `!` in the branch that reads them shows a sign-up
- * link on a deployment that deliberately disabled sign-up, and nothing about
- * that failure looks like a bug from the outside.
- *
- * Positive is the right polarity to keep - it matches the provider method, and
- * negative booleans read backwards at every call site - so the conflict is
- * resolved here in favour of `signUpEnabled` and flagged rather than hidden. A
- * consumer reading both must treat the descriptor as authoritative, and the
- * transition needs a test for a response carrying the two fields together, not
- * only for the four {@link AuthSignInKind} values.
+ * {@link AuthSignInDescriptor.signUpEnabled} is positive, matching the provider
+ * method `isSignUpEnabled()` it comes from. Keep it that way: negative booleans
+ * read backwards at every call site, and this fact used to be stated a second
+ * time on the `/auth/me` wire under a negative name (`signUpDisabled`). One
+ * response then described sign-up twice, in opposite directions, and a missing
+ * `!` in the branch reconciling them showed a sign-up link on a deployment that
+ * deliberately disabled sign-up — a failure nothing about which looks like a
+ * bug from the outside. The negative field is gone and the descriptor is the
+ * whole answer; a host adding a second, opposite field would reopen exactly
+ * that hazard.
  */
 export interface AuthDescriptor {
   signIn: AuthSignInDescriptor;

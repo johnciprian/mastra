@@ -10,6 +10,7 @@ import {
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import * as authModule from './auth.js';
 import { buildAuthRoutes, mountFactoryAuth, factoryAuthTenant } from './auth.js';
 
 /**
@@ -180,7 +181,7 @@ describe('mountFactoryAuth with an explicit custom provider', () => {
     });
   });
 
-  it('/auth/me surfaces signUpDisabled when a credentials provider disables sign-up', async () => {
+  it('/auth/me reports a disabled sign-up through the descriptor, and nowhere else', async () => {
     const { app } = buildApp(
       fakeProvider({
         authenticateToken: vi.fn(async () => null),
@@ -189,11 +190,12 @@ describe('mountFactoryAuth with an explicit custom provider', () => {
     );
     const res = await app.request('/auth/me');
     expect(res.status).toBe(200);
+    // `toEqual` on the whole body is what pins "and nowhere else": a second,
+    // negative sign-up field reappearing beside the descriptor fails here.
     expect(await res.json()).toEqual({
       authenticated: false,
       user: null,
       provider: 'fake',
-      signUpDisabled: true,
       auth: {
         signIn: {
           kind: 'credentials',
@@ -384,13 +386,11 @@ describe('OAuth state codec', () => {
 interface AuthMeBody {
   authenticated: boolean;
   provider?: string;
-  /** Legacy negative field, kept for one release. U9 removes it. */
-  signUpDisabled?: boolean;
   auth: {
     signIn: {
       kind: 'hosted' | 'credentials' | 'both' | 'none';
       providerHint?: string;
-      /** Positive field from the kit's descriptor. */
+      /** The only sign-up field on the wire, and it is positive. */
       signUpEnabled?: boolean;
       credentialsBasePath?: string;
     };
@@ -423,15 +423,14 @@ function sessionCapability(overrides: Record<string, unknown> = {}): Record<stri
  * branch on what a provider can *do* rather than on its name.
  *
  * The sign-up block below is the part worth reading before changing any of
- * this. For one release the payload states the same fact twice with opposite
- * polarity — `auth.signIn.signUpEnabled` (positive, matching the provider's
- * `isSignUpEnabled`) and the legacy `signUpDisabled` (negative, which is what
- * `factory-ui`'s SignInPage reads today). A dropped `!` between them renders a
- * sign-up link on a deployment that switched sign-up off, and that failure is
- * invisible from the outside: no error, no log, just accounts that should not
- * exist. So the polarity of both fields is asserted explicitly, in the same
- * payload, rather than each being checked in a test of its own where they could
- * agree by accident.
+ * this. The payload used to state the same fact twice with opposite polarity —
+ * `auth.signIn.signUpEnabled` (positive, matching the provider's
+ * `isSignUpEnabled`) beside a legacy negative `signUpDisabled` — and a dropped
+ * `!` between them rendered a sign-up link on a deployment that switched
+ * sign-up off, a failure invisible from the outside: no error, no log, just
+ * accounts that should not exist. The negative field is gone, so the way that
+ * hazard is kept away is to assert the descriptor is the whole answer and that
+ * no second field rides beside it.
  */
 describe('/auth/me capability descriptor', () => {
   /** GET `/auth/me` against a provider and return the parsed body. */
@@ -470,9 +469,10 @@ describe('/auth/me capability descriptor', () => {
     expect(body.auth.features.logout).toBe(true);
   });
 
-  it('keeps the bare provider name alongside the descriptor for one release', async () => {
-    // U9 removes this; until then a browser on a cached bundle still branches
-    // on the name, so the descriptor is added beside it and not instead of it.
+  it('keeps the bare provider name alongside the descriptor', async () => {
+    // Not for `/signin`, which reads the descriptor and nothing else. The
+    // account settings screen renders "which system holds my identity?", and
+    // the descriptor deliberately carries no field that answers it.
     const body = await authMe(fakeProvider(ssoCapability()));
     expect(body.provider).toBe('fake');
     expect(body.auth).toBeDefined();
@@ -510,7 +510,7 @@ describe('/auth/me capability descriptor', () => {
     expect(body.auth.features.logout).toBe(true);
   });
 
-  describe('the two sign-up fields, in one payload, with opposite polarity', () => {
+  describe('sign-up, stated once and positively', () => {
     it.each([
       {
         label: 'a provider that allows sign-up',
@@ -530,25 +530,20 @@ describe('/auth/me capability descriptor', () => {
     ])('$label', async ({ overrides, enabled }) => {
       const body = await authMe(fakeProvider(overrides));
 
-      // Positive field: says what the provider's own method says.
+      // Positive, and says what the provider's own method says.
       expect(body.auth.signIn.signUpEnabled).toBe(enabled);
 
-      // Negative field: present only to say "off", absent otherwise. This is
-      // the shape SignInPage reads as `signUpDisabled === true`.
-      expect(body.signUpDisabled).toBe(enabled ? undefined : true);
-
-      // And the two disagree as booleans in exactly the way they should. This
-      // is the assertion that catches a dropped `!`: it fails if the fields are
-      // ever made to agree, in either direction.
-      expect(body.auth.signIn.signUpEnabled).toBe(!(body.signUpDisabled ?? false));
+      // And nothing else on the payload describes sign-up. A second field of
+      // the opposite polarity is what a dropped `!` used to be able to hide
+      // behind, so its absence is asserted rather than assumed.
+      expect(Object.keys(body).sort()).toEqual(['auth', 'authenticated', 'provider', 'user']);
     });
 
-    it('states neither field for a provider with no credentials sign-in', async () => {
+    it('states nothing at all for a provider with no credentials sign-in', async () => {
       // There is no sign-up to describe, so nothing is claimed either way — an
-      // absent positive field must not be read as "sign-up is off".
+      // absent field must not be read as "sign-up is off".
       const body = await authMe(fakeProvider(ssoCapability()));
       expect(body.auth.signIn.signUpEnabled).toBeUndefined();
-      expect(body.signUpDisabled).toBeUndefined();
     });
 
     it.each([
@@ -566,7 +561,6 @@ describe('/auth/me capability descriptor', () => {
       // one that should have been hidden creates accounts nobody authorized.
       const body = await authMe(fakeProvider(credentialsCapability({ isSignUpEnabled })));
       expect(body.auth.signIn.signUpEnabled).toBe(false);
-      expect(body.signUpDisabled).toBe(true);
     });
   });
 
@@ -585,279 +579,6 @@ describe('/auth/me capability descriptor', () => {
 });
 
 /**
- * The compat flag for the identity/session/logout migration. It is read once at
- * module load, so both paths are reached by reloading the module rather than by
- * assigning to `process.env` — the last test here is what pins that property,
- * and the rest would pass just as well against a per-request read.
- *
- * Placed last in the file, and it leaves the module registry reset behind it:
- * the statically imported bindings above are already resolved and keep working,
- * but a fresh registry is the tidier state to hand to whatever runs next.
- */
-describe('MASTRACODE_AUTH_IDENTITY_V2 (compat flag)', () => {
-  /**
-   * Import a fresh copy of the auth module with the flag set to `value`
-   * (`undefined` unsets it). Deleting the variable explicitly rather than
-   * trusting the ambient environment keeps the default-on assertion honest on
-   * a machine that happens to export it.
-   */
-  async function importAuthWith(value: string | undefined): Promise<typeof import('./auth.js')> {
-    if (value === undefined) delete process.env.MASTRACODE_AUTH_IDENTITY_V2;
-    else process.env.MASTRACODE_AUTH_IDENTITY_V2 = value;
-    vi.resetModules();
-    return import('./auth.js');
-  }
-
-  afterEach(() => {
-    delete process.env.MASTRACODE_AUTH_IDENTITY_V2;
-    vi.resetModules();
-  });
-
-  it('names the env var it reads', async () => {
-    const auth = await importAuthWith(undefined);
-    expect(auth.AUTH_IDENTITY_V2_ENV_VAR).toBe('MASTRACODE_AUTH_IDENTITY_V2');
-  });
-
-  it('defaults to ON when the env var is unset', async () => {
-    const auth = await importAuthWith(undefined);
-    expect(auth.isAuthIdentityV2Enabled()).toBe(true);
-  });
-
-  it.each(['0', 'false', 'FALSE', '  false  '])('is off when the env var is %j at module load', async value => {
-    const auth = await importAuthWith(value);
-    expect(auth.isAuthIdentityV2Enabled()).toBe(false);
-  });
-
-  it.each(['1', 'true', 'TRUE', '  true  '])('stays on for the explicit opt-in %j', async value => {
-    const auth = await importAuthWith(value);
-    expect(auth.isAuthIdentityV2Enabled()).toBe(true);
-  });
-
-  it.each(['', 'no', 'off', 'flase', 'FALSE!', 'v1', 'undefined', 'null', '00', 'false ish'])(
-    'stays ON for %j, because an unrecognized value must not select the legacy path',
-    async value => {
-      // The same rule as before the default flipped, pointed the other way: a
-      // typo must never land a deployment on the non-default path. That used to
-      // mean "must not opt in"; now the non-default path is the legacy reader,
-      // with the defects v2 exists to fix, so a typo must not opt *out*.
-      const auth = await importAuthWith(value);
-      expect(auth.isAuthIdentityV2Enabled()).toBe(true);
-    },
-  );
-
-  it('parses opt-out values without a module reload', async () => {
-    const { readAuthIdentityV2Env } = await importAuthWith(undefined);
-    expect(readAuthIdentityV2Env('0')).toBe(false);
-    expect(readAuthIdentityV2Env('false')).toBe(false);
-    expect(readAuthIdentityV2Env('False')).toBe(false);
-    expect(readAuthIdentityV2Env('\tFALSE\n')).toBe(false);
-    expect(readAuthIdentityV2Env('1')).toBe(true);
-    expect(readAuthIdentityV2Env('true')).toBe(true);
-    expect(readAuthIdentityV2Env('')).toBe(true);
-    expect(readAuthIdentityV2Env(undefined)).toBe(true);
-    expect(readAuthIdentityV2Env('flase')).toBe(true);
-  });
-
-  it('reads the env var once at module load, not per call', async () => {
-    const auth = await importAuthWith(undefined);
-    expect(auth.isAuthIdentityV2Enabled()).toBe(true);
-
-    // Flipping the variable on a module that has already loaded must not move
-    // the answer: a flag that changed underneath a running process could resolve
-    // a session on one path and re-check it on the other.
-    process.env.MASTRACODE_AUTH_IDENTITY_V2 = 'false';
-    expect(auth.isAuthIdentityV2Enabled()).toBe(true);
-
-    // Only a reload picks the new value up, which is the documented way to
-    // reach the other path.
-    const reloaded = await importAuthWith('false');
-    expect(reloaded.isAuthIdentityV2Enabled()).toBe(false);
-  });
-});
-
-/**
- * B3: what the flag actually switches — which reader turns a provider's
- * `authenticateToken` result into an identity.
- *
- * Each case runs the SAME payload through BOTH readers via the reload recipe
- * above, so the table below is a behavioural diff rather than two independent
- * suites that could drift. `legacy` and `v2` are the user id each path resolves,
- * with `null` meaning "authenticated as nobody".
- *
- * The differences here were found by running both readers over a payload corpus
- * before the change, not by reading them side by side: the kit's own note says
- * its precedence matches what this module already did, and on the flat id key
- * set that turned out to be an overstatement worth pinning down in tests.
- *
- * Both legs select their path EXPLICITLY. The legacy leg used to get there by
- * unsetting the variable, which stopped meaning "legacy" the moment the default
- * flipped — and would have quietly turned this table into v2 compared against
- * itself, still green and testing nothing. Naming both values is what keeps the
- * diff a diff.
- */
-describe('identity resolution under the compat flag', () => {
-  /** The explicit opt-out that selects the pre-kit reader. */
-  const LEGACY = 'false';
-
-  async function importAuthWith(value: string | undefined): Promise<typeof import('./auth.js')> {
-    if (value === undefined) delete process.env.MASTRACODE_AUTH_IDENTITY_V2;
-    else process.env.MASTRACODE_AUTH_IDENTITY_V2 = value;
-    vi.resetModules();
-    return import('./auth.js');
-  }
-
-  afterEach(() => {
-    delete process.env.MASTRACODE_AUTH_IDENTITY_V2;
-    vi.resetModules();
-  });
-
-  /**
-   * Sign in through the gate with `payload` as the provider's result, and report
-   * the tenant the request resolved to. Goes through `mountFactoryAuth` rather
-   * than calling the reader directly, so the assertion covers the path a real
-   * request takes: authenticate, normalize, stash, read back.
-   */
-  async function tenantFor(
-    auth: typeof import('./auth.js'),
-    payload: unknown,
-    providerOverrides: Record<string, unknown> = {},
-  ): Promise<{ orgId?: string; userId?: string } | null> {
-    const app = new Hono();
-    auth.mountFactoryAuth(app, {
-      provider: fakeProvider({ authenticateToken: vi.fn(async () => payload), ...providerOverrides }),
-    });
-    app.get('/web/whoami', c => c.json(auth.factoryAuthTenant(c) ?? { tenant: null }));
-    const res = await app.request('/web/whoami', { headers: { Accept: 'application/json' } });
-    if (res.status === 401) return null;
-    return (await res.json()) as { orgId?: string; userId?: string };
-  }
-
-  it.each([
-    {
-      what: 'a flat provider id',
-      payload: { id: 'u1', organizationId: 'org_a' },
-      legacy: 'u1',
-      v2: 'u1',
-    },
-    {
-      what: 'the real WorkOS shape, id and workosId holding the same value',
-      payload: { id: 'w1', workosId: 'w1', organizationId: 'org_a' },
-      legacy: 'w1',
-      v2: 'w1',
-    },
-    {
-      what: 'a Firebase DecodedIdToken, which names its id `uid`',
-      payload: { uid: 'fb1' },
-      legacy: null,
-      v2: 'fb1',
-    },
-    {
-      what: 'raw OIDC claims, which name it `sub`',
-      payload: { sub: 'oidc1' },
-      legacy: null,
-      v2: 'oidc1',
-    },
-    {
-      what: 'a numeric id, as a serial primary key produces',
-      payload: { id: 7 },
-      legacy: null,
-      v2: '7',
-    },
-    {
-      // The one row where the tenant no longer matches the legacy *reader*.
-      // That reader still hands back '   ' verbatim, but `factoryAuthTenant`
-      // refuses to build a tenant from it on either path: since B12 the
-      // organization is derived from the user id, and deriving one from
-      // whitespace throws — a 500 on a gated route where a 401 belongs.
-      // Treating blank as absent keeps the refusal and drops the crash.
-      what: 'a blank id, which is a storage key every user would share',
-      payload: { id: '   ' },
-      legacy: null,
-      v2: null,
-    },
-    {
-      what: 'a workosId with no id, which the real provider never emits',
-      payload: { workosId: 'w1' },
-      legacy: 'w1',
-      v2: null,
-    },
-    {
-      what: 'a session wrapper, org taken from the session half',
-      payload: { session: { activeOrganizationId: 'org_s' }, user: { id: 'u1' } },
-      legacy: 'u1',
-      v2: 'u1',
-    },
-    {
-      what: 'a session wrapper whose user half names nobody (no fallthrough)',
-      payload: { session: { activeOrganizationId: 'org_s' }, user: { email: 'e@x.com' }, id: 'top' },
-      legacy: null,
-      v2: null,
-    },
-    {
-      what: 'a payload naming no user at all',
-      payload: { email: 'e@x.com' },
-      legacy: null,
-      v2: null,
-    },
-  ])('$what', async ({ payload, legacy, v2 }) => {
-    const off = await tenantFor(await importAuthWith(LEGACY), payload);
-    expect(off?.userId ?? null).toBe(legacy);
-
-    const on = await tenantFor(await importAuthWith('true'), payload);
-    expect(on?.userId ?? null).toBe(v2);
-  });
-
-  it('ignores the org on the user half when the session names none, under both readers', async () => {
-    // The payload P12 settled. The kit used to read `user.organizationId` here
-    // and resolve into org_u, which widened org scope under the flag: a session
-    // that resolved as personal reached an organization it had never activated.
-    // Membership is not activation, so the fallback was removed and both
-    // readers now resolve the private partition.
-    const payload = { session: {}, user: { id: 'u1', organizationId: 'org_u' } };
-
-    // This provider does no organization bootstrap, so neither reader has an
-    // organization to use. Since B12 the tenant still resolves one for that
-    // user — their own private one — rather than none.
-    const off = await tenantFor(await importAuthWith(LEGACY), payload);
-    expect(off).toEqual({ userId: 'u1', orgId: 'user:u1' });
-
-    const on = await tenantFor(await importAuthWith('true'), payload);
-    expect(on).toEqual({ userId: 'u1', orgId: 'user:u1' });
-  });
-
-  it('lets a provider map its own payload through the kit escape hatch, under v2', async () => {
-    // The id lives under a custom claim the kit cannot know about. Legacy has no
-    // such hook, so the same payload authenticates as nobody there.
-    const payload = { 'https://claims.example/uid': 'custom1' };
-    const toIdentity = vi.fn((raw: unknown) => ({
-      id: (raw as Record<string, string>)['https://claims.example/uid']!,
-    }));
-
-    const off = await tenantFor(await importAuthWith(LEGACY), payload, { toIdentity });
-    expect(off).toBeNull();
-
-    const on = await tenantFor(await importAuthWith('true'), payload, { toIdentity });
-    expect(on?.userId).toBe('custom1');
-    expect(toIdentity).toHaveBeenCalled();
-  });
-
-  it('treats a throwing identity mapper as an unauthenticated request', async () => {
-    // toAuthIdentity lets a mapper's throw propagate on purpose; the gate's own
-    // catch turns it into a 401 rather than into a plausible-looking identity.
-    const on = await tenantFor(
-      await importAuthWith('true'),
-      { id: 'u1' },
-      {
-        toIdentity: vi.fn(() => {
-          throw new Error('mapper is broken');
-        }),
-      },
-    );
-    expect(on).toBeNull();
-  });
-});
-
-/**
  * B9: the session cookie — who mints it, who reads it, who clears it.
  *
  * Two sources exist and both have to keep working. A provider that returns
@@ -868,38 +589,23 @@ describe('identity resolution under the compat flag', () => {
  * and read back by the host rather than re-derived from a header by each
  * provider.
  *
- * The host path is behind the compat flag AND a configured secret, so these
- * reload the module the same way the identity tests do.
+ * The host path is behind a configured secret and nothing else, so these set or
+ * unset `MASTRACODE_AUTH_SESSION_SECRET` around each case. The secret is read
+ * per call rather than captured at module load, so no module reload is needed
+ * to move between the two — assigning to `process.env` is enough.
  */
 describe('session cookie', () => {
   const SECRET = 'a'.repeat(32);
-  /**
-   * The explicit opt-out that selects the legacy path.
-   *
-   * These cases used to reach it by unsetting the variable. That stopped
-   * meaning "legacy" when the default flipped, and each one would have kept
-   * passing for a different reason — flag on with no secret also leaves the
-   * host without a cookie — so the case name would have outlived the thing it
-   * tested.
-   */
-  const LEGACY = 'false';
 
-  async function importAuthWith(
-    flag: string | undefined,
-    secret: string | undefined,
-  ): Promise<typeof import('./auth.js')> {
-    if (flag === undefined) delete process.env.MASTRACODE_AUTH_IDENTITY_V2;
-    else process.env.MASTRACODE_AUTH_IDENTITY_V2 = flag;
+  /** Configure (or clear) the host cookie secret for the case that follows. */
+  function withSecret(secret: string | undefined): typeof import('./auth.js') {
     if (secret === undefined) delete process.env.MASTRACODE_AUTH_SESSION_SECRET;
     else process.env.MASTRACODE_AUTH_SESSION_SECRET = secret;
-    vi.resetModules();
-    return import('./auth.js');
+    return authModule;
   }
 
   afterEach(() => {
-    delete process.env.MASTRACODE_AUTH_IDENTITY_V2;
     delete process.env.MASTRACODE_AUTH_SESSION_SECRET;
-    vi.resetModules();
   });
 
   /** An SSO provider whose handleCallback returns `cookies`, `tokens`, or both. */
@@ -942,8 +648,8 @@ describe('session cookie', () => {
   }
 
   describe('source 1: the provider built its own cookie', () => {
-    it('forwards provider cookies verbatim on the legacy path', async () => {
-      const auth = await importAuthWith(LEGACY, undefined);
+    it('forwards provider cookies verbatim when the host owns no cookie', async () => {
+      const auth = withSecret(undefined);
       const cookies = await callbackSetCookies(
         auth,
         callbackProvider({ user: { id: 'u1' }, cookies: ['wos_session=sealed; Path=/'] }),
@@ -953,7 +659,7 @@ describe('session cookie', () => {
 
     it('still forwards them verbatim with the host cookie switched on', async () => {
       // The host does not second-guess a provider that already built a session.
-      const auth = await importAuthWith('true', SECRET);
+      const auth = withSecret(SECRET);
       const cookies = await callbackSetCookies(
         auth,
         callbackProvider({ user: { id: 'u1' }, cookies: ['wos_session=sealed; Path=/'] }),
@@ -966,14 +672,8 @@ describe('session cookie', () => {
   describe('source 2: the provider returned tokens and left the cookie to the host', () => {
     const tokensResult = { user: { id: 'u1' }, tokens: { accessToken: 'access-1' } };
 
-    it('uses the provider session headers on the legacy path', async () => {
-      const auth = await importAuthWith(LEGACY, undefined);
-      const cookies = await callbackSetCookies(auth, callbackProvider(tokensResult, sessionCapabilityFor()));
-      expect(cookies).toContain('provider_session=built-by-provider; Path=/');
-    });
-
     it('mints a signed __Host- cookie when the host owns the session', async () => {
-      const auth = await importAuthWith('true', SECRET);
+      const auth = withSecret(SECRET);
       const cookies = await callbackSetCookies(auth, callbackProvider(tokensResult, sessionCapabilityFor()));
       const session = cookies.find(cookie => cookie.startsWith('__Host-mastra_factory_session='));
       expect(session).toBeDefined();
@@ -986,18 +686,19 @@ describe('session cookie', () => {
       expect(session).not.toContain('access-1');
     });
 
-    it('falls back to the provider when the flag is on but no secret is configured', async () => {
+    it('leaves the cookie to the provider when no secret is configured', async () => {
       // Minting refuses a weak secret, and there is no safe default to invent,
-      // so a half-configured deployment keeps working rather than failing every
-      // sign-in.
-      const auth = await importAuthWith('true', undefined);
+      // so an unconfigured deployment keeps working rather than failing every
+      // sign-in. This is the whole of the host-cookie condition: no secret, no
+      // host cookie, and the provider's own headers land instead.
+      const auth = withSecret(undefined);
       const cookies = await callbackSetCookies(auth, callbackProvider(tokensResult, sessionCapabilityFor()));
       expect(cookies).toContain('provider_session=built-by-provider; Path=/');
       expect(cookies.some(cookie => cookie.includes('mastra_factory_session'))).toBe(false);
     });
 
     it('round trips: the minted cookie authenticates the next request', async () => {
-      const auth = await importAuthWith('true', SECRET);
+      const auth = withSecret(SECRET);
       const authenticateToken = vi.fn(async (token: string) =>
         token === 'access-1' ? { id: 'u1', organizationId: 'org_a' } : null,
       );
@@ -1019,7 +720,7 @@ describe('session cookie', () => {
     });
 
     it('rejects a tampered cookie as if it were absent', async () => {
-      const auth = await importAuthWith('true', SECRET);
+      const auth = withSecret(SECRET);
       const app = new Hono();
       // Only the real token authenticates, so a cookie that fails its signature
       // check yields '' and the request is refused. A provider that accepted
@@ -1040,12 +741,13 @@ describe('session cookie', () => {
 
   describe('clearing on sign-out', () => {
     it('clears the host cookie alongside the provider cookies', async () => {
-      const auth = await importAuthWith('true', SECRET);
+      const auth = withSecret(SECRET);
       const app = new Hono();
       auth.mountFactoryAuth(app, { provider: fakeProvider(ssoCapability()) });
 
       const cookies = (await app.request('/auth/logout')).headers.getSetCookie();
-      // Both, because a user upgraded across the switch still holds the old one.
+      // Both, because a user who signed in before the secret was configured is
+      // still holding the provider's cookie.
       expect(cookies.some(cookie => cookie.startsWith('fake_session='))).toBe(true);
       const host = cookies.find(cookie => cookie.startsWith('__Host-mastra_factory_session='));
       expect(host).toBeDefined();
@@ -1053,7 +755,7 @@ describe('session cookie', () => {
     });
 
     it('clears only the provider cookies when the host owns none', async () => {
-      const auth = await importAuthWith(LEGACY, undefined);
+      const auth = withSecret(undefined);
       const app = new Hono();
       auth.mountFactoryAuth(app, { provider: fakeProvider(ssoCapability()) });
 
@@ -1071,7 +773,7 @@ describe('session cookie', () => {
    */
   describe('splitting a provider header that folded several cookies together', () => {
     async function clearCookiesFor(setCookie: string): Promise<string[]> {
-      const auth = await importAuthWith(LEGACY, undefined);
+      const auth = withSecret(undefined);
       const app = new Hono();
       auth.mountFactoryAuth(app, {
         provider: fakeProvider(ssoCapability({ getClearSessionHeaders: vi.fn(() => ({ 'Set-Cookie': setCookie })) })),
@@ -1514,13 +1216,12 @@ function kitFake() {
  * host reads its own fixture; the kit's fake proves the host reads a provider.
  *
  * The sign-up half is the server side of a fact the SPA also has to get right.
- * `/auth/me` carries the same answer twice with opposite polarity for one
- * release — positive `auth.signIn.signUpEnabled`, negative legacy
- * `signUpDisabled` — and the UI stream covers what the browser does with them.
- * What is covered here is narrower and is the host's alone: `authMeta()`
- * derives the negative field *from* the descriptor rather than asking the
- * provider a second time, so the pair cannot drift no matter what the provider
- * does.
+ * `/auth/me` used to carry the same answer twice with opposite polarity — the
+ * positive `auth.signIn.signUpEnabled` beside a negative legacy
+ * `signUpDisabled` — which is where a dropped `!` could render a sign-up link
+ * on a deployment that switched sign-up off. The second field is gone, so what
+ * is checked here is that the host asks the provider once, reports that answer
+ * positively, and adds nothing beside it.
  */
 describe('/auth/me descriptor, against the kit fakes', () => {
   async function authMeFor(provider: IMastraAuthProvider): Promise<AuthMeBody> {
@@ -1535,10 +1236,9 @@ describe('/auth/me descriptor, against the kit fakes', () => {
     it('hosted: a provider with an SSO login only', async () => {
       const body = await authMeFor(withSSO(kitFake()) as unknown as IMastraAuthProvider);
       expect(body.auth.signIn.kind).toBe('hosted');
-      // No credentials, so nothing is claimed about sign-up in either polarity.
+      // No credentials, so nothing is claimed about sign-up at all.
       expect(body.auth.signIn.signUpEnabled).toBeUndefined();
       expect(body.auth.signIn.credentialsBasePath).toBeUndefined();
-      expect(body.signUpDisabled).toBeUndefined();
       expect(body.auth.features.logout).toBe(true);
     });
 
@@ -1587,11 +1287,10 @@ describe('/auth/me descriptor, against the kit fakes', () => {
   });
 
   /**
-   * The server-side half of the polarity contract. Every case asserts the two
-   * fields *in the same payload*, and the last one asserts the invariant
-   * directly rather than by example.
+   * The server-side half of the sign-up contract: one question to the provider,
+   * one field on the wire, stated positively.
    */
-  describe('both sign-up fields, derived from one answer', () => {
+  describe('sign-up, asked once and reported once', () => {
     it.each([
       { what: 'sign-up on', signUpEnabled: true, enabled: true },
       { what: 'sign-up off', signUpEnabled: false, enabled: false },
@@ -1608,17 +1307,17 @@ describe('/auth/me descriptor, against the kit fakes', () => {
       const body = await authMeFor(provider as unknown as IMastraAuthProvider);
 
       expect(body.auth.signIn.signUpEnabled).toBe(enabled);
-      expect(body.signUpDisabled).toBe(enabled ? undefined : true);
-      // Opposite polarity, same payload, every time.
-      expect(body.auth.signIn.signUpEnabled).toBe(!(body.signUpDisabled ?? false));
+      // The descriptor is the whole answer: no second field beside it, in
+      // either polarity, for a reader to get the negation wrong on.
+      expect(Object.keys(body).sort()).toEqual(['auth', 'authenticated', 'provider', 'user']);
     });
 
-    it('asks the provider once, so the two fields cannot answer differently', async () => {
-      // The property the derivation exists for. If `signUpDisabled` were
-      // computed by asking the provider a second time, an implementation that
-      // is not idempotent — a flag read from config, a cache that expires
-      // between the two calls — could answer differently, and the payload would
-      // contradict itself. One call means that cannot happen.
+    it('asks the provider exactly once per response', async () => {
+      // A provider's `isSignUpEnabled` need not be idempotent — a flag read
+      // from config, a cache that expires between calls — so asking twice for
+      // one response could produce a payload that contradicts itself. It used
+      // to be asked once and negated into a second field; now it is asked once
+      // and reported once, and this pins the "once".
       let asks = 0;
       const provider = withCredentials(kitFake(), {
         signUpEnabled: () => {
@@ -1631,11 +1330,11 @@ describe('/auth/me descriptor, against the kit fakes', () => {
       const body = await authMeFor(provider as unknown as IMastraAuthProvider);
 
       expect(asks).toBe(1);
-      expect(body.auth.signIn.signUpEnabled).toBe(!(body.signUpDisabled ?? false));
+      expect(body.auth.signIn.signUpEnabled).toBe(true);
     });
   });
 
-  it('keeps the provider name beside the descriptor for one release', async () => {
+  it('keeps the provider name beside the descriptor', async () => {
     const body = await authMeFor(withSSO(kitFake()) as unknown as IMastraAuthProvider);
     expect(typeof body.provider).toBe('string');
     expect(body.auth).toBeDefined();
@@ -1645,10 +1344,9 @@ describe('/auth/me descriptor, against the kit fakes', () => {
 /**
  * B17 — BACKEND EXIT GATE.
  *
- * Everything here runs with `MASTRACODE_AUTH_IDENTITY_V2` ON, which is the
- * state the lane is trying to reach. The suites above mostly assert the shipped
- * default; this one asserts the destination, so the two together say what the
- * flag actually switches.
+ * Everything here runs with this host owning its own session cookie, which is
+ * the fully configured deployment. The suites above assert the pieces; this one
+ * asserts the whole seam.
  *
  * It is a gate rather than a coverage pass, so every case drives a real
  * `app.request()` through `mountFactoryAuth` and asserts an HTTP outcome. A test
@@ -1666,21 +1364,17 @@ describe('/auth/me descriptor, against the kit fakes', () => {
  *      responses rather than a route-table assertion;
  *   5. the `{ session, tokens }` callback branch, which neither host asserted.
  */
-describe('BACKEND EXIT GATE (flag ON)', () => {
+describe('BACKEND EXIT GATE', () => {
   const SECRET = 'g'.repeat(32);
 
-  /** The auth module, loaded with the flag and the cookie secret set. */
-  async function gateAuth(): Promise<typeof import('./auth.js')> {
-    process.env.MASTRACODE_AUTH_IDENTITY_V2 = 'true';
+  /** The auth module, with the host cookie secret configured. */
+  function gateAuth(): typeof import('./auth.js') {
     process.env.MASTRACODE_AUTH_SESSION_SECRET = SECRET;
-    vi.resetModules();
-    return import('./auth.js');
+    return authModule;
   }
 
   afterEach(() => {
-    delete process.env.MASTRACODE_AUTH_IDENTITY_V2;
     delete process.env.MASTRACODE_AUTH_SESSION_SECRET;
-    vi.resetModules();
   });
 
   /** A gated app with a protected board route that reports the tenant. */
@@ -1697,7 +1391,7 @@ describe('BACKEND EXIT GATE (flag ON)', () => {
     // A browser navigation sends no Authorization header. The provider reads the
     // Cookie header itself, which the empty token is its documented signal to
     // do. Nothing exercised this path before: every gate test sent a bearer.
-    const auth = await gateAuth();
+    const auth = gateAuth();
     const authenticateToken = vi.fn(async (token: string, request: Request) => {
       if (token) return null;
       const cookie = request.headers.get('cookie') ?? '';
@@ -1718,7 +1412,7 @@ describe('BACKEND EXIT GATE (flag ON)', () => {
   it('1b. authenticates a cookie-only request against the host-minted session cookie', async () => {
     // The other cookie source: the host mints and reads its own signed cookie,
     // so the token reaches the provider as an argument.
-    const auth = await gateAuth();
+    const auth = gateAuth();
     const provider = fakeProvider({
       ...ssoCapability({
         handleCallback: vi.fn(async () => ({ user: { id: 'u-host' }, tokens: { accessToken: 'host-token' } })),
@@ -1743,7 +1437,7 @@ describe('BACKEND EXIT GATE (flag ON)', () => {
   it('2. authenticates a { uid }-shaped provider end to end', async () => {
     // Firebase names its id `uid`. Before the kit this authenticated as nobody
     // and then failed somewhere unrelated with a message about state.
-    const auth = await gateAuth();
+    const auth = gateAuth();
     const app = board(auth, fakeProvider({ authenticateToken: vi.fn(async () => ({ uid: 'fb-1' })) }));
 
     const res = await app.request('/web/board', { headers: { ...json, Authorization: 'Bearer t' } });
@@ -1753,7 +1447,7 @@ describe('BACKEND EXIT GATE (flag ON)', () => {
 
   it('2b. authenticates a { sub }-shaped provider end to end', async () => {
     // Raw OIDC claims. Same story as `uid`.
-    const auth = await gateAuth();
+    const auth = gateAuth();
     const app = board(auth, fakeProvider({ authenticateToken: vi.fn(async () => ({ sub: 'oidc-1' })) }));
 
     const res = await app.request('/web/board', { headers: { ...json, Authorization: 'Bearer t' } });
@@ -1764,7 +1458,7 @@ describe('BACKEND EXIT GATE (flag ON)', () => {
   it('3. lets a provider with no organizations reach the board', async () => {
     // Every org-gated route used to refuse this user with a 403 that reads as
     // "not allowed". They now act inside a private organization of their own.
-    const auth = await gateAuth();
+    const auth = gateAuth();
     const app = board(auth, fakeProvider({ authenticateToken: vi.fn(async () => ({ id: 'solo' })) }));
 
     const res = await app.request('/web/board', { headers: { ...json, Authorization: 'Bearer t' } });
@@ -1774,7 +1468,7 @@ describe('BACKEND EXIT GATE (flag ON)', () => {
 
   it('3b. keeps two organization-less users apart', async () => {
     // The property that makes case 3 a fix rather than a leak.
-    const auth = await gateAuth();
+    const auth = gateAuth();
     const first = board(auth, fakeProvider({ authenticateToken: vi.fn(async () => ({ id: 'a' })) }));
     const second = board(auth, fakeProvider({ authenticateToken: vi.fn(async () => ({ id: 'b' })) }));
 
@@ -1785,7 +1479,7 @@ describe('BACKEND EXIT GATE (flag ON)', () => {
 
   describe('4. every capability branch drives real responses', () => {
     it('SSO: login redirects to the provider and the gate stays open on /auth/*', async () => {
-      const auth = await gateAuth();
+      const auth = gateAuth();
       const app = board(auth, fakeProvider(ssoCapability()));
 
       const login = await app.request('/auth/login?returnTo=%2Fdash');
@@ -1800,7 +1494,7 @@ describe('BACKEND EXIT GATE (flag ON)', () => {
     });
 
     it('http-handler: /auth/api/* is proxied and login goes to the SPA form', async () => {
-      const auth = await gateAuth();
+      const auth = gateAuth();
       const handleAuthRequest = vi.fn(async () => new Response('handled', { status: 200 }));
       const app = board(auth, fakeProvider(httpHandlerCapability({ handleAuthRequest })));
 
@@ -1814,7 +1508,7 @@ describe('BACKEND EXIT GATE (flag ON)', () => {
     });
 
     it('neither: only /auth/me is served, and the gate still protects the app', async () => {
-      const auth = await gateAuth();
+      const auth = gateAuth();
       const app = board(auth, fakeProvider({ authenticateToken: vi.fn(async () => null) }));
 
       const me = await app.request('/auth/me');
@@ -1831,7 +1525,7 @@ describe('BACKEND EXIT GATE (flag ON)', () => {
     // The branch neither host asserted: a provider that returns tokens but no
     // cookies, leaving the session for the host to create and the cookie for
     // the host to mint.
-    const auth = await gateAuth();
+    const auth = gateAuth();
     const createSession = vi.fn(async () => ({ id: 'sess-1' }));
     const provider = fakeProvider({
       ...ssoCapability({
@@ -1863,16 +1557,25 @@ describe('BACKEND EXIT GATE (flag ON)', () => {
   });
 
   /**
-   * The B3 differential table, re-run with the flag ON against real HTTP.
+   * Which provider payloads become an identity, asserted over real HTTP.
    *
-   * The table in `identity resolution under the compat flag` compares the two
-   * readers; this asserts what the destination state actually serves, so a
-   * regression in identity resolution fails the gate rather than only the
-   * comparison.
+   * This used to be one half of a differential table that ran every payload
+   * through the pre-kit reader as well, so the two columns could be compared.
+   * There is one reader now, so the comparison has no second side and the table
+   * states what the seam actually serves. The rows the differential owned
+   * outright — the real WorkOS shape, a wrapper that names nobody, the
+   * organization rule and the provider's own mapper — moved here with it, so
+   * nothing that only the comparison covered went with the comparison.
+   *
+   * Driving `app.request()` rather than the reader is the point: a regression
+   * in identity resolution has to fail the gate, not only a unit assertion.
    */
   describe('identity shapes, end to end', () => {
     it.each([
       { what: 'a flat id', payload: { id: 'u1' }, userId: 'u1' },
+      // The real WorkOS shape emits both keys holding the same value, which is
+      // why dropping `workosId` as an id key is a no-op against that provider.
+      { what: 'id and workosId holding the same value', payload: { id: 'w1', workosId: 'w1' }, userId: 'w1' },
       { what: 'a Firebase uid', payload: { uid: 'fb1' }, userId: 'fb1' },
       { what: 'raw OIDC claims', payload: { sub: 'oidc1' }, userId: 'oidc1' },
       { what: 'uid winning over sub', payload: { uid: 'fb1', sub: 'oidc1' }, userId: 'fb1' },
@@ -1884,7 +1587,7 @@ describe('BACKEND EXIT GATE (flag ON)', () => {
         userId: 'u1',
       },
     ])('authenticates $what', async ({ payload, userId }) => {
-      const auth = await gateAuth();
+      const auth = gateAuth();
       const app = board(auth, fakeProvider({ authenticateToken: vi.fn(async () => payload) }));
 
       const res = await app.request('/web/board', { headers: { ...json, Authorization: 'Bearer t' } });
@@ -1896,11 +1599,75 @@ describe('BACKEND EXIT GATE (flag ON)', () => {
       { what: 'a blank id', payload: { id: '   ' } },
       { what: 'a vendor-only id the kit does not read', payload: { workosId: 'w1' } },
       { what: 'a wrapper whose user half names nobody', payload: { session: {}, user: {}, id: 'top' } },
+      {
+        // No fallthrough: a result carrying both halves is read as a wrapper,
+        // and a top-level id is not consulted to rescue it.
+        what: 'a wrapper that names nobody even though the top level does',
+        payload: { session: { activeOrganizationId: 'org_s' }, user: { email: 'e@x.com' }, id: 'top' },
+      },
       { what: 'a payload naming no user', payload: { email: 'e@x.com' } },
       { what: 'no payload at all', payload: null },
     ])('refuses $what', async ({ payload }) => {
-      const auth = await gateAuth();
+      const auth = gateAuth();
       const app = board(auth, fakeProvider({ authenticateToken: vi.fn(async () => payload) }));
+
+      const res = await app.request('/web/board', { headers: { ...json, Authorization: 'Bearer t' } });
+      expect(res.status).toBe(401);
+    });
+
+    it('ignores the org on a wrapper’s user half when the session names none', async () => {
+      // The payload P12 settled. The kit used to read `user.organizationId`
+      // here and resolve into org_u, which widened org scope: a session that
+      // resolved as personal reached an organization it had never activated.
+      // Membership is not activation, so the fallback was removed and this
+      // caller resolves to their own private partition instead.
+      const auth = gateAuth();
+      const app = board(
+        auth,
+        fakeProvider({
+          authenticateToken: vi.fn(async () => ({ session: {}, user: { id: 'u1', organizationId: 'org_u' } })),
+        }),
+      );
+
+      const res = await app.request('/web/board', { headers: { ...json, Authorization: 'Bearer t' } });
+      expect(res.status).toBe(200);
+      expect((await res.json()).tenant).toEqual({ userId: 'u1', orgId: 'user:u1' });
+    });
+
+    it('lets a provider map its own payload through the kit escape hatch', async () => {
+      // The id lives under a custom claim the kit cannot know about, so without
+      // the provider's own `toIdentity` this payload authenticates as nobody.
+      const auth = gateAuth();
+      const toIdentity = vi.fn((raw: unknown) => ({
+        id: (raw as Record<string, string>)['https://claims.example/uid']!,
+      }));
+      const app = board(
+        auth,
+        fakeProvider({
+          authenticateToken: vi.fn(async () => ({ 'https://claims.example/uid': 'custom1' })),
+          toIdentity,
+        }),
+      );
+
+      const res = await app.request('/web/board', { headers: { ...json, Authorization: 'Bearer t' } });
+      expect(res.status).toBe(200);
+      expect((await res.json()).tenant.userId).toBe('custom1');
+      expect(toIdentity).toHaveBeenCalled();
+    });
+
+    it('treats a throwing identity mapper as an unauthenticated request', async () => {
+      // `toAuthIdentity` lets a mapper's throw propagate on purpose; the gate's
+      // own catch turns it into a 401 rather than a plausible-looking identity.
+      const auth = gateAuth();
+      const app = board(
+        auth,
+        fakeProvider({
+          authenticateToken: vi.fn(async () => ({ id: 'u1' })),
+          toIdentity: vi.fn(() => {
+            throw new Error('mapper is broken');
+          }),
+        }),
+      );
 
       const res = await app.request('/web/board', { headers: { ...json, Authorization: 'Bearer t' } });
       expect(res.status).toBe(401);
@@ -1909,27 +1676,18 @@ describe('BACKEND EXIT GATE (flag ON)', () => {
 });
 
 /**
- * B18: what flipping the default actually costs a signed-in person.
+ * B18: what configuring the host session cookie costs a signed-in person.
  *
- * The upgrade note for this release rests on these two answers, so they are
- * measured rather than asserted. The direction is the opposite of what the
- * changeset originally claimed, which is why it is pinned here.
+ * The upgrade note rests on this answer, so it is measured rather than
+ * asserted: a deployment whose provider mints and reads its own cookie signs
+ * nobody out when `MASTRACODE_AUTH_SESSION_SECRET` is set, because the host
+ * still hands that provider an empty token and lets it read its own cookie.
  */
-describe('sessions across the flag flip', () => {
+describe('sessions when the host owns its own cookie', () => {
   const SECRET = 'f'.repeat(32);
 
-  async function importAuthWith(flag: string, secret: string | undefined): Promise<typeof import('./auth.js')> {
-    process.env.MASTRACODE_AUTH_IDENTITY_V2 = flag;
-    if (secret === undefined) delete process.env.MASTRACODE_AUTH_SESSION_SECRET;
-    else process.env.MASTRACODE_AUTH_SESSION_SECRET = secret;
-    vi.resetModules();
-    return import('./auth.js');
-  }
-
   afterEach(() => {
-    delete process.env.MASTRACODE_AUTH_IDENTITY_V2;
     delete process.env.MASTRACODE_AUTH_SESSION_SECRET;
-    vi.resetModules();
   });
 
   /** A provider that authenticates from its own cookie, as WorkOS and Okta do. */
@@ -1950,13 +1708,12 @@ describe('sessions across the flag flip', () => {
     return app;
   }
 
-  it('keeps a provider-minted session alive when the default turns V2 on', async () => {
-    // The upgrade most deployments actually perform. The host reads no cookie of
-    // its own here, so `requestAuthToken` yields '' — which is the provider's
-    // documented signal to read the Cookie header itself, exactly as before.
-    // Nobody is signed out.
-    const auth = await importAuthWith('true', SECRET);
-    const res = await board(auth, providerCookieProvider()).request('/web/board', {
+  it('keeps a provider-minted session alive', async () => {
+    // The host holds no cookie of its own for this browser, so
+    // `requestAuthToken` yields '' — the provider's documented signal to read
+    // the Cookie header itself. Nobody is signed out by the secret being set.
+    process.env.MASTRACODE_AUTH_SESSION_SECRET = SECRET;
+    const res = await board(authModule, providerCookieProvider()).request('/web/board', {
       headers: { Accept: 'application/json', Cookie: 'wos_session=live' },
     });
 
@@ -1964,30 +1721,30 @@ describe('sessions across the flag flip', () => {
     expect((await res.json()).tenant.userId).toBe('u1');
   });
 
-  it('signs out a session minted by the host when the flag is set back to false', async () => {
-    // The cost is on the ROLLBACK, not the upgrade, and only for deployments
-    // whose provider hands back tokens instead of cookies. A session minted
-    // under V2 lives in the host's own signed cookie, and the legacy path never
-    // reads that cookie — so going back sends those people to sign-in once.
-    const on = await importAuthWith('true', SECRET);
+  it('signs out a host-minted session once the secret is taken away', async () => {
+    // The residual cost, and it is on removing the secret rather than adding
+    // it: a session minted while the host owned the cookie lives in the host's
+    // own signed cookie, which nothing reads once there is no secret to verify
+    // it with. Those people sign in once more.
+    process.env.MASTRACODE_AUTH_SESSION_SECRET = SECRET;
     const provider = fakeProvider({
       ...ssoCapability({
         handleCallback: vi.fn(async () => ({ user: { id: 'u1' }, tokens: { accessToken: 'access-1' } })),
       }),
       ...sessionCapability({
         createSession: vi.fn(async () => ({ id: 's1' })),
-        getSessionHeaders: vi.fn(() => ({ 'Set-Cookie': 'provider_session=legacy; Path=/' })),
+        getSessionHeaders: vi.fn(() => ({ 'Set-Cookie': 'provider_session=other; Path=/' })),
       }),
       authenticateToken: vi.fn(async (token: string) => (token === 'access-1' ? { id: 'u1' } : null)),
     });
 
-    const callback = await board(on, provider).request('/auth/callback?code=ok&state=id%7C%2F');
+    const callback = await board(authModule, provider).request('/auth/callback?code=ok&state=id%7C%2F');
     const hostCookie = callback.headers.getSetCookie().find(c => c.startsWith('__Host-mastra_factory_session='))!;
     expect(hostCookie).toBeDefined();
 
-    // Same cookie, same provider, legacy reader.
-    const off = await importAuthWith('false', SECRET);
-    const res = await board(off, provider).request('/web/board', {
+    // Same cookie, same provider, no secret.
+    delete process.env.MASTRACODE_AUTH_SESSION_SECRET;
+    const res = await board(authModule, provider).request('/web/board', {
       headers: { Accept: 'application/json', Cookie: hostCookie.split(';')[0]! },
     });
 

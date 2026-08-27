@@ -12,6 +12,6 @@ The screen now renders from the capability descriptor `/auth/me` reports — wha
 - A provider with an email/password sign-in gets the credential form; one with both gets the form and the button.
 - A provider that validates API tokens but cannot sign anyone in from a browser (`kind: "none"`, such as Supabase or Firebase today) now explains that and points you at your administrator, instead of rendering an empty box. This is not the same as auth being switched off, which shows no sign-in screen at all.
 
-Deployments on a server that predates the descriptor keep rendering exactly what they render today.
+A server that sends no descriptor — or one this build cannot act on — gets a single neutral hosted-login button. No vendor name or logo is involved either way.
 
-**If you read the sign-up flag** The payload carries both the new positive `auth.signIn.signUpEnabled` and the legacy negative `signUpDisabled` for one release. The descriptor wins when it states the fact. Mind the polarity — reading it backwards shows a sign-up link on a deployment that disabled sign-up, and nothing about that looks broken.
+**If you read the sign-up flag** It is `auth.signIn.signUpEnabled`, positive, and the only field describing sign-up. An absent field means "not stated", whose default is enabled.

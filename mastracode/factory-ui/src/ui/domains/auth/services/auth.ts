@@ -89,58 +89,54 @@ export interface FactoryAuthState {
   authenticated: boolean;
   user?: { userId?: string; email?: string; name?: string; organizationId?: string };
   /**
-   * Active identity provider name. Retained only for the labelled legacy
-   * fallback in `SignInPage`, for servers that predate the descriptor. Nothing
-   * else may branch on it — see {@link AuthProviderHint}.
+   * Active identity provider name.
+   *
+   * It has one reader, and it is not the sign-in page: the "Authentication" row
+   * in account settings, which answers "which system holds my identity?". The
+   * descriptor deliberately cannot answer that — {@link AuthProviderHint} is
+   * documented as explicitly *not* a provider name and the host refuses to
+   * derive `signIn.label` from one — so there is no capability field to render
+   * there instead.
+   *
+   * Displayed, never branched on. Which controls `/signin` offers comes from
+   * {@link auth} alone, and a `provider === '<name>'` comparison anywhere in
+   * this SPA fails the gate in `ui/__tests__/no-provider-literals.test.ts`.
    */
   provider?: string;
   /**
-   * The capability descriptor. Absent when the server predates it, which is the
-   * only case where the provider name is still consulted.
+   * The capability descriptor: the only input to the sign-in decision.
+   *
+   * Absent when the server sent none, or sent one this build cannot act on —
+   * see {@link parseAuthDescriptor}. `SignInPage` then falls back to a neutral
+   * hosted-login button, which is the control that works for the widest range
+   * of providers and names none of them.
    */
   auth?: AuthDescriptor;
-  /**
-   * @deprecated Legacy **negative** wire field, superseded by
-   * `auth.signIn.signUpEnabled` and removed once every server emits the
-   * descriptor. Never read it directly — call {@link isSignUpEnabled}, which
-   * owns the precedence between the two polarities.
-   */
-  signUpDisabled?: boolean;
 }
 
 /**
  * Whether the sign-up affordance should be offered.
  *
- * THE PRECEDENCE, AND THE MISSING `!` THIS FUNCTION EXISTS TO CONTAIN
+ * One input — the descriptor — and one place that reads it, so every call site
+ * gets the positive answer without restating the test.
  *
- * For one release a single `/auth/me` response carries two fields of *opposite
- * polarity* describing this one fact:
+ * The `typeof === 'boolean'` test is the load-bearing part and is not a
+ * truthiness check by accident. `false` is a deliberate "sign-up is off"; an
+ * absent field is "not stated", which is what the descriptor sends for every
+ * kind that has no credentials sign-in at all. Collapsing the two would read
+ * "not stated" as "off" and hide a sign-up form that should be there.
  *
- * - `auth.signIn.signUpEnabled` — new, POSITIVE, authoritative.
- * - `signUpDisabled` — legacy, NEGATIVE, dropped once the descriptor is
- *   everywhere.
- *
- * Getting the negation wrong shows a sign-up link on a deployment that
- * deliberately disabled sign-up, and nothing about that failure looks like a bug
- * from the outside — no error, no blank screen, just an affordance that should
- * not be there. So the two polarities are reconciled in exactly this one place
- * and every call site reads the positive answer.
- *
- * 1. **Descriptor wins whenever it states the fact.** Tested with `typeof ===
- *    'boolean'`, not for truthiness: `false` is a deliberate "sign-up is off"
- *    and must not be confused with an absent field, which is "not stated" (the
- *    descriptor omits it entirely for kinds that have no credentials sign-in).
- *    A server that contradicts itself — descriptor says enabled, legacy field
- *    says disabled — resolves to the descriptor by design.
- * 2. **Otherwise the legacy field, negated.** Only reached on a server that
- *    predates the descriptor.
- * 3. **Otherwise enabled**, which is both the contract's documented default and
- *    the behaviour that shipped before the descriptor existed.
+ * Not stated resolves to **enabled**, which is the contract's documented
+ * default. The failure that matters points the other way — a sign-up link
+ * rendered on a deployment that deliberately disabled sign-up looks like a
+ * working page from every angle, no error and no blank screen — and it is
+ * `signUpEnabled: false` that prevents it. A response used to carry a second
+ * field of the opposite polarity (`signUpDisabled`) that had to be reconciled
+ * with this one; it is gone, and with it the chance of a dropped `!`.
  */
 export function isSignUpEnabled(state: FactoryAuthState | undefined): boolean {
   const declared = state?.auth?.signIn.signUpEnabled;
-  if (typeof declared === 'boolean') return declared;
-  return state?.signUpDisabled !== true;
+  return typeof declared === 'boolean' ? declared : true;
 }
 
 /** The resourceId under which a user's personal (non-factory) sessions live. */
@@ -308,7 +304,6 @@ export async function fetchAuthState(baseUrl: string): Promise<FactoryAuthState>
     user?: { userId?: string; email?: string; name?: string; organizationId?: string } | null;
     provider?: string;
     auth?: unknown;
-    signUpDisabled?: boolean;
   };
   return {
     authEnabled: true,
@@ -316,7 +311,6 @@ export async function fetchAuthState(baseUrl: string): Promise<FactoryAuthState>
     user: data.user ?? undefined,
     provider: data.provider,
     auth: parseAuthDescriptor(data.auth),
-    signUpDisabled: data.signUpDisabled,
   };
 }
 
@@ -324,15 +318,15 @@ export async function fetchAuthState(baseUrl: string): Promise<FactoryAuthState>
  * Narrow the wire `auth` field to an {@link AuthDescriptor}, or `undefined` when
  * the server did not send one this SPA can act on.
  *
- * `undefined` is a meaningful answer rather than a failure: it routes
- * `SignInPage` to its labelled legacy fallback, which is exactly right for a
- * server that predates the descriptor.
+ * `undefined` is a meaningful answer rather than a failure: `SignInPage` falls
+ * back to a neutral hosted-login button, which is something a user can act on
+ * for the widest range of providers.
  *
  * `signIn.kind` is checked against the closed union rather than cast, because
  * an unrecognized kind is what a *newer* server sending a fifth kind looks like
  * to this build. Casting it would drop that payload into whichever branch
- * happens to be last; rejecting it degrades to the legacy provider-name
- * behaviour, which still renders something a user can act on.
+ * happens to be last; rejecting it degrades to that hosted-login fallback
+ * instead.
  */
 function parseAuthDescriptor(value: unknown): AuthDescriptor | undefined {
   if (typeof value !== 'object' || value === null) return undefined;

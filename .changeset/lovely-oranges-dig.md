@@ -2,24 +2,9 @@
 '@mastra/factory': minor
 ---
 
-The Factory's identity and session path is now the default. `MASTRACODE_AUTH_IDENTITY_V2` remains for one release as the way back.
+The Factory resolves a signed-in user through `@mastra/factory-auth`, and it is the only path.
 
-```shell
-# Roll back to the previous identity path, for one release.
-MASTRACODE_AUTH_IDENTITY_V2=false
-```
-
-**What breaks, and for whom**
-
-Nothing, on the way in. A provider that mints and reads its own session cookie — WorkOS, Okta, better-auth — keeps every session it already had, because the Factory still hands it an empty token and lets it read its own cookie exactly as before.
-
-The cost is on the way **back**. If your provider returns only tokens from its login callback, the Factory mints the session cookie itself, and the previous path cannot read that cookie. So setting the flag to `false` signs those people out once; they sign in again and are fine. Rolling back is still the right move if something is wrong — it is just not free, and it is worth knowing before you reach for it at 3am rather than after.
-
-**The polarity moved with the default.** Only `0` and `false` (trimmed, case-insensitive) select the previous path. Every other value — including a typo like `flase` — leaves you on the current one. That is the same rule as before, pointed the other way: an unrecognized value must never select the non-default path, and the non-default path is the older one now.
-
-The value is read once at startup, so a running Factory cannot change paths underneath a session that is already resolved. Restart to apply a change.
-
-**What the current path does that the previous one did not**
+**What the identity path does that the previous one did not**
 
 The Factory used to read the user id from `id` alone. A Firebase provider returns `uid` and a plain OIDC verifier returns `sub`, so both authenticated as nobody — and the request then failed somewhere unrelated with a message about missing state, which is nothing like the actual problem. Now resolving:
 
@@ -29,6 +14,10 @@ The Factory used to read the user id from `id` alone. A Firebase provider return
 - a provider's own `toIdentity` mapper, for an id under a custom claim
 
 A blank or whitespace-only id is treated as absent rather than used as a storage key every such user would share. A signed-in user whose provider has no organizations resolves to a private partition of their own instead of being refused by every organization-scoped route.
+
+**What breaks, and for whom**
+
+Nothing, for a provider that mints and reads its own session cookie — WorkOS, Okta, better-auth. Those keep every session they already had, because the Factory hands the provider an empty token and lets it read its own cookie exactly as before.
 
 **One thing to check before you upgrade**
 

@@ -322,11 +322,11 @@ export function createWorkspaceFactory(options: CreateWorkspaceFactoryOptions) {
     // No identity at all is a server-side caller that forgot to seed one
     // (webhook, cron), not someone reaching for another user's session.
     //
-    // Blank counts as none. The pre-kit identity reader hands a whitespace-only
-    // id straight back, so this is reachable with the compat flag off, and
-    // `resolveOrganizationId` refuses to derive an organization from one — it
-    // would throw a TypeError about identity shapes here, replacing a message
-    // that names the actual mistake with one that does not.
+    // Blank counts as none. The identity reader already rejects a
+    // whitespace-only id, so this is a second line rather than the only one —
+    // but `resolveOrganizationId` refuses to derive an organization from one
+    // and would throw a TypeError about identity shapes here, replacing a
+    // message that names the actual mistake with one that does not.
     if (!tenant || !userId) {
       throw new Error(`Factory session ${session.sessionId} was resolved without a caller identity`);
     }

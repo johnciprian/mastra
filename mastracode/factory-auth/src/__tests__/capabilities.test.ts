@@ -163,9 +163,11 @@ describe('signIn.signUpEnabled', () => {
   });
 
   it('is positive polarity: true means sign-up is available', () => {
-    // The wire field the SPA reads today is `signUpDisabled`, the opposite way
-    // round. Both ride in one payload for a release, so this assertion is the
-    // record of which way this one points.
+    // The wire used to carry this fact a second time under the negative name
+    // `signUpDisabled`, and a dropped `!` between them showed a sign-up link on
+    // a deployment that had disabled sign-up. That field is gone; this pins
+    // which way the surviving one points, and that no negative twin rides with
+    // it out of the descriptor.
     const disabled = toAuthDescriptor(provider(credentials, { isSignUpEnabled: () => false }));
     expect(disabled.signIn.signUpEnabled).toBe(false);
     expect(disabled.signIn).not.toHaveProperty('signUpDisabled');

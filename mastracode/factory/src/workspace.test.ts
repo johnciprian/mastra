@@ -749,12 +749,10 @@ describe('GitHub session workspace preparation', () => {
     //
     // P12 SETTLED THIS, AND IT SETTLED FAIL-CLOSED.
     // The kit's `toAuthIdentity` used to fall back to the `user` half's own
-    // `organizationId` when the session named none, which made this the only
-    // assertion in the whole suite that MASTRACODE_AUTH_IDENTITY_V2 flipped:
-    // under the flag the same request resolved into org-1 instead of refusing.
-    // The fallback was removed, so both readers now take a wrapper's
-    // organization from `session.activeOrganizationId` and from nowhere else,
-    // and this assertion holds with the flag on and off alike.
+    // `organizationId` when the session named none, and under that reader this
+    // same request resolved into org-1 instead of refusing. The fallback was
+    // removed: a wrapper's organization comes from `session.activeOrganizationId`
+    // and from nowhere else.
     //
     // The reasoning, because the bare assertion does not carry it: the `user`
     // half's `organizationId` says the user is a *member* of org-1. It does not
@@ -829,11 +827,13 @@ describe('GitHub session workspace preparation', () => {
   });
 
   it('treats a blank caller id as no identity rather than crashing on it', async () => {
-    // The pre-kit identity reader hands a whitespace-only id straight back, so
-    // this is reachable with the compat flag off. Without the guard it reaches
-    // resolveOrganizationId, which refuses to derive an organization from blank
-    // and throws a TypeError about identity shapes — replacing a message that
-    // names the mistake with one that does not.
+    // Two things have to hold for this, and the test is here because only one
+    // of them is obvious: the identity reader treats a whitespace-only id as
+    // absent, and the guard here refuses a tenant built from one. Without the
+    // second, a blank id that reached this far would hit resolveOrganizationId,
+    // which refuses to derive an organization from blank and throws a TypeError
+    // about identity shapes — replacing a message that names the mistake with
+    // one that does not.
     const { workspace } = await createLocalFactory();
     addProject();
     addSession({ id: 'session-a' });
