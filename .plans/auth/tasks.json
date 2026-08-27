@@ -1510,6 +1510,21 @@
       ],
       "detail": "Found by P21 once the provider test files were typechecked, and asserted around there rather than fixed, because a test may not change a published provider. (1) `MastraAuthWorkosOptions` does not declare `authorizeUser`, and the option works: the constructor passes the options through `registerOptions`, which binds `authorizeUser`, `mapUserToResourceId`, `protected` and `public`. So three options are honoured at run time and untypeable for a caller. Nine of the eleven providers declare `Options extends MastraAuthProviderOptions<TUser>` and have none of this. The two that do not - workos and okta - are exactly the two whose `registerOptions` call carries an `as MastraAuthProviderOptions<TUser>` cast, which is what hid it. Okta has the identical defect and no test exercised it, so it produced no error. The fix is `src/types.ts` in both packages. (2) `MastraAuthWorkos.getCurrentUser` declares `Promise<EEUser | null>` while its body builds and returns a `WorkOSUser`, and the sibling `getUser` on the same class declares `WorkOSUser` correctly. `organizationId`, `memberships`, `organizationMembershipId` and `workosId` - the fields this provider exists to supply - are invisible to every caller of `getCurrentUser`. DONE. Both option types now extend MastraAuthProviderOptions, and getCurrentUser declares WorkOSUser. Proved as a consumer would hit it, against the package source rather than by reading: a scratch file passing authorizeUser, protected and public to each constructor failed TS2353 before and compiles after. Widening the return is safe for callers because WorkOSUser extends EEUser, so the class still satisfies IUserProvider<EEUser>. Nothing changes at run time - registerOptions was already binding all four.",
       "doneWhen": "A caller can type `authorizeUser`, `protected` and `public` on both workos and okta, and `getCurrentUser`'s declared return type matches what it returns."
+    },
+    {
+      "id": "P31",
+      "status": "pending",
+      "title": "Remove the deprecated GET /auth/logout shim",
+      "lane": "B",
+      "size": "S",
+      "deps": [
+        "B19"
+      ],
+      "files": [
+        "mastracode/factory/src/auth.ts"
+      ],
+      "detail": "A FOURTH compat item, found while clearing B19/U9/R3 and tracked by no task until now. B10 moved sign-out to POST and left GET /auth/logout reachable, with an isLogoutNavigation shim that reads Sec-Fetch-Dest to tell a top-level navigation from an <img> or <script> load. The changeset late-comics-yell promises it works \"for one release\" - a release that cannot happen in this fork, the same defect that made B19/U9/R3 unclearable. Unlike those two, this compat protects clients in the wild (a bookmarked link, an existing <a href>) rather than a deployment mid-upgrade; with nothing running this fork there are no such clients either. Removing it also CLOSES a residual security gap the code names itself: a request with no Sec-Fetch-Dest is allowed through, because browsers predating the header exist and refusing them would break sign-out rather than protect anybody. The comment says as much - \"why this is a shim on a deprecated route rather than the answer\". POST /auth/logout needs no such inference.",
+      "doneWhen": "GET /auth/logout is gone, isLogoutNavigation with it, and no route ends a session on a GET."
     }
   ],
   "criticalPath": [
