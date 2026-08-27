@@ -8,6 +8,8 @@ import { LocalSandbox } from '@mastra/core/workspace';
 import type { WorkspaceSandbox } from '@mastra/core/workspace';
 import { LibSQLFactoryStorage } from '@mastra/libsql';
 import { PgVector } from '@mastra/pg';
+import { Hono } from 'hono';
+import type { MiddlewareHandler } from 'hono';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VersionControl } from './capabilities/version-control.js';
 import { MastraFactory } from './factory.js';
@@ -599,10 +601,10 @@ describe('MastraFactory.prepare', () => {
     expect(paths.some(p => p.startsWith('/auth/'))).toBe(false);
   });
 
-  it('installs the auth gate and tenant credential primer when auth is configured', async () => {
+  it('installs the CSRF guard, auth gate and tenant credential primer when auth is configured', async () => {
     // Both modes mount the custom-providers primer and the SPA static
     // middleware is environment-dependent (present when ui/dist exists), so
-    // assert the delta from the two auth-specific middleware.
+    // assert the delta from the three auth-specific middleware.
     const openConfig = await prepareFactory({ storage: fakeStorage(), auth: null });
     const openMiddleware = (openConfig.buildServerConfig as () => { middleware?: unknown[] })().middleware ?? [];
 
@@ -610,7 +612,33 @@ describe('MastraFactory.prepare', () => {
 
     const gatedConfig = await prepareFactory({ storage: fakeStorage(), auth: fakeProvider() });
     const gatedMiddleware = (gatedConfig.buildServerConfig as () => { middleware?: unknown[] })().middleware ?? [];
-    expect(gatedMiddleware).toHaveLength(openMiddleware.length + 2);
+    expect(gatedMiddleware).toHaveLength(openMiddleware.length + 3);
+  });
+
+  it('puts the CSRF guard ahead of the auth gate', async () => {
+    // Order, asserted by behaviour rather than by identity: these are anonymous
+    // closures, and what matters is not which one is at index 0 but that a
+    // foreign-origin request carrying a session cookie is refused before
+    // anything authenticates it. Run the first middleware alone and it must
+    // answer 403 without calling on.
+    const gatedConfig = await prepareFactory({ storage: fakeStorage(), auth: fakeProvider() });
+    const middleware = (gatedConfig.buildServerConfig as () => { middleware?: unknown[] })().middleware ?? [];
+
+    const app = new Hono();
+    app.use('*', middleware[0] as MiddlewareHandler);
+    let reached = false;
+    app.post('/api/projects', c => {
+      reached = true;
+      return c.json({ ok: true });
+    });
+
+    const res = await app.request('/api/projects', {
+      method: 'POST',
+      headers: { Origin: 'https://evil.example', Cookie: '__Host-mastra_factory_session=stolen' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(reached).toBe(false);
   });
 
   it('passes the resolved auth provider to both server.auth and studio.auth', async () => {

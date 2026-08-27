@@ -52,6 +52,7 @@ export {
   isCredentialsProvider,
   isOrganizationsProvider,
   canClearSession,
+  canManageSessions,
   isAuthHttpHandler,
   hasAuthInit,
 } from '@mastra/core/server';
@@ -72,6 +73,7 @@ export type {
   ICredentialsProvider,
   IOrganizationsProvider,
   ISessionClearer,
+  ISessionManager,
   ISessionProvider,
   ISSOProvider,
   IUserProvider,

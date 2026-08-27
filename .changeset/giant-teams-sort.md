@@ -1,5 +1,5 @@
 ---
-'@mastra/core': minor
+'@mastra/core': major
 '@mastra/factory-auth': patch
 '@mastra/factory': patch
 '@mastra/auth-better-auth': patch
@@ -37,6 +37,6 @@ if (isSSOProvider(auth) && typeof auth.getLogoutUrl === 'function') {
 }
 ```
 
-**This can change what a guard reports for your provider.** A provider that satisfied a guard with a subset of the required members no longer does, so a surface branching on that guard will stop offering the capability. Every provider published from this repository is unaffected — each declares its interfaces with `implements`, which already forced the members to exist — but a provider that was only ever structurally compatible may be. If yours stops passing a guard, the guard is now telling you the truth: implement the missing member, or drop the interface.
+**Breaking: this can change what a guard reports for your provider.** A provider that satisfied a guard with a subset of the required members no longer does, so a surface branching on that guard will stop offering the capability. Every provider published from this repository is unaffected — each declares its interfaces with `implements`, which already forced the members to exist — but a provider that was only ever structurally compatible may be. If yours stops passing a guard, the guard is now telling you the truth: implement the missing member, or drop the interface.
 
 The check/required/declared counts are in the capability interfaces reference, and adding a required member to one of these interfaces now fails the build until its guard tests the new member too.

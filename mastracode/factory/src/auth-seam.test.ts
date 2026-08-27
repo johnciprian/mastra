@@ -11,7 +11,7 @@ import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as authModule from './auth.js';
-import { buildAuthRoutes, mountFactoryAuth, factoryAuthTenant } from './auth.js';
+import { buildAuthRoutes, createCsrfGuard, mountFactoryAuth, factoryAuthTenant } from './auth.js';
 
 /**
  * Provider-seam behavior: the auth module operates on an explicitly-passed
@@ -1826,5 +1826,170 @@ describe('sessions when the host owns its own cookie', () => {
     });
 
     expect(res.status).toBe(401);
+  });
+});
+
+/**
+ * P32: every state-changing route, not just sign-out.
+ *
+ * The measurement that produced this: `SameSite=Lax` is what has been standing
+ * between a cross-site page and the whole mutating API, and it only holds on a
+ * same-origin deployment. Set `MASTRACODE_ALLOWED_ORIGINS` and the session
+ * cookie becomes `SameSite=None; Secure` so a separately hosted SPA can use it,
+ * at which point every cross-site request carries it. CORS withholds the
+ * response, not the request. And requiring a JSON body is not a defence either:
+ * `c.req.json()` parses whatever it is given regardless of `Content-Type`, so a
+ * form-encoded or `text/plain` body carrying JSON is never preflighted and
+ * arrives intact — which the first test below states as an executable fact
+ * rather than a claim in a comment.
+ *
+ * The guard keys on the credential rather than on the route, so the callers
+ * that must keep working keep working for reasons of their own: a webhook sends
+ * no cookies, an API client sends `Authorization`, a signed-out browser has no
+ * session to spend.
+ */
+describe('createCsrfGuard', () => {
+  afterEach(() => {
+    delete process.env.MASTRACODE_ALLOWED_ORIGINS;
+  });
+
+  /** A mutating route that reads a JSON body, behind the guard. */
+  function appWithGuard(): { app: Hono; handled: () => number } {
+    let calls = 0;
+    const app = new Hono();
+    app.use('*', createCsrfGuard());
+    app.post('/api/agents/acme/generate', async c => {
+      calls += 1;
+      return c.json({ body: await c.req.json() });
+    });
+    app.get('/api/agents', c => c.json({ ok: true }));
+    return { app, handled: () => calls };
+  }
+
+  it('a JSON route accepts a body sent as text/plain, which is why the guard exists', async () => {
+    // No preflight is issued for a CORS-simple Content-Type, so CORS never sees
+    // this request. If this ever starts failing, the guard has a second line of
+    // defence -- but it does not today.
+    const { app } = appWithGuard();
+    const res = await app.request('/api/agents/acme/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain', Origin: 'http://localhost' },
+      body: JSON.stringify({ prompt: 'hello' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ body: { prompt: 'hello' } });
+  });
+
+  it('refuses a cookie-carrying POST from another site', async () => {
+    const { app, handled } = appWithGuard();
+    const res = await app.request('/api/agents/acme/generate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain',
+        Origin: 'https://evil.example',
+        Cookie: '__Host-mastra_factory_session=stolen',
+      },
+      body: JSON.stringify({ prompt: 'delete everything' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(handled()).toBe(0);
+  });
+
+  it('lets the deployment own front end through', async () => {
+    const { app, handled } = appWithGuard();
+    const res = await app.request('/api/agents/acme/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: 'http://localhost', Cookie: 'session=mine' },
+      body: JSON.stringify({ prompt: 'hello' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(handled()).toBe(1);
+  });
+
+  it('lets a declared cross-origin SPA host through', async () => {
+    process.env.MASTRACODE_ALLOWED_ORIGINS = 'https://app.acme.com';
+    const { app, handled } = appWithGuard();
+    const res = await app.request('/api/agents/acme/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: 'https://app.acme.com', Cookie: 'session=mine' },
+      body: JSON.stringify({ prompt: 'hello' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(handled()).toBe(1);
+  });
+
+  it('leaves a signature-verified webhook alone, without naming its path', async () => {
+    // GitHub and Slack deliveries carry no cookies and authenticate by HMAC over
+    // the body. `createFactoryAuthGate` has to allowlist those paths one by one
+    // because it runs before route matching; this guard needs no such list,
+    // because the thing it tests for is simply absent from those requests.
+    const { app, handled } = appWithGuard();
+    const res = await app.request('/api/agents/acme/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Hub-Signature-256': 'sha256=abc' },
+      body: JSON.stringify({ action: 'opened' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(handled()).toBe(1);
+  });
+
+  it('leaves an Authorization-bearing API client alone even from another origin', async () => {
+    // A bearer token is not ambient: a cross-site page cannot set that header
+    // without a preflight the deployment CORS policy has to allow first.
+    const { app, handled } = appWithGuard();
+    const res = await app.request('/api/agents/acme/generate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer tok_123',
+        Origin: 'https://cli.example',
+        Cookie: 'session=irrelevant',
+      },
+      body: JSON.stringify({ prompt: 'hello' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(handled()).toBe(1);
+  });
+
+  it('leaves a signed-out browser alone', async () => {
+    const { app, handled } = appWithGuard();
+    const res = await app.request('/api/agents/acme/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' },
+      body: JSON.stringify({ prompt: 'hello' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(handled()).toBe(1);
+  });
+
+  it('does not touch a GET, however cross-site', async () => {
+    // Reading is not what this guard is for, and a GET that changes something is
+    // the defect P31 removed rather than one to catch here.
+    const { app } = appWithGuard();
+    const res = await app.request('/api/agents', {
+      headers: { Origin: 'https://evil.example', Cookie: 'session=mine' },
+    });
+
+    expect(res.status).toBe(200);
+  });
+
+  it.each(['PUT', 'PATCH', 'DELETE'])('guards %s too', async method => {
+    const app = new Hono();
+    app.use('*', createCsrfGuard());
+    app.all('/api/projects/acme', c => c.json({ ok: true }));
+
+    const res = await app.request('/api/projects/acme', {
+      method,
+      headers: { Origin: 'https://evil.example', Cookie: 'session=mine' },
+    });
+
+    expect(res.status).toBe(403);
   });
 });

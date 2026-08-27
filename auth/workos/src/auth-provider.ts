@@ -11,7 +11,7 @@ import type {
   IOrganizationsProvider,
   IUserProvider,
   ISSOProvider,
-  ISessionProvider,
+  ISessionManager,
   Session,
   SSOCallbackResult,
   SSOLoginConfig,
@@ -165,7 +165,7 @@ function isMembershipAlreadyExists(error: unknown): boolean {
  */
 export class MastraAuthWorkos
   extends MastraAuthProvider<WorkOSUser>
-  implements IUserProvider<EEUser>, ISSOProvider<EEUser>, ISessionProvider<Session>, IOrganizationsProvider, IAuthInit
+  implements IUserProvider<EEUser>, ISSOProvider<EEUser>, ISessionManager<Session>, IOrganizationsProvider, IAuthInit
 {
   protected workos: WorkOS;
   protected clientId: string;
@@ -727,8 +727,18 @@ export class MastraAuthWorkos
   }
 
   // ============================================================================
-  // ISessionProvider Implementation
+  // ISessionManager Implementation
   // ============================================================================
+  //
+  // NOT `ISessionProvider`, AND THAT IS THE POINT.
+  //
+  // The wider interface adds `createSession(userId)`, and no implementation of
+  // it is possible here: a WorkOS session is produced by an authenticated token
+  // exchange — a real credential presented by a real person — and
+  // `@workos-inc/node` has no call that mints one from a user id alone. This
+  // provider used to declare `ISessionProvider` and stub the member, which made
+  // every guard report a capability it did not have. `ISessionManager` is the
+  // whole of what it can do, so it declares that instead.
   //
   // THE SESSION ID IS THE SEALED COOKIE.
   //
@@ -740,9 +750,6 @@ export class MastraAuthWorkos
   //
   // It follows that the id is a credential, not an identifier. Do not log it,
   // put it in a URL, or store it anywhere the cookie itself would not go.
-  //
-  // Five of the six members below are backed by AuthKit. `createSession` is the
-  // one that cannot be: see its comment.
 
   /**
    * Seal a session into the `Set-Cookie` this provider sets, and hand back the
@@ -800,33 +807,6 @@ export class MastraAuthWorkos
       createdAt: issuedAt,
       expiresAt,
       metadata: { workosSessionId: claims?.sid, organizationId: session.organizationId },
-    };
-  }
-
-  /**
-   * Create a new session for a user.
-   *
-   * THIS CANNOT BE IMPLEMENTED, and returns a record nothing will accept.
-   *
-   * A WorkOS session is produced by an authenticated token exchange — a real
-   * credential presented by a real person — and `@workos-inc/node` offers no
-   * call that mints one from a user id alone. Backing this with an in-memory map
-   * would satisfy a round-trip test while revoking nothing and leaving the
-   * browser's sealed cookie working, which is worse than saying so.
-   *
-   * No host path reaches it: both this repository's hosts branch on the cookies
-   * `handleCallback` returns before they consider `createSession`. It is kept so
-   * that removing it is a deliberate major bump rather than a side effect, and
-   * it is why `sessions/round-trip` is still a recorded conformance failure.
-   */
-  async createSession(userId: string, metadata?: Record<string, unknown>): Promise<Session> {
-    const now = new Date();
-    return {
-      id: crypto.randomUUID(),
-      userId,
-      createdAt: now,
-      expiresAt: new Date(now.getTime() + this.config.cookieMaxAge * 1000),
-      metadata,
     };
   }
 
