@@ -5,8 +5,8 @@ export {
   loginUrl,
   logoutUrl,
   redirectToLogin,
-  redirectToLogout,
   signInWithPassword,
+  submitLogout,
   signUpWithPassword,
   userSessionResourceId,
 } from './services/auth';

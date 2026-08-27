@@ -616,26 +616,71 @@ async function revokeProviderSession(provider: IMastraAuthProvider, c: Context):
 }
 
 /**
- * Whether a GET `/auth/logout` came from a real browser navigation rather than
- * a sub-resource load on somebody else's page.
+ * The origins a state-changing request is allowed to come from: this
+ * deployment's own, plus every cross-origin SPA host it declares.
  *
- * A GET that signs the caller out is CSRF-triggerable: `<img src="/auth/logout">`
- * on any page silently ends the visitor's session. `Sec-Fetch-Dest` is what
- * separates the two — a top-level navigation sends `document`, an `<img>` sends
- * `image`, a `<script>` sends `script`. It is a forbidden header name, so a
- * page cannot set it, which is what makes it usable as a defence rather than a
- * hint.
- *
- * A request with no `Sec-Fetch-Dest` is allowed through: browsers that predate
- * the header exist, and refusing them would break sign-out for those people
- * rather than protecting them. That is the residual gap, and it is why this is
- * a shim on a deprecated route rather than the answer — `POST /auth/logout`
- * needs no such inference.
+ * Read from the environment rather than passed in, because the auth routes are
+ * mounted without the Factory config — the same reason {@link isCrossSiteAuth}
+ * reads it, and the two must agree: an origin trusted enough to be sent a
+ * `SameSite=None` cookie is exactly an origin trusted enough to spend it.
  */
-function isLogoutNavigation(c: Context): boolean {
-  const destination = c.req.header('Sec-Fetch-Dest');
-  if (!destination) return true;
-  return destination === 'document';
+function allowedRequestOrigins(c: Context): Set<string> {
+  const origins = new Set<string>();
+  try {
+    origins.add(new URL(c.req.url).origin);
+  } catch {
+    // An unparseable request URL matches nothing, which fails closed below.
+  }
+  for (const configured of (process.env.MASTRACODE_ALLOWED_ORIGINS ?? '').split(',')) {
+    const trimmed = configured.trim().replace(/\/+$/, '');
+    if (trimmed) origins.add(trimmed);
+  }
+  return origins;
+}
+
+/**
+ * Whether a state-changing request came from this deployment's own front end
+ * rather than from somebody else's page.
+ *
+ * `SameSite` does most of this work already, but only in the same-origin
+ * deployment: there the session cookie is `SameSite=Lax`, which a cross-site
+ * POST cannot carry at all. A deployment that sets `MASTRACODE_ALLOWED_ORIGINS`
+ * hosts the SPA separately, and the cookie becomes `SameSite=None; Secure` so
+ * the real SPA can use it — at which point every cross-site POST carries it
+ * too. CORS does not cover the gap: it withholds the *response* from a
+ * disallowed origin, it does not stop the *request*, and a request whose
+ * `Content-Type` is one of the three CORS-simple values is never preflighted.
+ * So the check has to be made here.
+ *
+ * `Origin` is the primary signal because it is the one a browser always sends
+ * on a cross-origin POST and a page cannot forge — it is a forbidden header
+ * name. `Sec-Fetch-Site` is the fallback for the same-origin POST that some
+ * older browsers send without an `Origin`, and `none` is included because it
+ * means the person typed the URL or used a bookmark, which no other page can
+ * cause.
+ *
+ * A request carrying neither header is allowed: that is not a browser, so
+ * there is no ambient cookie for anyone to spend. The residual gap is a browser
+ * that omits `Origin` on a cross-site POST, which in practice means IE11 —
+ * materially narrower than the `Sec-Fetch-Dest` shim this replaced, since
+ * Safari sent no `Sec-Fetch-*` header at all before 16.4.
+ */
+export function isAllowedRequestOrigin(c: Context): boolean {
+  const origin = c.req.header('Origin');
+  if (origin) return allowedRequestOrigins(c).has(origin.replace(/\/+$/, ''));
+  const site = c.req.header('Sec-Fetch-Site');
+  if (site) return site === 'same-origin' || site === 'none';
+  return true;
+}
+
+/**
+ * Refuse a state-changing request that came from another site. Answers 403
+ * rather than redirecting: the caller is either an attacker's page, which
+ * cannot read this response anyway, or a misconfigured deployment, which is
+ * owed something it can find in a log.
+ */
+function refuseForeignOrigin(c: Context): Response {
+  return c.json({ error: 'Request origin is not allowed' }, 403);
 }
 
 /**
@@ -902,10 +947,14 @@ interface AuthRouteSpec {
  *   surface (better-auth sign-in/up/out/session — what the SPA's
  *   email/password form posts to).
  * - `ISSOProvider` → hosted-login `GET /auth/login` / `GET /auth/callback` /
- *   `GET /auth/logout` (returnTo preserved through the OAuth `state` param).
+ *   `POST /auth/logout` (returnTo preserved through the OAuth `state` param).
  * - handler-shaped, non-SSO providers → `GET /auth/login` redirects to the
- *   SPA's `/signin` form, `GET /auth/logout` revokes via the provider's
+ *   SPA's `/signin` form, `POST /auth/logout` revokes via the provider's
  *   sign-out endpoint and clears the session cookie.
+ *
+ * Sign-out is POST-only. Nothing that ends a session answers a GET, so no page
+ * can end a visitor's session by loading a sub-resource, and the POST is
+ * origin-checked on top — see {@link isAllowedRequestOrigin}.
  */
 function providerAuthRoutes(provider: IMastraAuthProvider, publicUrl?: string): AuthRouteSpec[] {
   const routes: AuthRouteSpec[] = [];
@@ -1051,18 +1100,7 @@ function providerAuthRoutes(provider: IMastraAuthProvider, publicUrl?: string): 
       {
         path: '/auth/logout',
         method: 'POST',
-        handler: c => ssoLogout(provider, c),
-      },
-      {
-        // Deprecated for one release: the SPA and any bookmarked link still
-        // navigate here with GET. See `isLogoutNavigation` for what this
-        // refuses, and `ssoLogout` for what it does otherwise.
-        path: '/auth/logout',
-        method: 'GET',
-        handler: c => {
-          if (!isLogoutNavigation(c)) return c.redirect('/');
-          return ssoLogout(provider, c);
-        },
+        handler: c => (isAllowedRequestOrigin(c) ? ssoLogout(provider, c) : refuseForeignOrigin(c)),
       },
     );
   } else if (isAuthHttpHandler(provider)) {
@@ -1080,16 +1118,7 @@ function providerAuthRoutes(provider: IMastraAuthProvider, publicUrl?: string): 
       {
         path: '/auth/logout',
         method: 'POST',
-        handler: c => handlerLogout(provider, c),
-      },
-      {
-        // Deprecated for one release; see the SSO branch above.
-        path: '/auth/logout',
-        method: 'GET',
-        handler: c => {
-          if (!isLogoutNavigation(c)) return c.redirect('/');
-          return handlerLogout(provider, c);
-        },
+        handler: c => (isAllowedRequestOrigin(c) ? handlerLogout(provider, c) : refuseForeignOrigin(c)),
       },
     );
   }

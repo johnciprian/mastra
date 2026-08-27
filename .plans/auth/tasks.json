@@ -1513,7 +1513,7 @@
     },
     {
       "id": "P31",
-      "status": "pending",
+      "status": "done",
       "title": "Remove the deprecated GET /auth/logout shim",
       "lane": "B",
       "size": "S",
@@ -1523,8 +1523,40 @@
       "files": [
         "mastracode/factory/src/auth.ts"
       ],
-      "detail": "A FOURTH compat item, found while clearing B19/U9/R3 and tracked by no task until now. B10 moved sign-out to POST and left GET /auth/logout reachable, with an isLogoutNavigation shim that reads Sec-Fetch-Dest to tell a top-level navigation from an <img> or <script> load. The changeset late-comics-yell promises it works \"for one release\" - a release that cannot happen in this fork, the same defect that made B19/U9/R3 unclearable. Unlike those two, this compat protects clients in the wild (a bookmarked link, an existing <a href>) rather than a deployment mid-upgrade; with nothing running this fork there are no such clients either. Removing it also CLOSES a residual security gap the code names itself: a request with no Sec-Fetch-Dest is allowed through, because browsers predating the header exist and refusing them would break sign-out rather than protect anybody. The comment says as much - \"why this is a shim on a deprecated route rather than the answer\". POST /auth/logout needs no such inference.",
+      "detail": "A FOURTH compat item, found while clearing B19/U9/R3 and tracked by no task until now. B10 moved sign-out to POST and left GET /auth/logout reachable, with an isLogoutNavigation shim that reads Sec-Fetch-Dest to tell a top-level navigation from an <img> or <script> load. The changeset late-comics-yell promises it works \"for one release\" - a release that cannot happen in this fork, the same defect that made B19/U9/R3 unclearable. Unlike those two, this compat protects clients in the wild (a bookmarked link, an existing <a href>) rather than a deployment mid-upgrade; with nothing running this fork there are no such clients either. Removing it also CLOSES a residual security gap the code names itself: a request with no Sec-Fetch-Dest is allowed through, because browsers predating the header exist and refusing them would break sign-out rather than protect anybody. The comment says as much - \"why this is a shim on a deprecated route rather than the answer\". POST /auth/logout needs no such inference. THE STATED JUSTIFICATION WAS HALF WRONG, AND THE SCOPE WAS WRONG. (1) It is not a pure deletion: the SPA signed out with window.location.assign, which can only issue a GET, so removing the route as written would have navigated every sign-out to a 404 with the session intact. factory-ui`s redirectToLogout is now submitLogout, which posts a hidden form and removes it again. (2) \"POST /auth/logout needs no such inference\" is a true statement about Sec-Fetch-Dest and NOT a claim that POST was safe - it had no origin check at all, and a cross-site auto-submitting form logged a user out exactly as <img> did. Removing GET alone would have closed one vector and left an equivalent one on the route the comment calls the answer. So POST is now origin-checked too (isAllowedRequestOrigin): Origin against this deployment plus MASTRACODE_ALLOWED_ORIGINS, Sec-Fetch-Site as the fallback, and a request with neither header allowed because it is not a browser and holds no ambient cookie. The residual gap is a browser that omits Origin on a cross-site POST - IE11 - against the shim`s residual gap of every browser predating Sec-Fetch-Dest, which included Safari until 16.4. Measured: packages/server was already POST-only for /api/auth/logout and asserts it, so the Factory was the only host with a GET that ended a session. Filed P32 for what the same measurement turned up about the rest of the surface.",
       "doneWhen": "GET /auth/logout is gone, isLogoutNavigation with it, and no route ends a session on a GET."
+    },
+    {
+      "id": "P32",
+      "status": "pending",
+      "title": "Every mutating route is CSRF-exposed on a cross-origin deployment",
+      "lane": "B",
+      "size": "L",
+      "deps": [
+        "P31"
+      ],
+      "files": [
+        "mastracode/factory/src/factory.ts",
+        "mastracode/factory/src/auth.ts"
+      ],
+      "detail": "Found while scoping P31, and larger than it. Two facts combine. (1) A deployment that sets MASTRACODE_ALLOWED_ORIGINS serves the SPA from its own host, so the session cookie is minted `SameSite=None; Secure` (isCrossSiteAuth in auth.ts) and is therefore carried on EVERY cross-site request, not just the SPA`s. The same-origin deployment keeps SameSite=Lax and is not affected - Lax is what has been carrying this defence, and the existing test comment on the logout route says so. (2) CORS does not close the gap: it withholds the RESPONSE from a disallowed origin, it does not stop the REQUEST, and a request whose Content-Type is one of the three CORS-simple values is never preflighted. MEASURED, not assumed: a Hono route calling `await c.req.json()` parses a JSON body sent as text/plain, x-www-form-urlencoded and multipart/form-data - all three returned 200 with the body parsed. So `fetch(url, {method: 'POST', credentials: 'include', headers: {'Content-Type': 'text/plain'}, body: JSON.stringify(...)}) ` from any page reaches any mutating Factory route with the victim`s cookie attached. 160 POST/PUT/PATCH/DELETE route definitions across 26 files are in scope. P31 fixed exactly one of them. The shape of the fix is middleware over the gated routes reusing `isAllowedRequestOrigin`, but it is NOT a drive-by: inbound webhooks (github, slack, linear) legitimately POST from a server with no Origin header, and the current fall-through allows them by accident rather than by decision. Whichever way that is settled has to be settled deliberately, with the webhook routes enumerated and their own authentication (signature verification) confirmed as the thing carrying them.",
+      "doneWhen": "A cross-site POST with a CORS-simple content type cannot reach a cookie-authenticated mutating route, webhook routes are enumerated with the authentication that exempts them named, and a test proves both."
+    },
+    {
+      "id": "P33",
+      "status": "pending",
+      "title": "Split ISessionProvider so a provider can declare the half it has",
+      "lane": "K",
+      "size": "M",
+      "deps": [
+        "P28"
+      ],
+      "files": [
+        "packages/_internals/auth/src/session/index.ts",
+        "packages/_internals/auth/src/provider/index.ts"
+      ],
+      "detail": "Chosen by the maintainer alongside P28 option (b): wire WorkOS`s readable members now, split the interface later. After P28(b) the only member WorkOS cannot honour is `createSession`, which no implementation can satisfy - a WorkOS session comes from an authenticated token exchange and the SDK has no call that mints one from a user id. That is not a defect in the provider, it is an interface that bundles minting with reading. `ISessionClearer` was split out of `ISessionProvider` for exactly this reason in P11, and the machinery to recognise the result already exists: `contract/whole-capabilities` exempts any member set that is exactly a declared sub-interface`s required set (`wholeSubsets`), so a new sub-interface is honoured by rule without a new exemption. Blast radius is wider than P28: this is `@mastra/core/server` public API, every provider and both hosts, and it needs a capability guard of its own plus a `guardCase` entry to keep the member list pinned. Sequenced after P28 so the WorkOS work lands non-breaking first.",
+      "doneWhen": "A provider that can read and end sessions but not mint them has an interface to declare, WorkOS declares it, and the sessions/round-trip knownFailures entry is gone rather than narrowed."
     }
   ],
   "criticalPath": [

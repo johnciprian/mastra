@@ -7,7 +7,7 @@ import { LogOut } from 'lucide-react';
 
 import { useApiConfig } from '../../../../api/config';
 import { useFactoryAuth } from '../../../../hooks/useFactoryAuth';
-import { clearMastraCodeStorage, redirectToLogout } from '../../auth/services/auth';
+import { clearMastraCodeStorage, submitLogout } from '../../auth/services/auth';
 import { SettingsRow } from '@mastra/playground-ui/components/SettingsRow';
 import { SettingsCard } from './SettingsCard';
 import { SettingsSubsection } from './SettingsSubsection';
@@ -110,14 +110,14 @@ export function AccountSettingsSection() {
 
   const logOut = () => {
     clearMastraCodeStorage();
-    redirectToLogout(baseUrl);
+    submitLogout(baseUrl);
   };
 
   // Hide the control only on an explicit `false`, which is the one answer that
   // is provably safe to act on. The host mounts `/auth/logout` for a hosted-login
   // provider or one serving its own auth routes, and `features.logout` is false
   // exactly when the provider is neither of those and has no session either — a
-  // pure bearer-token validator, where the button would navigate to a route that
+  // pure bearer-token validator, where the button would post to a route that
   // was never mounted. Absent descriptor (an older server) keeps today's
   // behaviour and shows it.
   const offersLogout = state.auth?.features.logout !== false;
