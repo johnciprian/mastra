@@ -637,7 +637,7 @@
     },
     {
       "id": "B19",
-      "status": "pending",
+      "status": "done",
       "title": "Delete the flag and the legacy sniffer",
       "lane": "B",
       "size": "S",
@@ -647,7 +647,7 @@
       "files": [
         "mastracode/factory/src/auth.ts"
       ],
-      "detail": "Remove the flag, the old toFactoryAuthUser, and the dual-path tests. Deferred deliberately - this is the one task that should wait a release.",
+      "detail": "Remove the flag, the old toFactoryAuthUser, and the dual-path tests. Deferred deliberately - this is the one task that should wait a release. DONE at 454091c9. THE GATE COULD NEVER HAVE FIRED: every release workflow is guarded if github.repository == mastra-ai/mastra, this fork has zero tags, and nothing runs it, so \"one shipped release\" was a condition inherited from a plan written for upstream. With no operator the compat layer protected nobody. Flag, env reader, isAuthIdentityV2Enabled and legacyFactoryAuthUser removed; three call sites collapsed; flag out of web/.env.schema. Where a dual-path test collapsed its assertion survived - the differential identity table's four subjects moved into the exit gate, which runs the same payloads over real HTTP.",
       "doneWhen": "One identity path remains."
     },
     {
@@ -775,7 +775,7 @@
     },
     {
       "id": "U9",
-      "status": "pending",
+      "status": "done",
       "title": "Remove the legacy name fallback",
       "lane": "U",
       "size": "S",
@@ -787,7 +787,7 @@
         "mastracode/factory-ui/src/ui/pages/SignInPage.tsx",
         "mastracode/factory/src/auth.ts"
       ],
-      "detail": "After one release, drop the name branch in the SPA and the name field from /auth/me. Deferred with B19 for the same reason.",
+      "detail": "After one release, drop the name branch in the SPA and the name field from /auth/me. Deferred with B19 for the same reason. DONE at 454091c9. THE TASK TEXT UNDERSOLD IT: two legacy wire fields, not one. signUpDisabled is gone from /auth/me and from the SPA, and isSignUpEnabled reads the descriptor alone while keeping the typeof === boolean test so a deliberate false stays distinct from not-stated. AND A CORRECTION TO THE MAP: FactoryAuthState.provider was claimed by its own doc to have no reader but the legacy sign-in fallback. False - AccountSettingsSection renders authProviderLabel(state.provider), and the descriptor deliberately cannot answer that question, since providerHint is documented as not a provider name and the kit refuses to derive signIn.label from provider.name. So the field stays and its doc now names the real reader; what was removed is the name BRANCH. doneWhen still holds: the descriptor is the only input to the sign-in decision.",
       "doneWhen": "Descriptor is the only input to the sign-in decision."
     },
     {
@@ -1034,7 +1034,7 @@
     },
     {
       "id": "R3",
-      "status": "pending",
+      "status": "done",
       "title": "Deferred cleanup release",
       "lane": "R",
       "size": "S",
@@ -1043,7 +1043,7 @@
         "U9"
       ],
       "files": [],
-      "detail": "The one-release-later tasks: flag removal and legacy fallback deletion. Tracked here so they are not forgotten.",
+      "detail": "The one-release-later tasks: flag removal and legacy fallback deletion. Tracked here so they are not forgotten. DONE at 454091c9 with B19 and U9 in one commit.",
       "doneWhen": "Both deferred deletions shipped."
     },
     {
