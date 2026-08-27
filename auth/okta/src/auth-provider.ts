@@ -16,6 +16,7 @@ import type {
 import { getRequestHeader } from '@internal/auth';
 import type { MastraAuthProviderOptions } from '@internal/auth/provider';
 import { MastraAuthProvider } from '@internal/auth/provider';
+import { parseStateId } from '@mastra/factory-auth/oauth-state';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 
 import type { OktaUser, MastraAuthOktaOptions } from './types.js';
@@ -97,10 +98,47 @@ async function decryptSession(encrypted: string, password: string): Promise<unkn
 }
 
 /**
- * In-memory store for state validation (keyed by state).
+ * In-memory store for OAuth state validation, keyed by {@link stateStoreKey}.
  * Used to validate that callback state matches the login request.
  */
 const stateStore = new Map<string, { expiresAt: number; redirectUri: string }>();
+
+/**
+ * The one key both halves of the OAuth state round trip agree on.
+ *
+ * The host mints `state` as `id|encodedReturnTo` and the two hosts that drive
+ * this provider hand the callback different spellings of it: the Software
+ * Factory passes the raw query-string value through untouched, while
+ * `packages/server` splits it and passes only the id half. Storing under one
+ * spelling and looking up under the other rejects every sign-in with "invalid or
+ * expired state", which is the shape of the defect this function exists to close.
+ *
+ * `parseStateId` from the kit is what makes the two agree: it returns the text
+ * before the first `|`, or the whole value when there is no delimiter, so both
+ * spellings normalize to the same key. The fallback covers the two inputs the
+ * codec calls id-less - an empty string, and a value whose id half is empty -
+ * and it only has to be *consistent*, since both sides run this same function.
+ *
+ * @see https://github.com/mastra-ai/mastra/blob/main/mastracode/factory-auth/src/oauth-state.ts
+ */
+function stateStoreKey(state: string): string {
+  return parseStateId(state) ?? state;
+}
+
+/**
+ * In-memory store backing the explicit `ISessionProvider` loop, keyed by session id.
+ *
+ * A signed-in browser carries this provider's own encrypted `okta_session`
+ * cookie, so nothing on the request path reads this map. It exists because
+ * `createSession`/`validateSession`/`destroySession` are a declared capability -
+ * `isSessionProvider` reports true on the strength of the first two, and a UI
+ * offers "sign out everywhere" on the strength of the third - and stubs that
+ * always answer null make those reports false.
+ *
+ * Per-process, like {@link stateStore}: see the constructor warning about
+ * serverless and multi-instance deployments.
+ */
+const sessionStore = new Map<string, Session>();
 
 /**
  * Mastra authentication provider for Okta with SSO support.
@@ -374,9 +412,9 @@ export class MastraAuthOkta
    * Uses client_secret authentication (no PKCE) since this is a confidential client.
    */
   getLoginUrl(redirectUri: string, state: string): string {
-    // State format from server: "uuid|encodedRedirect"
-    // Extract just the UUID for storage (callback receives only UUID)
-    const stateId = state.includes('|') ? state.split('|')[0]! : state;
+    // Keyed through the shared codec so `handleCallback` can find it again
+    // whichever spelling of `state` the host hands back. See `stateStoreKey`.
+    const stateId = stateStoreKey(state);
 
     // Store state ID with redirect_uri for validation (expires in 10 minutes)
     const actualRedirectUri = redirectUri ?? this.redirectUri;
@@ -405,10 +443,17 @@ export class MastraAuthOkta
 
   /**
    * Handle the OAuth callback from Okta.
-   * Note: The server passes only the stateId (UUID part), not the full state.
+   *
+   * Accepts either spelling of `state`: the raw `id|encodedReturnTo` value the
+   * Software Factory passes through from the query string, or the bare id half
+   * `packages/server` splits out first. Both normalize to the same store key as
+   * the one `getLoginUrl` wrote under - see {@link stateStoreKey}.
+   *
+   * `state` is treated as opaque here. The post-login destination it carries is
+   * the host's to read and redirect to.
    */
-  async handleCallback(code: string, stateId: string): Promise<SSOCallbackResult<OktaUser>> {
-    // Validate state parameter (server passes only the UUID part)
+  async handleCallback(code: string, state: string): Promise<SSOCallbackResult<OktaUser>> {
+    const stateId = stateStoreKey(state);
     const stored = stateStore.get(stateId);
     if (!stored) {
       throw new Error('Invalid or expired state parameter');
@@ -500,8 +545,16 @@ export class MastraAuthOkta
 
   /**
    * Get cookies to set during login.
+   *
+   * None: this is a confidential client authenticating with `client_secret`
+   * rather than PKCE, so there is no code verifier to stash in a cookie.
+   *
+   * The two parameters match `ISSOProvider.getLoginCookies(redirectUri, state)`.
+   * The previous one-parameter spelling named its only argument `_state`, which
+   * both hosts fill with `redirectUri` - harmless while the body ignores it, and
+   * a trap for anyone who later reads it.
    */
-  getLoginCookies(_state: string): string[] {
+  getLoginCookies(_redirectUri: string, _state: string): string[] {
     return [];
   }
 
@@ -521,25 +574,45 @@ export class MastraAuthOkta
 
   async createSession(userId: string, metadata?: Record<string, unknown>): Promise<Session> {
     const now = new Date();
-    return {
+    const session: Session = {
       id: crypto.randomUUID(),
       userId,
       createdAt: now,
       expiresAt: new Date(now.getTime() + this.cookieMaxAge * 1000),
       metadata,
     };
+    sessionStore.set(session.id, session);
+
+    // Clean up expired sessions
+    for (const [id, candidate] of sessionStore.entries()) {
+      if (candidate.expiresAt.getTime() < Date.now()) {
+        sessionStore.delete(id);
+      }
+    }
+
+    return session;
   }
 
-  async validateSession(_sessionId: string): Promise<Session | null> {
-    return null;
+  async validateSession(sessionId: string): Promise<Session | null> {
+    const session = sessionStore.get(sessionId);
+    if (!session) return null;
+    if (session.expiresAt.getTime() < Date.now()) {
+      sessionStore.delete(sessionId);
+      return null;
+    }
+    return session;
   }
 
-  async destroySession(_sessionId: string): Promise<void> {
-    // Session is cleared via cookie
+  async destroySession(sessionId: string): Promise<void> {
+    sessionStore.delete(sessionId);
   }
 
-  async refreshSession(_sessionId: string): Promise<Session | null> {
-    return null;
+  async refreshSession(sessionId: string): Promise<Session | null> {
+    const session = await this.validateSession(sessionId);
+    if (!session) return null;
+    const refreshed: Session = { ...session, expiresAt: new Date(Date.now() + this.cookieMaxAge * 1000) };
+    sessionStore.set(sessionId, refreshed);
+    return refreshed;
   }
 
   getSessionIdFromRequest(_request: Request): string | null {

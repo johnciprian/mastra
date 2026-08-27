@@ -163,7 +163,7 @@ describe('registerTenantCredentialResolver', () => {
     registerTenantCredentialResolver(seed.credentials);
 
     const requestContext = new RequestContext();
-    requestContext.set('user', { workosId: USER, organizationId: ORG });
+    requestContext.set('user', { id: USER, organizationId: ORG });
 
     const store = resolveCredentialStore(requestContext);
     expect(store).toBeDefined();
@@ -173,14 +173,14 @@ describe('registerTenantCredentialResolver', () => {
   it('returns the same store instance per tenant (snapshot reuse)', () => {
     registerTenantCredentialResolver(seed.credentials);
     const ctx = new RequestContext();
-    ctx.set('user', { workosId: USER, organizationId: ORG });
+    ctx.set('user', { id: USER, organizationId: ORG });
     expect(resolveCredentialStore(ctx)).toBe(resolveCredentialStore(ctx));
   });
 
   it('scopes personal accounts (no org) under a synthetic per-user org', async () => {
     registerTenantCredentialResolver(seed.credentials);
     const ctx = new RequestContext();
-    ctx.set('user', { workosId: USER });
+    ctx.set('user', { id: USER });
 
     await seed.credentials.setCredential({ orgId: `user:${USER}`, userId: USER }, 'openai', {
       type: 'api_key',
@@ -204,13 +204,13 @@ describe('registerTenantCredentialResolver', () => {
     resetTenantCredentialResolverForTests();
     setCredentialStoreProvider(undefined);
     const ctx = new RequestContext();
-    ctx.set('user', { workosId: USER, organizationId: ORG });
+    ctx.set('user', { id: USER, organizationId: ORG });
     expect(resolveCredentialStore(ctx)).toBeUndefined();
   });
 });
 
 describe('createTenantCredentialPrimer', () => {
-  function buildApp(user: { workosId: string; organizationId?: string } | null) {
+  function buildApp(user: { id: string; organizationId?: string } | null) {
     const app = new Hono();
     app.use('*', async (c, next) => {
       if (user) c.set('factoryAuthUser' as never, user as never);
@@ -225,11 +225,11 @@ describe('createTenantCredentialPrimer', () => {
     await seed.credentials.setCredential(USER_TENANT, 'openai', { type: 'api_key', key: 'user-key' });
     registerTenantCredentialResolver(seed.credentials);
 
-    const res = await buildApp({ workosId: USER, organizationId: ORG }).request('/ok');
+    const res = await buildApp({ id: USER, organizationId: ORG }).request('/ok');
     expect(res.status).toBe(200);
 
     const ctx = new RequestContext();
-    ctx.set('user', { workosId: USER, organizationId: ORG });
+    ctx.set('user', { id: USER, organizationId: ORG });
     // Snapshot already hydrated by the primer — sync read works immediately.
     expect(resolveCredentialStore(ctx)!.getStoredApiKey('openai')).toBe('user-key');
   });

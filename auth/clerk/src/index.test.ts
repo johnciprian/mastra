@@ -41,7 +41,11 @@ describe('MastraAuthClerk', () => {
   };
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset, not clear: `clearAllMocks` drops call history but keeps
+    // implementations, so a `mockResolvedValue` set by one test answered every
+    // later test that did not set its own. Declaration order hid it; shuffled,
+    // tests inherited each other's identities.
+    vi.resetAllMocks();
     (createClerkClient as any).mockReturnValue(mockClerkClient);
     mockFetch.mockReset();
   });

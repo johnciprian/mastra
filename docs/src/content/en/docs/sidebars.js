@@ -459,6 +459,14 @@ const sidebars = {
             },
             {
               type: 'doc',
+              id: 'auth/provider-obligations',
+              label: 'Provider Obligations',
+              customProps: {
+                tags: ['new'],
+              },
+            },
+            {
+              type: 'doc',
               id: 'auth/simple-auth',
               label: 'Simple Auth',
             },
@@ -466,6 +474,14 @@ const sidebars = {
               type: 'doc',
               id: 'auth/workers',
               label: 'Workers',
+              customProps: {
+                tags: ['new'],
+              },
+            },
+            {
+              type: 'doc',
+              id: 'auth/write-a-provider',
+              label: 'Write an Auth Provider',
               customProps: {
                 tags: ['new'],
               },

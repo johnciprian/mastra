@@ -1,6 +1,12 @@
 import { RequestContext } from '@mastra/core/request-context';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { factoryRunTenant } from '../../auth.js';
 import type { GithubIntegration } from './integration.js';
+
+// The identity port, backed by the real resolver: these tests assert which
+// session a subscription is scoped to, so a hand-rolled tenant could disagree
+// with the one the app computes and hide a scoping bug.
+const auth = { runTenant: factoryRunTenant };
 
 const mocks = vi.hoisted(() => ({
   subscribe: vi.fn(async (_input: { sessionScope: string }) => ({ created: true })),
@@ -65,7 +71,7 @@ import { registerGithubPatKind, registerGithubTokenInjector } from './token-refr
 
 function authenticatedRequestContext(scope = '/worktrees/a') {
   const requestContext = new RequestContext();
-  requestContext.set('user', { workosId: 'user-1', organizationId: 'org-1' });
+  requestContext.set('user', { id: 'user-1', organizationId: 'org-1' });
   requestContext.set('controller', {
     resourceId: 'resource-1',
     threadId: 'thread-1',
@@ -132,15 +138,15 @@ describe('GitHub subscription entry points', () => {
     const requestContext = new RequestContext();
     requestContext.set('controller', { getState: () => ({ projectRepositoryId: 'project-repository-1' }) });
 
-    expect(createGithubSubscriptionTools(requestContext, githubStub)).toEqual({});
+    expect(createGithubSubscriptionTools(requestContext, auth, githubStub)).toEqual({});
   });
 
   it('does not expose tools without an active thread', () => {
     const requestContext = new RequestContext();
-    requestContext.set('user', { workosId: 'user-1', organizationId: 'org-1' });
+    requestContext.set('user', { id: 'user-1', organizationId: 'org-1' });
     requestContext.set('controller', { getState: () => ({ projectRepositoryId: 'project-repository-1' }) });
 
-    expect(createGithubSubscriptionTools(requestContext, githubStub)).toEqual({});
+    expect(createGithubSubscriptionTools(requestContext, auth, githubStub)).toEqual({});
   });
 
   it('mints repository access and injects the fresh token into the active sandbox', async () => {
@@ -148,7 +154,7 @@ describe('GitHub subscription entry points', () => {
     const inject = vi.fn();
     registerGithubTokenInjector(requestContext, inject);
 
-    await expect(refreshGithubToken(requestContext, githubStub)).resolves.toBeUndefined();
+    await expect(refreshGithubToken(requestContext, auth, githubStub)).resolves.toBeUndefined();
 
     expect(mocks.getRepositoryAccess).toHaveBeenCalledWith({ orgId: 'org-1', repositoryId: 'repository-1' });
     expect(inject).toHaveBeenCalledWith('fresh-gh-token');
@@ -160,7 +166,7 @@ describe('GitHub subscription entry points', () => {
     const inject = vi.fn();
     registerGithubTokenInjector(requestContext, inject);
 
-    await expect(refreshGithubToken(requestContext, githubStub)).resolves.toBeUndefined();
+    await expect(refreshGithubToken(requestContext, auth, githubStub)).resolves.toBeUndefined();
 
     expect(inject).toHaveBeenCalledWith('ghp_org_pat');
     expect(mocks.getRepositoryAccess).not.toHaveBeenCalled();
@@ -173,7 +179,7 @@ describe('GitHub subscription entry points', () => {
     registerGithubTokenInjector(requestContext, inject);
     registerGithubPatKind(requestContext, 'reviewer');
 
-    await expect(refreshGithubToken(requestContext, githubStub)).resolves.toBeUndefined();
+    await expect(refreshGithubToken(requestContext, auth, githubStub)).resolves.toBeUndefined();
 
     expect(inject).toHaveBeenCalledWith('ghp_reviewer');
   });
@@ -189,14 +195,14 @@ describe('GitHub subscription entry points', () => {
     });
 
     await expect(
-      subscribeCurrentSessionToPullRequest(requestContext, 123, 'auto-gh-pr-create', githubStub),
+      subscribeCurrentSessionToPullRequest(requestContext, auth, 123, 'auto-gh-pr-create', githubStub),
     ).resolves.toBeUndefined();
     expect(mocks.subscribe).not.toHaveBeenCalled();
   });
 
   it('still rejects the explicit tool path outside repository sessions', async () => {
     await expect(
-      subscribeCurrentSessionToPullRequest(new RequestContext(), 123, 'explicit-tool', githubStub),
+      subscribeCurrentSessionToPullRequest(new RequestContext(), auth, 123, 'explicit-tool', githubStub),
     ).rejects.toThrow('GitHub subscriptions require an authenticated repository session with an active thread.');
     expect(mocks.subscribe).not.toHaveBeenCalled();
   });
@@ -204,8 +210,8 @@ describe('GitHub subscription entry points', () => {
   it('subscribes the exact scoped session after verifying the active-project PR', async () => {
     const requestContext = authenticatedRequestContext('/worktrees/a');
 
-    await subscribeCurrentSessionToPullRequest(requestContext, 123, 'auto-gh-pr-create', githubStub);
-    await subscribeCurrentSessionToPullRequest(requestContext, 123, 'auto-gh-pr-create', githubStub);
+    await subscribeCurrentSessionToPullRequest(requestContext, auth, 123, 'auto-gh-pr-create', githubStub);
+    await subscribeCurrentSessionToPullRequest(requestContext, auth, 123, 'auto-gh-pr-create', githubStub);
 
     expect(mocks.getPullRequest).toHaveBeenCalledWith({ owner: 'mastra-ai', repo: 'mastra', pull_number: 123 });
     expect(mocks.subscribe).toHaveBeenCalledTimes(2);
@@ -225,6 +231,7 @@ describe('GitHub subscription entry points', () => {
     await expect(
       subscribeCurrentSessionToPullRequest(
         authenticatedRequestContext(),
+        auth,
         'https://github.com/other/repo/pull/123',
         'explicit-tool',
         githubStub,
@@ -236,12 +243,14 @@ describe('GitHub subscription entry points', () => {
   it('keeps parallel worktree scopes isolated', async () => {
     await subscribeCurrentSessionToPullRequest(
       authenticatedRequestContext('/worktrees/a'),
+      auth,
       123,
       'explicit-tool',
       githubStub,
     );
     await subscribeCurrentSessionToPullRequest(
       authenticatedRequestContext('/worktrees/b'),
+      auth,
       123,
       'explicit-tool',
       githubStub,
@@ -253,6 +262,7 @@ describe('GitHub subscription entry points', () => {
   it('unsubscribes only the current scoped thread target', async () => {
     const number = await unsubscribeCurrentSessionFromPullRequest(
       authenticatedRequestContext('/worktrees/a'),
+      auth,
       'https://github.com/mastra-ai/mastra/pull/123',
       githubStub,
     );

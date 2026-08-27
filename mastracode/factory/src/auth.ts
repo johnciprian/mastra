@@ -1,24 +1,32 @@
-import { MastraAuthWorkos } from '@mastra/auth-workos';
 import {
   registerApiRoute,
+  canClearSession,
   isAuthHttpHandler,
-  isCredentialsProvider,
   isOrganizationsProvider,
   isSessionProvider,
   isSSOProvider,
 } from '@mastra/core/server';
 import type { ApiRoute, IMastraAuthProvider, ISessionProvider } from '@mastra/core/server';
+import { toAuthDescriptor } from '@mastra/factory-auth/capabilities';
+import type { AuthDescriptor } from '@mastra/factory-auth/capabilities';
+import { getRequestHeader } from '@mastra/factory-auth/contract';
+import { clearSessionCookie, mintSessionCookie, readSessionCookie } from '@mastra/factory-auth/cookie';
+import type { SessionCookieSite } from '@mastra/factory-auth/cookie';
+import { toAuthIdentity } from '@mastra/factory-auth/identity';
+import type { AuthIdentity } from '@mastra/factory-auth/identity';
+import { decodeState, encodeState } from '@mastra/factory-auth/oauth-state';
+import { resolveOrganizationId } from '@mastra/factory-auth/organizations';
 import type { Context, Hono } from 'hono';
 
-import type { RouteAuth } from './routes/route.js';
+import type { RouteAuth, RouteAuthProfile } from './routes/route.js';
 import { timedAboveThreshold } from './timing.js';
 
 /**
  * Provider-neutral factory auth gating for the MastraCode web server.
  *
- * When an auth provider is active (a `MastraAuthProvider` instance passed to
- * `MastraFactory`'s `auth` slot, or — back-compat for suites/paths that never
- * boot the factory — implied by the WorkOS env vars), every route on the web
+ * When an auth provider is active — a `MastraAuthProvider` instance passed to
+ * `MastraFactory`'s `auth` slot, which is the only way to activate one — every
+ * route on the web
  * server is placed behind it: unauthenticated browser navigations are
  * redirected to the SPA's `/signin` page, API/XHR calls receive a 401, and a
  * small set of public routes stay reachable while signed out — the provider's
@@ -33,15 +41,108 @@ import { timedAboveThreshold } from './timing.js';
  * - `ISSOProvider` — hosted-login `/auth/login`, `/auth/callback`, `/auth/logout`
  * - `IAuthHttpHandler` — provider-owned `/auth/api/*` endpoints (better-auth)
  * - `IOrganizationsProvider` — personal-org bootstrap + admin checks
- * - `ICredentialsProvider.isSignUpEnabled` — SPA sign-up affordance
- * - `getClearSessionHeaders` — session cookie clearing on logout
+ * - `ICredentialsProvider.isSignUpEnabled` — SPA sign-up affordance, read
+ *   through the kit's capability descriptor (see {@link authMeta})
+ * - `ISessionClearer` — session cookie clearing on logout, which a provider can
+ *   implement on its own without the rest of `ISessionProvider`
+ *
+ * One behavioural switch lives here: {@link isAuthIdentityV2Enabled}, now on by
+ * default and kept for one release as the rollback for the identity, session
+ * and logout migration. See its doc comment.
  */
 
-/** Minimal shape of the signed-in user surfaced to the SPA (no tokens). */
+/**
+ * Name of the compat flag for the v2 identity path. On unless explicitly
+ * disabled — see {@link isAuthIdentityV2Enabled}.
+ */
+export const AUTH_IDENTITY_V2_ENV_VAR = 'MASTRACODE_AUTH_IDENTITY_V2';
+
+/**
+ * Parse the compat flag's value. Opt-**out** only: `0` and `false` (any case,
+ * any surrounding whitespace) turn it off, and every other value leaves it on —
+ * `1`, `true`, an unset variable, the empty string, and anything unrecognized
+ * alike.
+ *
+ * WHY THE SAFE DIRECTION FLIPPED
+ *
+ * This started opt-in, and rejected unrecognized values for a reason worth
+ * restating rather than deleting: the default was the shipped path, so a
+ * mistyped value had to land there instead of opting a deployment into a
+ * migration nobody had chosen.
+ *
+ * Both halves of that have now moved. The v2 path is the shipped path — it is
+ * what the suite runs, what the conformance suite checks providers against, and
+ * the only path where a `{ uid }` or `{ sub }` provider authenticates at all.
+ * The legacy reader is the exception, kept reachable for one release so an
+ * operator who hits a surprise has a way back. So the value that must never be
+ * reached by accident is now the *old* one: a typo like `MASTRACODE_AUTH_IDENTITY_V2=flase`
+ * must leave the process on v2, not silently drop it onto a path with known
+ * defects. The rule is unchanged in spirit — an unrecognized value never
+ * selects the non-default path — and the non-default path is the other one now.
+ *
+ * Exported so the parsing rules are testable without reloading the module.
+ */
+export function readAuthIdentityV2Env(raw: string | undefined): boolean {
+  const normalized = raw?.trim().toLowerCase();
+  return !(normalized === '0' || normalized === 'false');
+}
+
+/**
+ * The flag's value for this process, captured once at module load. See
+ * {@link isAuthIdentityV2Enabled} for why it is read here and not per request.
+ */
+const AUTH_IDENTITY_V2 = readAuthIdentityV2Env(process.env[AUTH_IDENTITY_V2_ENV_VAR]);
+
+/**
+ * Whether the v2 identity path is enabled for this process
+ * (`MASTRACODE_AUTH_IDENTITY_V2`), defaulting to **on**.
+ *
+ * The identity, session and logout changes land together, and together they are
+ * the only part of this module that can break a live sign-in: they change how a
+ * provider's `authenticateToken` result becomes a {@link FactoryAuthUser}, which
+ * is the value every ownership check in the app compares against. A wrong answer
+ * there does not throw — it reads as "this session belongs to somebody else" at
+ * each check, and looks like data loss rather than an auth bug.
+ *
+ * That is why this is still a switch after the default flipped. The release is
+ * a soak, not a finished migration: set the variable to `false`, restart, and
+ * the process is back on the reader that shipped before. {@link legacyFactoryAuthUser}
+ * stays for exactly that, and the dual-path tests stay with it — deleting either
+ * is a separate decision, taken after the soak rather than as part of it.
+ *
+ * This is the single read site for the flag. Everything else branches on this
+ * function rather than reaching for `process.env` again, so that "what is this
+ * process running?" has exactly one answer.
+ *
+ * READ ONCE, AT MODULE LOAD, AND THAT IS DELIBERATE
+ *
+ * A flag re-read per request can change value inside a running process, and a
+ * session resolved on the v2 path but re-checked on the v1 path is precisely the
+ * half-migrated state the flag exists to prevent. The gate also runs this on
+ * every protected request, so one read is the cheaper shape besides.
+ *
+ * The cost is paid by tests: assigning to `process.env` after this module has
+ * been imported does nothing. Reach the other path by reloading the module —
+ * `vi.resetModules()` then `await import('./auth.js')` — as the compat-flag
+ * suite in `auth-seam.test.ts` does. {@link readAuthIdentityV2Env} is exported
+ * separately so the parsing rules need no reload at all.
+ */
+export function isAuthIdentityV2Enabled(): boolean {
+  return AUTH_IDENTITY_V2;
+}
+
+/**
+ * Minimal shape of the signed-in user surfaced to the SPA (no tokens).
+ *
+ * There is no vendor field. The type used to carry `workosId` beside `id`, which
+ * meant every consumer had to decide which of the two was the real key — and a
+ * vendor name in the neutral type is the tell that identity was never really
+ * abstracted. Whatever the provider called its identifier, it arrives here as
+ * {@link id}; see {@link legacyFactoryAuthUser} for how the pre-kit reader folds
+ * `workosId` into it without changing which value wins.
+ */
 export interface FactoryAuthUser {
-  /** Stable WorkOS user id used to scope per-user data (GitHub installs etc.). */
-  workosId?: string;
-  /** Provider user id; WorkOS shapes may use `workosId` instead (see {@link workosId}). */
+  /** Stable provider user id, used to scope per-user data (GitHub installs etc.). */
   id?: string;
   email?: string;
   name?: string;
@@ -58,11 +159,22 @@ export interface FactoryAuthUser {
 /**
  * Tenant identity: the org is the top-level tenant, and each user inside it is
  * an isolated builder. Agent state, worktrees and sandboxes are scoped per
- * `(orgId, userId)`. Personal (no-org) users have `orgId === undefined`.
+ * `(orgId, userId)`.
+ *
+ * `orgId` is always a string. It used to be optional, and every org-gated route
+ * had to decide what to do when it was missing — they all decided to 403, so a
+ * signed-in user whose provider has no organization concept could not reach the
+ * board at all. The kit resolves a deterministic `user:<userId>` organization
+ * for exactly that case, which is a private organization of one rather than an
+ * absent one, so the branch that produced the 403 no longer exists to be
+ * written.
  */
 export interface FactoryAuthTenant {
-  /** Organization id, or `undefined` for personal (no-org) accounts. */
-  orgId?: string;
+  /**
+   * Organization id. A real one when the provider declares it, otherwise a
+   * synthetic id derived from the user id — see {@link factoryAuthTenant}.
+   */
+  orgId: string;
   /** Stable provider user id. */
   userId: string;
 }
@@ -88,6 +200,35 @@ export function getBearerToken(authorization: string | undefined): string {
 }
 
 /**
+ * The token to hand a provider's `authenticateToken` for this request.
+ *
+ * The `Authorization` header first, because an API client that sent one means
+ * it. A browser navigation sends no such header, and the empty string it yields
+ * is the provider's documented signal to go read the `Cookie` header itself —
+ * which is what every provider-minted session still relies on.
+ *
+ * When this host owns the session cookie, its signed value is read here and
+ * passed in explicitly instead. That is the difference the kit makes: the token
+ * reaches the provider as an argument rather than each provider re-deriving it
+ * from a header, and a cookie that fails its signature check or has expired
+ * yields `''` — indistinguishable from no cookie at all, which is exactly how
+ * a forged one should read.
+ */
+function requestAuthToken(c: Context): string {
+  const bearer = getBearerToken(c.req.header('Authorization'));
+  if (bearer) return bearer;
+  const secret = authSessionSecret();
+  if (!isAuthIdentityV2Enabled() || secret === undefined) return '';
+  try {
+    return readSessionCookie(c.req.raw, { secret }) ?? '';
+  } catch {
+    // A malformed cookie is not a reason to 500 a request that is merely
+    // unauthenticated.
+    return '';
+  }
+}
+
+/**
  * Whether the SPA is served cross-origin from this API (platform deploy). When
  * `MASTRACODE_ALLOWED_ORIGINS` is set the browser talks to us cross-site, so
  * session cookies must be `SameSite=None; Secure` for the browser to send them.
@@ -95,6 +236,60 @@ export function getBearerToken(authorization: string | undefined): string {
  */
 export function isCrossSiteAuth(): boolean {
   return Boolean(process.env.MASTRACODE_ALLOWED_ORIGINS?.trim());
+}
+
+/**
+ * Name of the env var holding the HMAC secret for the host's own session cookie.
+ *
+ * Must be at least 32 bytes and identical on every instance a request might
+ * land on — two replicas with different secrets sign a user out every time the
+ * load balancer moves them.
+ */
+export const AUTH_SESSION_SECRET_ENV_VAR = 'MASTRACODE_AUTH_SESSION_SECRET';
+
+/**
+ * The host session-cookie secret, or `undefined` when none is configured.
+ *
+ * Read per call rather than captured at module load, unlike the compat flag:
+ * this one is a credential, and a process that rotates it (or a test that sets
+ * it) should not have to be restarted to be believed. It is read on the
+ * callback and on each gated request, which is a `process.env` lookup — cheaper
+ * than the HMAC it guards.
+ */
+function authSessionSecret(): string | undefined {
+  const secret = process.env[AUTH_SESSION_SECRET_ENV_VAR];
+  return secret && secret.length > 0 ? secret : undefined;
+}
+
+/**
+ * Whether this process mints, reads and clears its own session cookie through
+ * the kit, rather than leaving all three to the provider.
+ *
+ * Two conditions, and both are deliberate:
+ *
+ * - the identity compat flag, because a change to the session cookie is a
+ *   change to who is signed in, and it ships with the rest of that migration;
+ * - a configured secret, because {@link mintSessionCookie} refuses to sign with
+ *   a weak one and there is no safe default to invent. A deployment that turns
+ *   the flag on without setting the secret keeps the behaviour it had rather
+ *   than failing every sign-in, which is the direction that degrades safely.
+ *
+ * NOTE ON UPGRADING: the cookie the kit mints is not the cookie a provider
+ * minted, so sessions do not survive switching this on. Everyone signs in once
+ * more. That is a one-time cost of the host owning its own session, and it is
+ * why this is behind a flag rather than simply shipped.
+ */
+function hostOwnsSessionCookie(): boolean {
+  return isAuthIdentityV2Enabled() && authSessionSecret() !== undefined;
+}
+
+/**
+ * Where the browser sits relative to this API, in the shape the kit's cookie
+ * module takes. Drives `SameSite` and `Secure`, and with them whether the
+ * cookie can carry the `__Host-` prefix — see {@link sessionCookieName}.
+ */
+function sessionCookieSite(): SessionCookieSite {
+  return { crossSite: isCrossSiteAuth() };
 }
 
 /** Hono context variables set by the auth gate. */
@@ -133,9 +328,16 @@ export function getFactoryAuthUserFromContext(
   return toFactoryAuthUser(requestContext.get('user')) ?? undefined;
 }
 
-/** Resolve the stable user id from an authenticated user shape. */
+/**
+ * Resolve the stable user id from an authenticated user shape.
+ *
+ * One field now, because {@link FactoryAuthUser} has one. This used to read
+ * `workosId ?? id`, and that precedence is preserved where it mattered: the
+ * legacy reader folds `workosId` into `id` with the same precedence, so the
+ * value this returns is unchanged on both flag paths.
+ */
 export function getFactoryAuthUserId(user: FactoryAuthUser | undefined): string | undefined {
-  return user?.workosId ?? user?.id;
+  return user?.id;
 }
 
 /** Resolve the organization id from a user shape, if present. */
@@ -145,49 +347,162 @@ export function getFactoryAuthOrgId(user: FactoryAuthUser | undefined): string |
 
 /**
  * Resolve the tenant identity `(orgId, userId)` from the authenticated user on
- * the context. Returns `undefined` when there is no signed-in user (auth
- * disabled or unauthenticated). `orgId` is `undefined` for personal accounts;
- * callers gate org-scoped GitHub features on its presence while agent state
- * falls back to a user-only tenant.
+ * the context. Returns `undefined` when there is no signed-in user — auth
+ * disabled, or unauthenticated — and that is now the only reason it does.
+ *
+ * WHAT CHANGED, AND WHY IT IS NOT A WIDENING OF ACCESS
+ *
+ * `orgId` used to be optional, and a signed-in user whose provider has no
+ * organization concept resolved to no organization. Every org-gated route group
+ * then had the same decision to make with no good answer available, and each
+ * one made the safe-looking choice: refuse. The result was a user who had
+ * authenticated successfully, held a valid session, and could not open the
+ * board — with nothing in the logs saying "no organization", because 403 is
+ * what an unauthorized user gets too.
+ *
+ * `resolveOrganizationId` gives that case a real answer: a deterministic
+ * `user:<userId>` organization. It is derived from the user's own id, so it is
+ * unique to them and stable across processes and deploys — a private
+ * organization of one, not a shared bucket. Nobody gains access to anybody
+ * else's data; a user who previously had access to nothing gains access to
+ * their own.
+ *
+ * A declared organization always wins. The provider — or the session inside it
+ * — has said which organization this request is acting in, and preferring a
+ * derived id over that would move a member of a real organization into a
+ * private one, where their team's data is not.
  */
 export function factoryAuthTenant(c: Context): FactoryAuthTenant | undefined {
   const user = getFactoryAuthUser(c);
   const userId = getFactoryAuthUserId(user);
-  if (!userId) return undefined;
-  return { orgId: getFactoryAuthOrgId(user), userId };
-}
-
-/** True when both WorkOS credential env vars are present (legacy env gate). */
-function envWorkosConfigured(): boolean {
-  return Boolean(process.env.WORKOS_API_KEY && process.env.WORKOS_CLIENT_ID);
+  // Blank counts as absent. The pre-kit reader accepts a whitespace-only id and
+  // hands it back verbatim, so this is reachable with the compat flag off — and
+  // an id that is all spaces is a storage key every such user would share.
+  // `resolveOrganizationId` refuses to derive an organization from one and
+  // throws, which on a gated route is a 500 rather than the 401 the request
+  // deserves. Answering "no tenant" here keeps the refusal and drops the crash.
+  if (!userId || userId.trim() === '') return undefined;
+  return { orgId: resolveOrganizationId({ id: userId, organizationId: getFactoryAuthOrgId(user) }), userId };
 }
 
 /**
- * WorkOS provider implied by the `WORKOS_*` env vars — back-compat for test
- * suites exercised without booting the factory (route suites set `WORKOS_*`
- * directly and call {@link mountFactoryAuth} without an explicit provider).
- * `fetchMemberships: true` lets `authenticateToken` resolve `organizationId`
- * from a single membership when the JWT has no org claim — required so a
- * bootstrapped personal org resolves without re-auth.
+ * Display fields for the signed-in user: the `RouteAuth.profile` answer.
+ *
+ * The tenant tuple deliberately carries no name, and for authorization that is
+ * right. But the audit trail has to render a person, not an opaque id, and it
+ * cannot get one from an `IUserProvider.getUser(id)` lookup either — the Studio
+ * provider proxies through the shared API and always returns `null` for an
+ * arbitrary id. So the acting user's own profile has to be captured from the
+ * request that did the acting, which is exactly what this module already has
+ * and no route module does. Exposing it here is what lets the audit domain stop
+ * reading the gate's context variable itself.
+ *
+ * Gated on the same blank-id rule as {@link factoryAuthTenant}, so the two
+ * cannot disagree about whether there is a signed-in user at all. Blank display
+ * fields are dropped rather than passed through: a name of `"  "` renders as a
+ * missing name in a UI but is truthy in code, which is the kind of value that
+ * makes an actor look present and nameless.
  */
-function envFallbackAuthProvider(redirectUri: string | undefined): MastraAuthWorkos | undefined {
-  if (!envWorkosConfigured()) return undefined;
-  return new MastraAuthWorkos({
-    redirectUri: redirectUri ?? process.env.WORKOS_REDIRECT_URI,
-    fetchMemberships: true,
-  });
+export function factoryAuthProfile(c: Context): RouteAuthProfile | undefined {
+  const user = getFactoryAuthUser(c);
+  const userId = getFactoryAuthUserId(user);
+  if (!userId || userId.trim() === '') return undefined;
+  const name = user?.name?.trim();
+  const email = user?.email?.trim();
+  const avatarUrl = user?.avatarUrl?.trim();
+  return {
+    id: userId,
+    ...(name ? { name } : {}),
+    ...(email ? { email } : {}),
+    ...(avatarUrl ? { avatarUrl } : {}),
+  };
 }
 
 /**
  * Map a provider `authenticateToken` result onto the neutral SPA user shape.
  *
- * Two result families exist today:
+ * Two implementations, chosen by {@link isAuthIdentityV2Enabled}: the kit's
+ * {@link toAuthIdentity} when the flag is on, and {@link legacyFactoryAuthUser}
+ * — the code that shipped — when it is off.
+ *
+ * WHAT THE KIT CHANGES, MEASURED RATHER THAN ASSUMED
+ *
+ * The two agree on structure: a `{ session, user }` wrapper is recognized
+ * first, it never falls through to the flat reader, and the flat reader
+ * otherwise takes the top level. They disagree on which keys count, and the
+ * differences were enumerated by running both over a payload corpus rather than
+ * by reading the two functions side by side.
+ *
+ * Mostly the kit resolves users the old reader turned into `null`, which is the
+ * point of the change — a provider returning `{ uid }` (Firebase) or `{ sub }`
+ * (raw OIDC claims) authenticated as nobody, then failed somewhere unrelated
+ * with a message about state:
+ *
+ * - ids are read as `id` → `uid` → `sub`, not `id` alone;
+ * - the same three keys are read inside a `{ session, user }` wrapper, where
+ *   the old reader accepted only `user.id`;
+ * - a numeric or bigint id is coerced to its decimal string, rather than
+ *   rejected — a serial primary key behind a self-hosted provider is ordinary.
+ *
+ * None of them widens organization scope. The kit briefly did, by falling back
+ * to a wrapper's `user` half for an organization the session had not activated;
+ * P12 settled that closed, so both readers now take a wrapper's organization
+ * from `session.activeOrganizationId` and from nowhere else. A session that has
+ * activated none resolves to the user's private partition under either reader,
+ * which is why no assertion in this package's suite changes when the flag does.
+ *
+ * Two narrow it, both fail-closed and both fixes:
+ *
+ * - a blank or whitespace-only `id` is treated as absent. The old reader
+ *   returned it verbatim, so every user with a blank id shared one storage key;
+ * - `workosId` is not an id key. See below, because this is the one with a
+ *   production edge.
+ *
+ * THE `workosId` EDGE, AND WHY IT IS NARROW
+ *
+ * The old flat reader accepted `workosId` as an id, and {@link getFactoryAuthUserId}
+ * preferred it over `id`. `AuthIdentity` has no vendor field, so under the flag
+ * the key is simply `id`.
+ *
+ * That is a no-op against the real provider, which always emits both and sets
+ * `workosId` to the same value as `id`. It is observable only where a
+ * deployment has mapped `workosId` to a *different* JWT claim than the user id,
+ * and there the storage key moves from the one to the other. That is exactly
+ * the class of change the flag exists to make reversible.
+ */
+function toFactoryAuthUser(result: unknown, provider?: unknown): FactoryAuthUser | null {
+  if (isAuthIdentityV2Enabled()) return fromAuthIdentity(toAuthIdentity(result, provider));
+  return legacyFactoryAuthUser(result);
+}
+
+/**
+ * Widen an {@link AuthIdentity} to the shape the rest of this module still
+ * passes around. Field-for-field, minus `workosId`, which the kit's identity
+ * does not carry — so under the flag {@link getFactoryAuthUserId} resolves `id`,
+ * its only remaining source. B4 removes the field and this gap with it.
+ */
+function fromAuthIdentity(identity: AuthIdentity | null): FactoryAuthUser | null {
+  if (!identity) return null;
+  return {
+    id: identity.id,
+    email: identity.email,
+    name: identity.name,
+    avatarUrl: identity.avatarUrl,
+    organizationId: identity.organizationId,
+  };
+}
+
+/**
+ * The identity reader that shipped, kept reachable while the flag defaults off.
+ * Deleted once `MASTRACODE_AUTH_IDENTITY_V2` stops being a switch.
+ *
+ * Two result families:
  * - flat provider users (WorkOS `WorkOSUser` et al.): `id`/`workosId`/`email`/
  *   `name`/`organizationId` directly on the object;
  * - session-shaped results (better-auth `BetterAuthUser`): `{ session, user }`
  *   with the active org on the session.
  */
-function toFactoryAuthUser(result: unknown): FactoryAuthUser | null {
+function legacyFactoryAuthUser(result: unknown): FactoryAuthUser | null {
   if (!result || typeof result !== 'object') return null;
   const record = result as Record<string, unknown>;
 
@@ -221,8 +536,11 @@ function toFactoryAuthUser(result: unknown): FactoryAuthUser | null {
   const workosId = typeof flat.workosId === 'string' ? flat.workosId : undefined;
   if (!id && !workosId) return null;
   return {
-    id,
-    workosId,
+    // `workosId` first, then `id`. The neutral shape no longer has a vendor
+    // field, so the vendor key is folded into `id` here instead — in the order
+    // `getFactoryAuthUserId` used to apply itself, which is what keeps the
+    // resolved user id identical for every payload this reader accepts.
+    id: workosId ?? id,
     email: typeof flat.email === 'string' ? flat.email : undefined,
     name: typeof flat.name === 'string' ? flat.name : undefined,
     avatarUrl: typeof flat.avatarUrl === 'string' ? flat.avatarUrl : undefined,
@@ -233,6 +551,13 @@ function toFactoryAuthUser(result: unknown): FactoryAuthUser | null {
 /**
  * Resolve the authenticated user for a request via the provider. Never throws:
  * ordinary invalid/expired sessions resolve to `null`.
+ *
+ * The provider is handed to {@link toFactoryAuthUser} as well as called. Under
+ * the v2 path that lets a provider implementing the kit's `toIdentity` map its
+ * own payload — the escape hatch for a token shape the kit does not recognize,
+ * such as an id under a custom claim namespace. A mapper that throws is caught
+ * here like any other provider failure and resolves to `null`, which is the
+ * fail-closed direction: an unreadable payload authenticates nobody.
  */
 async function authenticateRequest(
   provider: IMastraAuthProvider,
@@ -241,9 +566,123 @@ async function authenticateRequest(
 ): Promise<FactoryAuthUser | null> {
   try {
     const result = await provider.authenticateToken(token, raw);
-    return toFactoryAuthUser(result);
+    return toFactoryAuthUser(result, provider);
   } catch {
     return null;
+  }
+}
+
+/** The three `ISessionProvider` members transparent refresh needs. */
+type SessionRefreshProvider = Pick<
+  ISessionProvider,
+  'refreshSession' | 'getSessionIdFromRequest' | 'getSessionHeaders'
+>;
+
+/**
+ * Whether a provider can refresh a session without sending the user back
+ * through a login.
+ *
+ * The three members are checked rather than `isSessionProvider`, and that is
+ * still right now the guard tests all seven. This function asks a narrower
+ * question than the guard: it needs exactly these three, and a provider that
+ * has them can refresh whether or not it implements the rest of the interface.
+ * Asking the guard would turn a smaller capability into no capability.
+ */
+function supportsSessionRefresh(
+  provider: IMastraAuthProvider,
+): provider is IMastraAuthProvider & SessionRefreshProvider {
+  const candidate = provider as Partial<ISessionProvider>;
+  return (
+    typeof candidate.getSessionIdFromRequest === 'function' &&
+    typeof candidate.refreshSession === 'function' &&
+    typeof candidate.getSessionHeaders === 'function'
+  );
+}
+
+/** What the gate learned about this request, plus any cookies it must send back. */
+interface AuthenticatedRequest {
+  user: FactoryAuthUser | null;
+  /** Response headers carrying a refreshed session, when one was minted. */
+  headers?: Record<string, string>;
+}
+
+/**
+ * Authenticate a request, transparently refreshing an expired session once
+ * before giving up.
+ *
+ * WHY THIS EXISTS
+ *
+ * `packages/server` already does this on `/api/*`, and the Factory did not. The
+ * same provider, with a working `refreshSession`, therefore kept an API client
+ * signed in indefinitely while signing a browser out of the Factory the moment
+ * its access token expired — the same session, two different lifetimes,
+ * depending only on which host served the route. That is the divergence this
+ * closes; it is not a new capability.
+ *
+ * HOW A REFRESH IS FED BACK IN
+ *
+ * A provider reads its session from the request's `Cookie` header, so handing
+ * it a refreshed session means handing it a request that carries one. The new
+ * cookie is built from `getSessionHeaders`, spliced into a copy of the original
+ * request, and the cookie's value is passed as the token as well — providers
+ * differ on which of the two they read, and the two agree here.
+ *
+ * FAILURE IS ALWAYS THE ORIGINAL 401
+ *
+ * A refresh that returns nothing, throws, or produces a session that still does
+ * not authenticate leaves `user` null and drops the headers. Sending a
+ * `Set-Cookie` for a session that did not work would replace a cookie the
+ * browser has with one that is no better, and the person would be signed out
+ * with a fresh cookie in hand.
+ */
+async function authenticateWithRefresh(
+  provider: IMastraAuthProvider,
+  token: string,
+  c: Context,
+): Promise<AuthenticatedRequest> {
+  const user = await authenticateRequest(provider, token, c.req.raw);
+  if (user) return { user };
+  if (!supportsSessionRefresh(provider)) return { user: null };
+
+  try {
+    const sessionId = provider.getSessionIdFromRequest(c.req.raw);
+    if (!sessionId) return { user: null };
+
+    const session = await provider.refreshSession(sessionId);
+    if (!session) return { user: null };
+
+    const headers = provider.getSessionHeaders(session);
+    const cookiePair = Object.entries(headers)
+      .filter(([key]) => key.toLowerCase() === 'set-cookie')
+      .map(([, value]) => value.split(';')[0]?.trim() ?? '')
+      .filter(pair => pair.length > 0)
+      .join('; ');
+    if (!cookiePair) return { user: null };
+
+    const refreshedRequest = new Request(c.req.raw.url, {
+      method: c.req.raw.method,
+      headers: new Headers(c.req.raw.headers),
+    });
+    refreshedRequest.headers.set('Cookie', cookiePair);
+    const refreshedValue = cookiePair.includes('=') ? cookiePair.slice(cookiePair.indexOf('=') + 1) : cookiePair;
+
+    const refreshedUser = await authenticateRequest(provider, refreshedValue, refreshedRequest);
+    if (!refreshedUser) return { user: null };
+
+    // When this host owns the session cookie, the browser is holding ours
+    // rather than the provider's, so the refreshed token has to be re-minted
+    // under our name too — otherwise the next request presents the old one.
+    const secret = authSessionSecret();
+    if (hostOwnsSessionCookie() && secret !== undefined) {
+      return {
+        user: refreshedUser,
+        headers: { ...headers, 'Set-Cookie': mintSessionCookie(refreshedValue, { ...sessionCookieSite(), secret }) },
+      };
+    }
+    return { user: refreshedUser, headers };
+  } catch {
+    // A provider that throws mid-refresh is a provider that cannot refresh.
+    return { user: null };
   }
 }
 
@@ -269,17 +708,106 @@ async function ensureUserOrg(provider: IMastraAuthProvider, user: FactoryAuthUse
 }
 
 /**
- * `Set-Cookie` values that clear the provider's session cookie(s), from the
- * provider's (possibly partial) `ISessionProvider.getClearSessionHeaders`.
+ * `Set-Cookie` values that clear the provider's session cookie(s).
+ *
+ * Gated on `canClearSession`, which narrows to `ISessionClearer` - the
+ * one-member interface a provider can implement on its own. It used to read the
+ * member off a `Partial<ISessionProvider>` cast, which worked and was described
+ * by no interface: `@mastra/auth-better-auth` implements exactly this one member
+ * and nothing else, and a fresh reader following the declarations would not have
+ * found a way to do that. Every full `ISessionProvider` satisfies the guard too.
+ *
+ * THE UN-JOIN, AND WHAT IT IS DEFENDING AGAINST
+ *
+ * `getClearSessionHeaders` returns a `Record<string, string>`, so a provider
+ * clearing two cookies has one slot to put them in and joins them with a comma
+ * — which is how `Set-Cookie` is folded in HTTP/1.1, and is exactly what
+ * `Headers.get('set-cookie')` hands back for multiple values. Appending that
+ * joined string as a single header writes one malformed cookie and clears
+ * neither, so it has to be split again.
+ *
+ * A plain `split(',')` cannot do it: a cookie's own `Expires` attribute
+ * contains a comma (`Expires=Thu, 01 Jan 1970 00:00:00 GMT`), and splitting
+ * there produces two fragments that are each nonsense. The lookahead requires
+ * the comma to be followed by something shaped like `name=`, which an
+ * `Expires` date is not — the day name is followed by a space and digits.
+ *
+ * It is a heuristic over a format that was never meant to be re-parsed, so the
+ * malformed-header case it defends against is pinned by tests rather than left
+ * to be rediscovered.
  */
 function providerClearCookies(provider: IMastraAuthProvider): string[] {
-  const getClearSessionHeaders = (provider as Partial<ISessionProvider>).getClearSessionHeaders;
-  if (typeof getClearSessionHeaders !== 'function') return [];
-  const headers = getClearSessionHeaders.call(provider) ?? {};
+  if (!canClearSession(provider)) return [];
+  const headers = provider.getClearSessionHeaders() ?? {};
   const setCookie = headers['Set-Cookie'];
   if (!setCookie) return [];
   // A provider may join several clearing cookies into one header value.
   return setCookie.split(/,(?=\s*[^;=,\s]+=)/).map(cookie => cookie.trim());
+}
+
+/**
+ * Revoke the caller's session server-side, where the provider can.
+ *
+ * Both halves are checked as methods rather than through `isSessionProvider`.
+ * The guard now tests all seven members, so asking it here would decline to
+ * revoke for a provider that has `getSessionIdFromRequest` and
+ * `destroySession` but not the rest — the two this needs and the only two it
+ * calls. Mirrors what `packages/server` does at its own logout — read the
+ * session id off the request, then destroy it.
+ *
+ * Best-effort by design. A provider that throws here has still had its cookies
+ * cleared by the caller, so the browser is signed out either way; failing the
+ * whole request would leave the person looking at an error while their cookie
+ * was already gone.
+ */
+async function revokeProviderSession(provider: IMastraAuthProvider, c: Context): Promise<void> {
+  const session = provider as Partial<ISessionProvider>;
+  if (typeof session.getSessionIdFromRequest !== 'function' || typeof session.destroySession !== 'function') return;
+  try {
+    const sessionId = session.getSessionIdFromRequest(c.req.raw);
+    if (!sessionId) return;
+    await session.destroySession(sessionId);
+  } catch {
+    // Already-expired or unknown session: nothing left to revoke.
+  }
+}
+
+/**
+ * Whether a GET `/auth/logout` came from a real browser navigation rather than
+ * a sub-resource load on somebody else's page.
+ *
+ * A GET that signs the caller out is CSRF-triggerable: `<img src="/auth/logout">`
+ * on any page silently ends the visitor's session. `Sec-Fetch-Dest` is what
+ * separates the two — a top-level navigation sends `document`, an `<img>` sends
+ * `image`, a `<script>` sends `script`. It is a forbidden header name, so a
+ * page cannot set it, which is what makes it usable as a defence rather than a
+ * hint.
+ *
+ * A request with no `Sec-Fetch-Dest` is allowed through: browsers that predate
+ * the header exist, and refusing them would break sign-out for those people
+ * rather than protecting them. That is the residual gap, and it is why this is
+ * a shim on a deprecated route rather than the answer — `POST /auth/logout`
+ * needs no such inference.
+ */
+function isLogoutNavigation(c: Context): boolean {
+  const destination = c.req.header('Sec-Fetch-Dest');
+  if (!destination) return true;
+  return destination === 'document';
+}
+
+/**
+ * Every `Set-Cookie` a sign-out should emit: the provider's own clearing
+ * cookies, plus this host's when it owns one.
+ *
+ * Both, not either. A deployment that switched the host cookie on still has
+ * users holding provider-minted cookies from before the switch, and a sign-out
+ * that cleared only one of the two would leave the other behind — which reads
+ * as "sign out did nothing" to the one person it happens to.
+ */
+function sessionClearCookies(provider: IMastraAuthProvider): string[] {
+  const cookies = providerClearCookies(provider);
+  if (hostOwnsSessionCookie()) cookies.push(clearSessionCookie(sessionCookieSite()));
+  return cookies;
 }
 
 /**
@@ -316,23 +844,36 @@ export function createFactoryRouteAuth(provider: IMastraAuthProvider | undefined
     enabled: () => provider !== undefined,
     ensureUser: (c: Context) => ensureFactoryAuthUser(provider, c),
     tenant: (c: Context) => factoryAuthTenant(c),
+    runTenant: (requestContext: RequestContextLike | undefined) => factoryRunTenant(requestContext),
+    profile: (c: Context) => factoryAuthProfile(c),
     isOrganizationAdmin: (c: Context, organizationId: string) => isOrganizationAdmin(provider, c, organizationId),
   };
 }
 
-/** True when the given provider is WorkOS. Gates WorkOS-only capabilities. */
-export function isWorkOSAuth(provider: IMastraAuthProvider | undefined): boolean {
-  return provider instanceof MastraAuthWorkos;
+/** The only shape {@link factoryRunTenant} needs from a request context. */
+export interface RequestContextLike {
+  get: (key: string) => unknown;
 }
 
 /**
- * The raw WorkOS provider, for features that need the WorkOS client directly
- * (audit-log export, Admin Portal links). Callers must gate on
- * {@link isWorkOSAuth} first — throws when the provider is not WorkOS.
+ * Tenant identity for an agent-run request context, rather than an HTTP one.
+ *
+ * The same answer {@link factoryAuthTenant} gives, reached from the other
+ * direction. Agent runs — dynamic workspace resolution, rule tools, session
+ * subscriptions — execute under a `RequestContext` and never see the Hono
+ * `Context` the rest of the seam takes, which is why those three modules
+ * historically read identity out of the raw context themselves and were the
+ * only callers left bypassing this port.
+ *
+ * The org resolution and the blank-id guard are identical on purpose: two
+ * entry points that disagreed about who a caller is would be worse than the
+ * bypass they replace.
  */
-export function getWorkOSProvider(provider: IMastraAuthProvider | undefined): MastraAuthWorkos {
-  if (provider instanceof MastraAuthWorkos) return provider;
-  throw new Error('WorkOS provider requested but the active factory auth provider is not WorkOS');
+export function factoryRunTenant(requestContext: RequestContextLike | undefined): FactoryAuthTenant | undefined {
+  const user = getFactoryAuthUserFromContext(requestContext);
+  const userId = getFactoryAuthUserId(user);
+  if (!userId || userId.trim() === '') return undefined;
+  return { orgId: resolveOrganizationId({ id: userId, organizationId: user?.organizationId }), userId };
 }
 
 /**
@@ -355,7 +896,7 @@ export async function ensureFactoryAuthUser(
   if (existing) return existing;
   if (!provider) return undefined;
 
-  const token = getBearerToken(c.req.header('Authorization'));
+  const token = requestAuthToken(c);
   const user = await authenticateRequest(provider, token, c.req.raw);
   if (!user) return undefined;
 
@@ -367,16 +908,15 @@ export async function ensureFactoryAuthUser(
 
 export interface MountFactoryAuthOptions {
   /**
-   * Explicit auth provider to mount. When omitted, falls back to a WorkOS
-   * provider implied by the `WORKOS_*` env vars (back-compat for suites that
-   * never boot the factory).
+   * The auth provider to mount. Omitting it leaves auth disabled.
+   *
+   * There is no environment fallback. Which provider is active used to depend
+   * on whether two `WORKOS_*` variables happened to be set in the process, so a
+   * deployment could acquire an identity provider it never configured — and the
+   * host had to name a vendor to offer that. The provider is now passed in, by
+   * whoever decided on it.
    */
   provider?: IMastraAuthProvider;
-  /**
-   * Absolute URL the identity provider redirects back to after login (WorkOS
-   * env-fallback path only). Defaults to the `WORKOS_REDIRECT_URI` env var.
-   */
-  redirectUri?: string;
   /** Browser-facing origin used to derive the SSO callback URL. */
   publicUrl?: string;
 }
@@ -392,19 +932,71 @@ function isNavigationRequest(path: string, accept: string | undefined): boolean 
 }
 
 /**
+ * Provider description for the SPA, identical whether or not the caller has a
+ * session, and the same object on every `/auth/me` response.
+ *
+ * `auth` is the capability descriptor: what this provider can do, in the shape
+ * `@mastra/factory-auth` declares, so `/signin` can branch on capabilities
+ * instead of on a vendor name. `provider` is the old answer — a bare name the
+ * SPA still switches on — and it stays for one release so a browser holding a
+ * cached bundle keeps working across the deploy. U9 removes it.
+ *
+ * THE TWO SIGN-UP FIELDS, AND WHY THEY ARE DERIVED RATHER THAN COMPUTED TWICE
+ *
+ * This response carries the same fact under two names of opposite polarity for
+ * one release: `auth.signIn.signUpEnabled` is positive (it matches the provider
+ * method, `isSignUpEnabled`), and the legacy `signUpDisabled` is negative. That
+ * is the shape `factory-ui` reads today, so it cannot simply be dropped, and
+ * U9 is where it goes.
+ *
+ * The hazard is a missing `!`. A sign-up link rendered on a deployment that
+ * deliberately disabled sign-up looks like a working page from every angle —
+ * nothing errors, nothing logs, and the only symptom is accounts that should
+ * not exist. So `signUpDisabled` is *derived from* the descriptor here rather
+ * than computed a second time from the provider: there is exactly one call to
+ * `isSignUpEnabled` behind both fields, one negation between them, and no way
+ * for the pair to drift apart as the code around them changes.
+ *
+ * That negation is also stricter than the expression it replaces, deliberately.
+ * `toAuthDescriptor` answers `false` for a provider whose `isSignUpEnabled`
+ * throws or returns a non-boolean (an `async` implementation returns a Promise,
+ * which is truthy), where the old inline `=== false` let both cases through as
+ * "sign-up is on". Both fields now fail closed on a misbehaving provider.
+ *
+ * `credentialsBasePath` is left at the kit's default, `/auth`, because that is
+ * where {@link registerAuthRoutes} and {@link buildAuthRoutes} mount this
+ * host's auth routes. A credentials provider's own endpoints hang below it at
+ * `/auth/api/*`, which is what the SPA posts to.
+ */
+function authMeta(provider: IMastraAuthProvider): {
+  /**
+   * Optional because `IMastraAuthProvider.name` is. An unnamed provider drops
+   * the key from the JSON rather than sending `null`, which is what this
+   * response has always done and what the SPA's optional `provider?: string`
+   * already expects.
+   */
+  provider: string | undefined;
+  auth: AuthDescriptor;
+  signUpDisabled?: true;
+} {
+  const auth = toAuthDescriptor(provider);
+  const signUpDisabled = auth.signIn.signUpEnabled === false;
+  return { provider: provider.name, auth, ...(signUpDisabled ? { signUpDisabled: true } : {}) };
+}
+
+/**
  * Handle the provider-neutral `/auth/me` route: validate the session with the
  * active provider and report the signed-in user (no tokens) to the SPA.
  * `/auth/me` is public (the gate skips `/auth/*`), so it validates the session
  * itself rather than reading a value the gate would have stashed.
+ *
+ * Both responses carry {@link authMeta}, so a signed-out browser learns how to
+ * sign in from the same payload that tells it that it is signed out.
  */
 async function handleAuthMe(provider: IMastraAuthProvider, c: Context): Promise<Response> {
-  const token = getBearerToken(c.req.header('Authorization'));
+  const token = requestAuthToken(c);
   const user = await authenticateRequest(provider, token, c.req.raw);
-  // Provider identity for the SPA: `/signin` renders the hosted-login button
-  // for WorkOS and an email/password form for better-auth (with sign-up hidden
-  // when the provider disables it).
-  const signUpDisabled = isCredentialsProvider(provider) && provider.isSignUpEnabled?.() === false;
-  const meta = { provider: provider.name, ...(signUpDisabled ? { signUpDisabled: true } : {}) };
+  const meta = authMeta(provider);
   if (!user) {
     return c.json({ authenticated: false, user: null, ...meta });
   }
@@ -421,31 +1013,6 @@ async function handleAuthMe(provider: IMastraAuthProvider, c: Context): Promise<
     },
     ...meta,
   });
-}
-
-/**
- * Encode a validated returnTo path into the OAuth `state` parameter.
- *
- * Pipe format (`uuid|encodedPath`) is the contract `MastraAuthStudio` parses
- * to forward the path as the platform's `post_login_redirect`; a JSON blob
- * here silently degrades every post-login redirect to `/`.
- */
-function encodeState(returnTo: string): string {
-  return `${crypto.randomUUID()}|${encodeURIComponent(returnTo)}`;
-}
-
-/** Decode the OAuth `state` parameter back into a sanitized returnTo path. */
-function decodeState(state: string | undefined): string {
-  if (!state) return '/';
-  const pipeIndex = state.indexOf('|');
-  if (pipeIndex !== -1) {
-    try {
-      return sanitizeReturnTo(decodeURIComponent(state.slice(pipeIndex + 1)));
-    } catch {
-      return '/';
-    }
-  }
-  return '/';
 }
 
 /**
@@ -548,7 +1115,7 @@ function providerAuthRoutes(provider: IMastraAuthProvider, publicUrl?: string): 
         method: 'GET',
         handler: async c => {
           const code = c.req.query('code');
-          const stateReturnTo = decodeState(c.req.query('state'));
+          const { returnTo: stateReturnTo } = decodeState(c.req.query('state'));
           const cookieReturnTo = sanitizeReturnTo(readReturnToCookie(c));
           const returnTo = cookieReturnTo !== '/' ? cookieReturnTo : stateReturnTo;
           c.header('Set-Cookie', clearReturnToCookieHeader(), { append: true });
@@ -566,6 +1133,36 @@ function providerAuthRoutes(provider: IMastraAuthProvider, publicUrl?: string): 
             return c.redirect('/auth/login');
           }
           try {
+            // The read half of the `getLoginCookies` call in /auth/login above.
+            // A PKCE provider wrote its code verifier there and needs it back
+            // to finish the exchange, but `handleCallback` takes only `code`
+            // and `state` — so the callback request's `Cookie` header has to
+            // arrive separately, and this is the only channel for it. Without
+            // this call such a provider throws for a missing verifier and the
+            // catch below bounces the browser to /auth/login, which re-enters
+            // the identity provider: a hosted login that cannot complete.
+            //
+            // Read through the contract's `getRequestHeader` rather than
+            // `c.req.header('Cookie')` so header access here is the same
+            // header access the rest of the kit performs.
+            provider.setCallbackCookieHeader?.(getRequestHeader(c.req.raw, 'cookie'));
+
+            // The RAW `state`, exactly as the identity provider echoed it, which
+            // is what the codec documents a host hands to `handleCallback`.
+            //
+            // The other host disagrees: `packages/server` splits the value and
+            // passes only the id half. A provider that stores something under
+            // the `state` it was given at login and looks it up again here sees
+            // two different spellings depending on who is driving it, and gets
+            // "invalid or expired state" under one of them. The kit's answer is
+            // `parseStateId(state) ?? state`, which normalizes both spellings to
+            // the same key; `auth/okta` uses exactly that and works under both.
+            //
+            // So this deliberately keeps sending the raw value rather than
+            // matching the other host: raw is what the contract documents, and a
+            // provider written against that contract already handles it. Narrow
+            // the value here and a provider that stored under the full `state`
+            // would break instead.
             const result = await provider.handleCallback(code, c.req.query('state') ?? '');
             if (result.cookies?.length) {
               // Provider populated cookies directly (e.g. WorkOS AuthKit builds
@@ -587,8 +1184,24 @@ function providerAuthRoutes(provider: IMastraAuthProvider, publicUrl?: string): 
                 expiresAt: result.tokens.expiresAt,
                 organizationId: resultUser.organizationId,
               });
-              for (const [key, value] of Object.entries(provider.getSessionHeaders(session))) {
-                c.header(key, value, { append: true });
+              const secret = authSessionSecret();
+              if (hostOwnsSessionCookie() && secret !== undefined) {
+                // The host mints its own cookie: signed, `__Host-` prefixed
+                // where the deployment allows it, and read back by
+                // `requestAuthToken` rather than by each provider re-deriving
+                // it from a header. `createSession` above is still the
+                // provider's own record of the session — only the cookie moves.
+                c.header(
+                  'Set-Cookie',
+                  mintSessionCookie(result.tokens.accessToken, { ...sessionCookieSite(), secret }),
+                  {
+                    append: true,
+                  },
+                );
+              } else {
+                for (const [key, value] of Object.entries(provider.getSessionHeaders(session))) {
+                  c.header(key, value, { append: true });
+                }
               }
             }
             return c.redirect(returnTo);
@@ -601,20 +1214,18 @@ function providerAuthRoutes(provider: IMastraAuthProvider, publicUrl?: string): 
       },
       {
         path: '/auth/logout',
+        method: 'POST',
+        handler: c => ssoLogout(provider, c),
+      },
+      {
+        // Deprecated for one release: the SPA and any bookmarked link still
+        // navigate here with GET. See `isLogoutNavigation` for what this
+        // refuses, and `ssoLogout` for what it does otherwise.
+        path: '/auth/logout',
         method: 'GET',
-        handler: async c => {
-          let logoutUrl: string | null = null;
-          try {
-            logoutUrl = (await provider.getLogoutUrl?.('/', c.req.raw)) ?? null;
-          } catch {
-            logoutUrl = null;
-          }
-          // Clear the session cookie regardless of whether the provider
-          // returned a logout URL.
-          for (const cookie of providerClearCookies(provider)) {
-            c.header('Set-Cookie', cookie, { append: true });
-          }
-          return c.redirect(logoutUrl ?? '/');
+        handler: c => {
+          if (!isLogoutNavigation(c)) return c.redirect('/');
+          return ssoLogout(provider, c);
         },
       },
     );
@@ -632,32 +1243,79 @@ function providerAuthRoutes(provider: IMastraAuthProvider, publicUrl?: string): 
       },
       {
         path: '/auth/logout',
+        method: 'POST',
+        handler: c => handlerLogout(provider, c),
+      },
+      {
+        // Deprecated for one release; see the SSO branch above.
+        path: '/auth/logout',
         method: 'GET',
-        handler: async c => {
-          // Revoke the session server-side through the provider's own sign-out
-          // endpoint and forward its clearing cookies; fall back to our clear
-          // cookies regardless.
-          try {
-            const origin = new URL(c.req.url).origin;
-            const response = await provider.handleAuthRequest(
-              new Request(`${origin}/auth/api/sign-out`, { method: 'POST', headers: c.req.raw.headers }),
-            );
-            for (const cookie of response.headers.getSetCookie()) {
-              c.header('Set-Cookie', cookie, { append: true });
-            }
-          } catch {
-            // No/invalid session: nothing to revoke.
-          }
-          for (const cookie of providerClearCookies(provider)) {
-            c.header('Set-Cookie', cookie, { append: true });
-          }
-          return c.redirect('/');
+        handler: c => {
+          if (!isLogoutNavigation(c)) return c.redirect('/');
+          return handlerLogout(provider, c);
         },
       },
     );
   }
 
   return routes;
+}
+
+/**
+ * Sign out of a hosted-login provider: revoke server-side where the provider
+ * supports it, clear every session cookie, then hand the browser on to the
+ * provider's logout page when it has one.
+ *
+ * The order matters. Revocation reads the session id off the request, so it has
+ * to happen before anything about the request is invalidated, and the cookies
+ * are cleared whether or not the provider gave us a logout URL — a sign-out
+ * that depends on a remote call succeeding is a sign-out that sometimes does
+ * not happen.
+ */
+async function ssoLogout(provider: IMastraAuthProvider & Partial<ISSOLogout>, c: Context): Promise<Response> {
+  await revokeProviderSession(provider, c);
+  let logoutUrl: string | null = null;
+  try {
+    logoutUrl = (await provider.getLogoutUrl?.('/', c.req.raw)) ?? null;
+  } catch {
+    logoutUrl = null;
+  }
+  for (const cookie of sessionClearCookies(provider)) {
+    c.header('Set-Cookie', cookie, { append: true });
+  }
+  return c.redirect(logoutUrl ?? '/');
+}
+
+/** The slice of `ISSOProvider` {@link ssoLogout} needs. */
+interface ISSOLogout {
+  getLogoutUrl?: (returnTo: string, request: Request) => Promise<string | null> | string | null;
+}
+
+/**
+ * Sign out of a provider that serves its own auth routes: post to its sign-out
+ * endpoint, forward whatever clearing cookies it answers with, and clear ours
+ * regardless.
+ */
+async function handlerLogout(
+  provider: IMastraAuthProvider & { handleAuthRequest: (request: Request) => Promise<Response> },
+  c: Context,
+): Promise<Response> {
+  await revokeProviderSession(provider, c);
+  try {
+    const origin = new URL(c.req.url).origin;
+    const response = await provider.handleAuthRequest(
+      new Request(`${origin}/auth/api/sign-out`, { method: 'POST', headers: c.req.raw.headers }),
+    );
+    for (const cookie of response.headers.getSetCookie()) {
+      c.header('Set-Cookie', cookie, { append: true });
+    }
+  } catch {
+    // No/invalid session: nothing to revoke.
+  }
+  for (const cookie of sessionClearCookies(provider)) {
+    c.header('Set-Cookie', cookie, { append: true });
+  }
+  return c.redirect('/');
 }
 
 /**
@@ -784,12 +1442,19 @@ export function createFactoryAuthGate(provider: IMastraAuthProvider) {
       return next();
     }
 
-    const token = getBearerToken(c.req.header('Authorization'));
+    const token = requestAuthToken(c);
     // A slow verification here delays EVERY protected request — surface
     // outliers so auth-backend latency is attributable from server logs.
-    const user = await timedAboveThreshold('auth.gate.authenticate', 1_000, () =>
-      authenticateRequest(provider, token, c.req.raw),
+    const { user, headers } = await timedAboveThreshold('auth.gate.authenticate', 1_000, () =>
+      authenticateWithRefresh(provider, token, c),
     );
+
+    // A refreshed session has to reach the browser even on the request that
+    // triggered the refresh, or the next one presents the same expired cookie
+    // and refreshes again — working, but re-refreshing forever.
+    for (const [key, value] of Object.entries(headers ?? {})) {
+      c.header(key, value, { append: true });
+    }
 
     if (user) {
       // Bootstrap a personal org for no-org accounts so the org id resolves on
@@ -812,15 +1477,19 @@ export function createFactoryAuthGate(provider: IMastraAuthProvider) {
 
 /**
  * Mount factory auth gating onto the host app. No-op when auth is disabled
- * (no provider active).
+ * (no provider passed).
  *
  * Must be called before the Mastra adapter routes, the `/web/*` routes, and
  * the static UI handlers so the gate covers every request. Composes the shared
  * `registerAuthRoutes` + `createFactoryAuthGate` factories so the local Hono server
  * and the platform Mastra entry stay behavior-identical.
+ *
+ * Reads no environment variables. Whether auth is on is now exactly "was a
+ * provider passed", which is a question the caller can answer by looking at its
+ * own code rather than at the process environment.
  */
 export function mountFactoryAuth(app: Hono<any>, options: MountFactoryAuthOptions = {}): boolean {
-  const provider = options.provider ?? envFallbackAuthProvider(options.redirectUri);
+  const provider = options.provider;
   if (!provider) return false;
 
   registerAuthRoutes(app, provider, { publicUrl: options.publicUrl });

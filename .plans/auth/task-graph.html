@@ -353,7 +353,7 @@
       <table>
         <thead><tr><th>ID</th><th>Task</th><th>Deps</th><th>Sz</th><th>Done when</th></tr></thead>
         <tbody>
-          <tr><th>K1</th><td class="title">Scaffold <code>mastracode/auth-kit</code></td><td class="deps">&mdash;</td><td class="size">S</td><td class="done">package.json validates; subpath exports declared per module.</td></tr>
+          <tr><th>K1</th><td class="title">Scaffold <code>mastracode/factory-auth</code></td><td class="deps">&mdash;</td><td class="size">S</td><td class="done">package.json validates; subpath exports declared per module.</td></tr>
           <tr><th>K2</th><td class="title">Register in the workspace</td><td class="deps">K1</td><td class="size">S</td><td class="done">Root <code>pnpm-workspace.yaml</code> lists mastracode packages <em>explicitly</em> &mdash; no glob. Add the entry, install, resolve.</td></tr>
           <tr><th>K3</th><td class="title">Toolchain config</td><td class="deps">K2</td><td class="size">S</td><td class="done">build, check and lint pass on an empty package, mirroring <code>mastracode/factory</code>.</td></tr>
           <tr><th>K4</th><td class="title">ESLint EE ban</td><td class="deps">K3</td><td class="size">S</td><td class="done">Importing <code>@mastra/core/auth</code> fails lint &mdash; banned wholesale, not just <code>/ee</code>.</td></tr>

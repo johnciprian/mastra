@@ -46,6 +46,7 @@ import type {
   ReviewComment,
   VersionControl,
 } from '../../capabilities/version-control.js';
+import type { RouteAuth } from '../../routes/route.js';
 import { withBaseCheckpointWebhookTrigger } from '../../sandbox/base-checkpoint-triggers.js';
 import type { FactoryIntegration, IntegrationContext, IntegrationTools } from '../base.js';
 import { attachGithubIssueReconciler } from './issue-reconciler.js';
@@ -1252,17 +1253,18 @@ export class GithubIntegration implements FactoryIntegration {
    * Session-scoped agent tools for token refresh and PR subscriptions in
    * sessions bound to a GitHub-backed project. Empty elsewhere.
    */
-  sessionTools({ requestContext }: { requestContext: RequestContext }): IntegrationTools {
-    return createGithubSubscriptionTools(requestContext, this);
+  sessionTools({ requestContext, auth }: { requestContext: RequestContext; auth: RouteAuth }): IntegrationTools {
+    return createGithubSubscriptionTools(requestContext, auth, this);
   }
 
   async postToolObserver({
     toolContext,
     requestContext,
+    auth,
   }: Parameters<NonNullable<FactoryIntegration['postToolObserver']>>[0]): Promise<void> {
     const pullRequestUrl = parseCreatedPullRequest(toolContext);
     if (!pullRequestUrl || !requestContext) return;
-    await subscribeCurrentSessionToPullRequest(requestContext, pullRequestUrl, 'auto-gh-pr-create', this);
+    await subscribeCurrentSessionToPullRequest(requestContext, auth, pullRequestUrl, 'auto-gh-pr-create', this);
   }
 
   /** Non-secret config snapshot for system diagnostics/startup logs. */

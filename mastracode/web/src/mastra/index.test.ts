@@ -1,15 +1,39 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import type * as factoryModule from '@mastra/factory';
+import { buildAuthRoutes } from '@mastra/factory/auth';
 import { resolveFactoryGithubRule } from '@mastra/factory/rules/resolve';
+import type { IMastraAuthProvider } from '@mastra/core/server';
+
+type FactoryConfig = ConstructorParameters<typeof factoryModule.MastraFactory>[0];
 
 const factoryConfigs = vi.hoisted(() => [] as Array<ConstructorParameters<typeof factoryModule.MastraFactory>[0]>);
+/**
+ * How the next `import('./index.js')` should load the entry.
+ *
+ * `configOnly` skips `prepare()`/`finalize()` — see {@link captureFactoryConfig}
+ * for why a test that only reads the entry's decisions has no use for the boot
+ * they perform.
+ */
+const loadMode = vi.hoisted(() => ({ configOnly: false }));
 vi.mock('@mastra/factory', async importOriginal => {
   const actual = await importOriginal<typeof factoryModule>();
   class TrackedMastraFactory extends actual.MastraFactory {
     constructor(config: ConstructorParameters<typeof actual.MastraFactory>[0]) {
       super(config);
       factoryConfigs.push(config);
+    }
+
+    async prepare(): Promise<factoryModule.MastraArgs> {
+      if (!loadMode.configOnly) return super.prepare();
+      // Empty args still satisfy the entry's `new Mastra(...)` literal, so the
+      // module body runs to completion and the config above is complete.
+      return {};
+    }
+
+    async finalize(): Promise<void> {
+      if (!loadMode.configOnly) return super.finalize();
+      // Nothing was prepared, so there is no controller to start.
     }
   }
   return { ...actual, MastraFactory: TrackedMastraFactory };
@@ -18,15 +42,22 @@ vi.mock('@mastra/factory', async importOriginal => {
 /**
  * Smoke test for the platform-deployable entry (`src/mastra/index.ts`).
  *
- * Importing the module boots the real controller via top-level await and
- * constructs the server-owned Mastra. We assert the deployer-facing surface:
- * the module exports a `mastra` instance and that instance carries the web
- * `apiRoutes` (auth + `/web/*`) the deployer's generated Hono server mounts.
+ * The entry does two separable things, and the tests below split along that
+ * line:
  *
- * With no auth env configured the entry leaves `auth` undefined, so the
- * factory installs its default platform-backed provider (`MastraAuthStudio`)
- * and the public `/auth/*` routes ride along on `apiRoutes`. The custom
- * `/web/*` routes are always present.
+ * 1. It maps deployment env onto one `MastraFactory` config. That mapping is
+ *    the entry's own logic, it finishes in the module body, and the config it
+ *    produces is captured by the `TrackedMastraFactory` seam above — no boot
+ *    required, and `loadMode.configOnly` skips it.
+ * 2. It boots that config via top-level `await factory.prepare()` /
+ *    `finalize()` and exports the resulting `mastra`. Tests that assert on the
+ *    booted surface — the deployer-facing `apiRoutes`, a wired controller —
+ *    pay for a real boot, because that is what they are checking.
+ *
+ * With no auth env configured the entry leaves `auth` undefined, so the factory
+ * installs its default platform-backed provider (`MastraAuthStudio`) and the
+ * public `/auth/*` routes ride along on `apiRoutes`. The custom `/web/*` routes
+ * are always present.
  */
 describe('platform entry (src/mastra/index.ts)', () => {
   // Every test in this file imports the real entry, and the entry's auth
@@ -48,13 +79,32 @@ describe('platform entry (src/mastra/index.ts)', () => {
       vi.stubEnv(name, '');
     }
     factoryConfigs.length = 0;
+    loadMode.configOnly = false;
     vi.resetModules();
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    loadMode.configOnly = false;
     vi.resetModules();
   });
+
+  // Mount a `/auth/login` route on a throwaway Hono app and return the redirect
+  // target. The handlers built by `buildAuthRoutes` are self-contained closures
+  // over the provider, so no server context is needed, and `getLoginUrl` only
+  // builds a URL — no network involved. Takes the routes rather than a booted
+  // module so both a real boot's `apiRoutes` and routes built from a captured
+  // config can be driven through the same helper.
+  async function loginRedirect(routes: ReadonlyArray<{ path: string }>): Promise<string> {
+    const login = routes.find(route => route.path === '/auth/login');
+    expect(login, 'expected /auth/login to be registered').toBeDefined();
+    const app = new Hono();
+    app.get('/auth/login', c => (login as any).handler(c));
+    const res = await app.request('/auth/login');
+    expect(res.status).toBeGreaterThanOrEqual(300);
+    expect(res.status).toBeLessThan(400);
+    return res.headers.get('location') ?? '';
+  }
 
   it('exports a booted Mastra with the web apiRoutes folded onto server config', { timeout: 60_000 }, async () => {
     const mod = await import('./index.js');
@@ -72,6 +122,13 @@ describe('platform entry (src/mastra/index.ts)', () => {
     const apiRoutes = server?.apiRoutes ?? [];
     const paths = apiRoutes.map(r => r.path);
     expect(paths.some(p => p.startsWith('/web/'))).toBe(true);
+
+    // No auth env is configured here, so this is also the unset-`auth`-slot
+    // branch of the ladder, end to end: the factory installed its
+    // platform-backed default and its hosted login rides the shared platform
+    // API. Asserted on the one boot this file already pays for, so the ladder
+    // tests below need no boot of their own to say where an unset slot lands.
+    expect(await loginRedirect(apiRoutes)).toContain('platform.mastra.ai');
   });
 
   it('forwards the dispatcher concurrency environment setting to the factory', { timeout: 60_000 }, async () => {
@@ -286,111 +343,165 @@ describe('platform entry (src/mastra/index.ts)', () => {
     );
   });
 
-  describe('WorkOS auth env group', () => {
-    // Mount the entry's `/auth/login` route on a throwaway Hono app and return
-    // the redirect target. The handlers built by `buildAuthRoutes` are
-    // self-contained closures over the provider, so no server context is
-    // needed, and `getLoginUrl` only builds a URL — no network involved.
-    async function loginRedirect(mod: typeof import('./index.js')): Promise<string> {
-      const routes = mod.mastra.getServer()?.apiRoutes ?? [];
-      const login = routes.find(route => route.path === '/auth/login');
-      expect(login, 'expected /auth/login to be registered on apiRoutes').toBeDefined();
-      const app = new Hono();
-      app.get('/auth/login', c => (login as any).handler(c));
-      const res = await app.request('/auth/login');
-      expect(res.status).toBeGreaterThanOrEqual(300);
-      expect(res.status).toBeLessThan(400);
-      return res.headers.get('location') ?? '';
+  /**
+   * The entry's auth ladder (`src/mastra/index.ts`): `MASTRACODE_AUTH_DISABLED`,
+   * then `MASTRA_SHARED_API_URL`, then the `WORKOS_*` pair, then nothing. It
+   * decides exactly one thing — which value lands in `MastraFactory`'s `auth`
+   * slot — and it decides it in the entry's module body, before `prepare()` is
+   * ever called. So these tests read that value off the capture seam instead of
+   * booting a server and inferring the choice back out of the routes it
+   * assembled.
+   *
+   * Each branch's consequence is covered end to end across three suites, one
+   * link each: which value the ladder picks, here; `undefined` →
+   * `MastraAuthStudio` in `mastracode/factory/src/factory.test.ts`; and which
+   * API that provider's login URL targets (`MASTRA_SHARED_API_URL`, else
+   * platform.mastra.ai) in `auth/studio/src/index.test.ts`. The first test in
+   * this file re-checks the whole chain once on a real boot.
+   *
+   * THE TIMEOUT IS FOR THE COLD IMPORT, NOT FOR THESE TESTS
+   *
+   * Each branch here costs about a third of a second in a normal run. The
+   * allowance is for the case where this describe is the *first* thing in the
+   * file to import the entry — `-t 'auth env ladder'`, an `.only`, a reordering
+   * — and one of them therefore pays the one-off transform of the entry's whole
+   * module graph, which is several seconds and has nothing to do with what the
+   * test asserts. Vitest's 5s default turns that into a red suite that passes
+   * again as soon as some other test runs first, and a timed-out import keeps
+   * running and pushes a stray config into the capture array, so the failure
+   * lands on a later test as well. Do not read this number as the cost of a
+   * branch: the reporter's per-test milliseconds are the honest figure.
+   */
+  describe('auth env ladder', { timeout: 30_000 }, () => {
+    /**
+     * Load the entry for its decisions rather than its boot, and return the
+     * config it handed to `MastraFactory`.
+     *
+     * `prepare()`/`finalize()` are skipped: they initialize storage, mount a
+     * controller and start workers, none of which can change or reveal a choice
+     * the module body already made. Paying for them per branch is what made
+     * this describe the slowest part of the file.
+     */
+    async function captureFactoryConfig(): Promise<FactoryConfig> {
+      loadMode.configOnly = true;
+      try {
+        await import('./index.js');
+      } finally {
+        loadMode.configOnly = false;
+      }
+      expect(factoryConfigs).toHaveLength(1);
+      return factoryConfigs[0]!;
+    }
+
+    /**
+     * Build the selected provider's public `/auth/*` routes the way a boot
+     * does. `buildAuthRoutes` is the same function `MastraFactory.prepare()`
+     * calls, so `/auth/login`'s `redirect_uri` is derived from the config's
+     * `publicUrl` here exactly as it is in a deployment — rather than the test
+     * restating that derivation and passing whatever it restated.
+     */
+    function authRoutesFor(config: FactoryConfig) {
+      expect(config.auth, 'expected the entry to select an auth provider').toBeTruthy();
+      return buildAuthRoutes(config.auth as IMastraAuthProvider, { publicUrl: config.publicUrl });
+    }
+
+    /**
+     * `MastraAuthWorkos` as the *entry* resolved it. `vi.resetModules()` hands
+     * every reload a fresh module registry, so a class imported at the top of
+     * this file is a different class object from the one the entry just
+     * constructed, and `instanceof` against it fails on a perfectly correct
+     * provider. Re-importing inside the same generation asks the question the
+     * assertion means to ask.
+     */
+    async function workosProvider(): Promise<Function> {
+      return (await import('@mastra/auth-workos')).MastraAuthWorkos;
     }
 
     const stubWorkosPair = () => {
       vi.stubEnv('WORKOS_API_KEY', 'sk_test_fake');
       vi.stubEnv('WORKOS_CLIENT_ID', 'client_fake');
       vi.stubEnv('WORKOS_COOKIE_PASSWORD', 'a-replica-stable-secret-of-32-plus-chars');
-      // Lets MastraAuthWorkos.init() derive the /auth/callback redirect the
-      // way a real deployment's publicUrl does.
+      // The deployment's public origin, which is where the /auth/callback
+      // redirect_uri is derived from.
       vi.stubEnv('MASTRACODE_PUBLIC_URL', 'http://localhost:5873');
     };
 
-    it(
-      'routes /auth/login to WorkOS hosted login when the WORKOS_* pair is configured',
-      { timeout: 60_000 },
-      async () => {
-        stubWorkosPair();
-        const warn = vi.spyOn(console, 'warn');
-        try {
-          const mod = await import('./index.js');
-          const location = await loginRedirect(mod);
-          // The redirect must target WorkOS, not the platform's shared login —
-          // self-hosted deploys have no allowed redirect_uri on platform.mastra.ai.
-          expect(location).not.toContain('platform.mastra.ai');
-          expect(location).toContain('client_id=client_fake');
-          // WORKOS_REDIRECT_URI is unset here, so this also pins init()'s
-          // derivation of the callback from the deployment's public URL — a
-          // wrong callback still reaches WorkOS but breaks the OAuth return.
-          expect(new URL(location).searchParams.get('redirect_uri')).toBe('http://localhost:5873/auth/callback');
-          // The precedence warning belongs to the deferral branch only — a
-          // healthy WorkOS boot must not claim its own config is ignored.
-          expect(warn.mock.calls.some(call => String(call[0]).includes('ignored'))).toBe(false);
-        } finally {
-          warn.mockRestore();
-        }
-      },
-    );
-
-    it('boots on the default auth path when only WORKOS_API_KEY is set', { timeout: 60_000 }, async () => {
-      // varlock rejects an API-key-only env at the dev-script level; this
-      // guards direct boot paths that bypass it. A half-configured pair must
-      // not construct the provider (which would throw on the missing
-      // clientId) — boot survives on the default platform-backed path.
-      vi.stubEnv('WORKOS_API_KEY', 'sk_test_fake');
-      const mod = await import('./index.js');
-      expect(mod.mastra).toBeDefined();
-      // Half a pair falls through to the platform-backed default, so login
-      // still rides the studio provider's shared API.
-      const location = await loginRedirect(mod);
-      expect(location).toContain('platform.mastra.ai');
+    it('turns auth off entirely when MASTRACODE_AUTH_DISABLED is set', async () => {
+      vi.stubEnv('MASTRACODE_AUTH_DISABLED', '1');
+      // `null` and `undefined` are different instructions to the factory, and
+      // only one of them is "off": `null` disables auth, `undefined` asks for
+      // the platform-backed default. An opt-out that produced `undefined` would
+      // quietly leave the server gated.
+      expect((await captureFactoryConfig()).auth).toBeNull();
     });
 
-    it(
-      'defers to the platform when MASTRA_SHARED_API_URL is set, warning that WORKOS_* is ignored',
-      { timeout: 60_000 },
-      async () => {
-        stubWorkosPair();
-        vi.stubEnv('MASTRA_SHARED_API_URL', 'https://shared.example.com/v1');
-        const warn = vi.spyOn(console, 'warn');
-        try {
-          const mod = await import('./index.js');
-          const location = await loginRedirect(mod);
-          // Explicit platform deferral is the schema's highest-precedence
-          // contract: the studio provider wins and login rides the shared API.
-          expect(location).toContain('shared.example.com');
-          expect(
-            warn.mock.calls.some(
-              call => String(call[0]).includes('WORKOS') && String(call[0]).includes('MASTRA_SHARED_API_URL'),
-            ),
-          ).toBe(true);
-        } finally {
-          warn.mockRestore();
-        }
-      },
-    );
+    it('selects a WorkOS provider when the WORKOS_* pair is configured', async () => {
+      stubWorkosPair();
+      const warn = vi.spyOn(console, 'warn');
+      try {
+        const config = await captureFactoryConfig();
+        expect(config.auth).toBeInstanceOf(await workosProvider());
 
-    it(
-      'keeps WorkOS auth when MASTRA_PLATFORM_SECRET_KEY is set without MASTRA_SHARED_API_URL',
-      { timeout: 60_000 },
-      async () => {
-        // The platform secret key is a compute/integration credential, not an
-        // identity signal: a self-hosted deployment can use platform sandboxes
-        // for compute while running its own WorkOS sign-in. Explicit identity
-        // config must win over the inferred platform association.
-        stubWorkosPair();
-        vi.stubEnv('MASTRA_PLATFORM_SECRET_KEY', 'sk_platform_fake');
-        const mod = await import('./index.js');
-        const location = await loginRedirect(mod);
+        const location = await loginRedirect(authRoutesFor(config));
+        // The redirect must target WorkOS, not the platform's shared login —
+        // self-hosted deploys have no allowed redirect_uri on platform.mastra.ai.
         expect(location).not.toContain('platform.mastra.ai');
+        // Pins that the provider was constructed against this env's WORKOS_*
+        // group, not merely that some WorkOS provider was selected.
         expect(location).toContain('client_id=client_fake');
-      },
-    );
+        // WORKOS_REDIRECT_URI is unset here, so this also pins the callback's
+        // derivation from the deployment's public URL — a wrong callback still
+        // reaches WorkOS but breaks the OAuth return.
+        expect(new URL(location).searchParams.get('redirect_uri')).toBe('http://localhost:5873/auth/callback');
+        // The precedence warning belongs to the deferral branch only — a
+        // healthy WorkOS selection must not claim its own config is ignored.
+        expect(warn.mock.calls.some(call => String(call[0]).includes('ignored'))).toBe(false);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('leaves the auth slot unset when only WORKOS_API_KEY is set', async () => {
+      // varlock rejects an API-key-only env at the dev-script level; this
+      // guards direct boot paths that bypass it. A half-configured pair must
+      // not construct the provider (which would throw on the missing clientId)
+      // — the slot stays unset, so the factory's platform-backed default
+      // applies and the entry loads without throwing.
+      vi.stubEnv('WORKOS_API_KEY', 'sk_test_fake');
+      expect((await captureFactoryConfig()).auth).toBeUndefined();
+    });
+
+    it('defers to the platform when MASTRA_SHARED_API_URL is set, warning that WORKOS_* is ignored', async () => {
+      stubWorkosPair();
+      vi.stubEnv('MASTRA_SHARED_API_URL', 'https://shared.example.com/v1');
+      const warn = vi.spyOn(console, 'warn');
+      try {
+        // Explicit platform deferral is the schema's highest-precedence auth
+        // contract: a fully configured WORKOS_* pair still loses to it, and the
+        // slot is left for the platform-backed default.
+        expect((await captureFactoryConfig()).auth).toBeUndefined();
+        expect(
+          warn.mock.calls.some(
+            call => String(call[0]).includes('WORKOS') && String(call[0]).includes('MASTRA_SHARED_API_URL'),
+          ),
+        ).toBe(true);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('keeps WorkOS auth when MASTRA_PLATFORM_SECRET_KEY is set without MASTRA_SHARED_API_URL', async () => {
+      // The platform secret key is a compute/integration credential, not an
+      // identity signal: a self-hosted deployment can use platform sandboxes
+      // for compute while running its own WorkOS sign-in. Explicit identity
+      // config must win over the inferred platform association.
+      stubWorkosPair();
+      vi.stubEnv('MASTRA_PLATFORM_SECRET_KEY', 'sk_platform_fake');
+      const config = await captureFactoryConfig();
+      expect(config.auth).toBeInstanceOf(await workosProvider());
+      const location = await loginRedirect(authRoutesFor(config));
+      expect(location).not.toContain('platform.mastra.ai');
+      expect(location).toContain('client_id=client_fake');
+    });
   });
 });

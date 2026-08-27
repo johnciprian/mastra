@@ -3,6 +3,7 @@
  */
 
 import type { EEUser, RoleMapping } from '@internal/auth/ee';
+import type { MastraAuthProviderOptions } from '@internal/auth/provider';
 import type { JWTPayload } from 'jose';
 
 // ============================================================================
@@ -72,8 +73,14 @@ export interface OktaSessionOptions {
 
 /**
  * Options for MastraAuthOkta.
+ *
+ * Extends `MastraAuthProviderOptions` for the same reason `MastraAuthWorkos`
+ * does: the constructor hands this object to `registerOptions`, which binds
+ * `authorizeUser`, `mapUserToResourceId`, `protected` and `public`. No test
+ * exercised those here, so unlike WorkOS the gap produced no error and was
+ * found only by comparison.
  */
-export interface MastraAuthOktaOptions {
+export interface MastraAuthOktaOptions extends MastraAuthProviderOptions<OktaUser> {
   /** Okta domain (e.g., 'dev-123456.okta.com'). Defaults to OKTA_DOMAIN env var. */
   domain?: string;
   /** Okta OAuth client ID. Defaults to OKTA_CLIENT_ID env var. */
@@ -135,8 +142,14 @@ export interface PermissionCacheOptions {
 
 /**
  * Options for MastraRBACOkta.
+ *
+ * `TUser` is the user shape the surrounding host authenticates. It defaults to
+ * {@link OktaUser}, so `new MastraRBACOkta({ ... })` needs no type argument.
+ * Name it when Okta supplies only the groups and a different provider supplies
+ * the user, which is the cross-provider case {@link MastraRBACOktaOptions.getUserId}
+ * exists for.
  */
-export interface MastraRBACOktaOptions {
+export interface MastraRBACOktaOptions<TUser extends EEUser = OktaUser> {
   /** Okta domain (e.g., 'dev-123456.okta.com'). Defaults to OKTA_DOMAIN env var. */
   domain?: string;
 
@@ -159,15 +172,35 @@ export interface MastraRBACOktaOptions {
   roleMapping: RoleMapping;
 
   /**
-   * Function to extract Okta user ID from any user object.
-   * Use this when using a different auth provider (e.g., Auth0) with Okta RBAC.
+   * Extract the Okta user ID from the authenticated user.
+   * Use this when a different auth provider (e.g. Auth0) supplies the user and
+   * Okta supplies only the groups.
+   *
+   * The parameter is `TUser`, not `unknown`. Typing it `unknown` meant every
+   * caller — including this package's own JSDoc example and its own test — had
+   * to cast before reading a field, which is the opposite of what a typed
+   * option is for.
    *
    * @example
    * ```typescript
-   * getUserId: (user) => user.metadata?.oktaUserId || user.email
+   * // Default TUser, so the parameter is an OktaUser.
+   * getUserId: user => user.oktaId
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Cross-provider: name the shape the other provider produces.
+   * interface Auth0User extends EEUser {
+   *   metadata?: { oktaUserId?: string };
+   * }
+   *
+   * new MastraRBACOkta<Auth0User>({
+   *   getUserId: user => user.metadata?.oktaUserId ?? user.email,
+   *   roleMapping: { Admin: ['*'] },
+   * });
    * ```
    */
-  getUserId?: (user: unknown) => string | undefined;
+  getUserId?: (user: TUser) => string | undefined;
 
   /** Permission cache configuration */
   cache?: PermissionCacheOptions;

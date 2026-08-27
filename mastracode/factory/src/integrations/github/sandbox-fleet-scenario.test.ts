@@ -365,12 +365,11 @@ describe('S7 — cross-user teardown isolation (route level)', () => {
     ({ buildGithubRoutes } = await import('./routes.js'));
   });
 
-  function buildApp(workosId: string) {
+  function buildApp(id: string) {
     const app = new Hono();
     app.use('*', async (c, next) => {
       (c as any).set('factoryAuthUser', {
-        id: workosId,
-        workosId,
+        id,
         organizationId: 'org1',
         name: 'Test',
         email: 't@e.co',

@@ -160,12 +160,12 @@ When `trustJwtClaims` is enabled, Mastra can authenticate verified bearer tokens
 
 If you need stricter authorization, subclass `MastraAuthWorkos` and override `authorizeUser()`:
 
-```typescript title="src/mastra/auth.ts"
+```typescript title="src/mastra/auth.ts" docscheck=replace
 import { MastraAuthWorkos } from '@mastra/auth-workos'
-import type { HonoRequest } from 'hono'
+import type { WorkOSUser } from '@mastra/auth-workos'
 
 class AdminOnlyWorkosAuth extends MastraAuthWorkos {
-  async authorizeUser(user: any, _request: HonoRequest): Promise<boolean> {
+  async authorizeUser(user: WorkOSUser): Promise<boolean> {
     return user?.metadata?.role === 'admin'
   }
 }

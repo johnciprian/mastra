@@ -292,10 +292,7 @@ describe('workspace skill invocation route', () => {
     }));
     const app = new Hono();
     app.use('*', async (c, next) => {
-      c.set(
-        'factoryAuthUser' as never,
-        { workosId: 'user-1', organizationId: 'org-1' } satisfies TestAuthUser as never,
-      );
+      c.set('factoryAuthUser' as never, { id: 'user-1', organizationId: 'org-1' } satisfies TestAuthUser as never);
       await next();
     });
     mountApiRoutes(
@@ -470,7 +467,7 @@ describe('factory skills catalog route', () => {
   });
 
   it('serves the catalog to signed-in tenants', async () => {
-    const app = createCatalogApp({ user: { workosId: 'user-1', organizationId: 'org-1' } });
+    const app = createCatalogApp({ user: { id: 'user-1', organizationId: 'org-1' } });
     const response = await app.request('/web/factory/skills');
     expect(response.status).toBe(200);
   });

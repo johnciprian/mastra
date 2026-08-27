@@ -110,6 +110,7 @@ const sidebars = {
       items: [
         { type: 'doc', id: 'auth/auth0', label: 'Auth0' },
         { type: 'doc', id: 'auth/better-auth', label: 'Better Auth' },
+        { type: 'doc', id: 'auth/capability-interfaces', label: 'Capability interfaces' },
         { type: 'doc', id: 'auth/clerk', label: 'Clerk' },
         { type: 'doc', id: 'auth/fga', label: 'Fine-Grained Authorization' },
         { type: 'doc', id: 'auth/firebase', label: 'Firebase' },

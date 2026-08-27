@@ -53,6 +53,7 @@ serviceAccount.json
 tsup.config.bundled_*
 CLAUDE.local.md
 .claude/settings.local.json
+.claude/worktrees/
 
 # Generated source map files
 **/*.d.ts.map
@@ -89,3 +90,6 @@ om-reflector-fixture.json
 
 # Local git worktrees (scratch checkouts; never part of a commit)
 .worktrees/
+
+# Relocated turbo cache (build artifacts; never part of a commit)
+.turbo-parked/

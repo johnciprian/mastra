@@ -2,6 +2,7 @@ import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MastraAuthFirebase } from './index';
+import type { FirebaseUser } from './index';
 
 // Mock Firebase Admin
 vi.mock('firebase-admin', () => ({
@@ -66,6 +67,15 @@ describe('MastraAuthFirebase', () => {
       delete process.env.FIREBASE_SERVICE_ACCOUNT;
       delete process.env.FIRESTORE_DATABASE_ID;
     });
+
+    it('should not initialize an app when a verifier is supplied', () => {
+      const auth = new MastraAuthFirebase({ verifyIdToken: async () => ({ uid: mockUserId }) as FirebaseUser });
+
+      expect(auth).toBeInstanceOf(MastraAuthFirebase);
+      // A supplied verifier replaces the Admin SDK, so the provider needs no
+      // credential at all. This is what lets the conformance suite construct it.
+      expect(admin.initializeApp).not.toHaveBeenCalled();
+    });
   });
 
   describe('authenticateToken', () => {
@@ -84,7 +94,7 @@ describe('MastraAuthFirebase', () => {
       expect(result).toEqual(mockDecodedToken);
     });
 
-    it('should return null when token verification fails', async () => {
+    it('should resolve null rather than reject when verification fails', async () => {
       const mockVerifyIdToken = vi.fn().mockRejectedValue(new Error('Invalid token'));
 
       (admin.auth as any).mockReturnValue({
@@ -92,45 +102,113 @@ describe('MastraAuthFirebase', () => {
       });
 
       const auth = new MastraAuthFirebase();
-      const result = await auth.authenticateToken(mockToken).catch(() => null);
 
+      // No `.catch()`. An unverifiable token is the ordinary state of a public
+      // endpoint, and the contract declares `Promise<TUser | null>` — a host
+      // reads a rejection as a bug and logs a stack trace per anonymous request.
+      await expect(auth.authenticateToken(mockToken)).resolves.toBeNull();
       expect(mockVerifyIdToken).toHaveBeenCalledWith(mockToken);
-      expect(result).toBeNull();
+    });
+
+    it('should return null for an empty token without verifying', async () => {
+      const mockVerifyIdToken = vi.fn();
+
+      (admin.auth as any).mockReturnValue({
+        verifyIdToken: mockVerifyIdToken,
+      });
+
+      const auth = new MastraAuthFirebase();
+
+      await expect(auth.authenticateToken('')).resolves.toBeNull();
+      expect(mockVerifyIdToken).not.toHaveBeenCalled();
     });
   });
 
   describe('authorizeUser', () => {
-    it('should return true when user has access', async () => {
-      const mockUser = { uid: mockUserId };
-      const mockUserAccessData = { someData: 'value' };
-      const mockGet = vi.fn().mockResolvedValue({ data: () => mockUserAccessData });
-      const mockDoc = vi.fn().mockReturnValue({ get: mockGet });
+    const user = { uid: mockUserId } as FirebaseUser;
 
-      (getFirestore as any).mockReturnValue({
-        doc: mockDoc,
-      });
-
+    it('should authorize any authenticated user by default', async () => {
       const auth = new MastraAuthFirebase();
-      const result = await auth.authorizeUser(mockUser as any);
 
-      expect(mockDoc).toHaveBeenCalledWith(`/user_access/${mockUserId}`);
-      expect(result).toBe(true);
+      expect(await auth.authorizeUser(user)).toBe(true);
+      // The default must not reach for infrastructure the contract never
+      // mentions. Until 1.2 it did, and every deployment without a
+      // `/user_access` collection verified a token and then 403d every core
+      // /api/* call.
+      expect(getFirestore).not.toHaveBeenCalled();
     });
 
-    it('should return false when user has no access', async () => {
-      const mockUser = { uid: mockUserId };
-      const mockGet = vi.fn().mockResolvedValue({ data: () => null });
-      const mockDoc = vi.fn().mockReturnValue({ get: mockGet });
+    it('should refuse a payload that names nobody', async () => {
+      const auth = new MastraAuthFirebase();
 
-      (getFirestore as any).mockReturnValue({
-        doc: mockDoc,
+      expect(await auth.authorizeUser({ uid: '' } as FirebaseUser)).toBe(false);
+      expect(await auth.authorizeUser(undefined as unknown as FirebaseUser)).toBe(false);
+    });
+
+    describe('with requireUserAccessDocument', () => {
+      it('should return true when user has access', async () => {
+        const mockUserAccessData = { someData: 'value' };
+        const mockGet = vi.fn().mockResolvedValue({ data: () => mockUserAccessData });
+        const mockDoc = vi.fn().mockReturnValue({ get: mockGet });
+
+        (getFirestore as any).mockReturnValue({ doc: mockDoc });
+
+        const auth = new MastraAuthFirebase({ requireUserAccessDocument: true });
+        const result = await auth.authorizeUser(user);
+
+        expect(mockDoc).toHaveBeenCalledWith(`/user_access/${mockUserId}`);
+        expect(result).toBe(true);
       });
 
-      const auth = new MastraAuthFirebase();
-      const result = await auth.authorizeUser(mockUser as any);
+      it('should return false when user has no access', async () => {
+        const mockGet = vi.fn().mockResolvedValue({ data: () => null });
+        const mockDoc = vi.fn().mockReturnValue({ get: mockGet });
 
-      expect(mockDoc).toHaveBeenCalledWith(`/user_access/${mockUserId}`);
-      expect(result).toBe(false);
+        (getFirestore as any).mockReturnValue({ doc: mockDoc });
+
+        const auth = new MastraAuthFirebase({ requireUserAccessDocument: true });
+        const result = await auth.authorizeUser(user);
+
+        expect(mockDoc).toHaveBeenCalledWith(`/user_access/${mockUserId}`);
+        expect(result).toBe(false);
+      });
+
+      it('should read the configured database', async () => {
+        const mockGet = vi.fn().mockResolvedValue({ data: () => ({}) });
+        const mockDoc = vi.fn().mockReturnValue({ get: mockGet });
+
+        (getFirestore as any).mockReturnValue({ doc: mockDoc });
+
+        const auth = new MastraAuthFirebase({ requireUserAccessDocument: true, databaseId: mockDatabaseId });
+        await auth.authorizeUser(user);
+
+        expect(getFirestore).toHaveBeenCalledWith(mockDatabaseId);
+      });
+
+      it('should return false rather than throw when the lookup blows up', async () => {
+        (getFirestore as any).mockImplementation(() => {
+          throw new Error('permission denied');
+        });
+
+        const auth = new MastraAuthFirebase({ requireUserAccessDocument: true });
+
+        await expect(auth.authorizeUser(user)).resolves.toBe(false);
+      });
+    });
+  });
+
+  describe('organizations', () => {
+    it('should derive a stable personal organization id', async () => {
+      const auth = new MastraAuthFirebase();
+
+      expect(await auth.ensureOrganization(mockUserId)).toBe(`user:${mockUserId}`);
+      expect(await auth.ensureOrganization(mockUserId)).toBe(`user:${mockUserId}`);
+    });
+
+    it('should resolve no organization for a blank user id', async () => {
+      const auth = new MastraAuthFirebase();
+
+      expect(await auth.ensureOrganization('  ')).toBeUndefined();
     });
   });
 
@@ -143,15 +221,15 @@ describe('MastraAuthFirebase', () => {
     });
 
     // Test with admin user
-    const adminUser = { sub: 'user123', permissions: ['admin'] } as unknown as DecodedIdToken;
+    const adminUser = { sub: 'user123', permissions: ['admin'] } as unknown as FirebaseUser;
     expect(await firebase.authorizeUser(adminUser)).toBe(true);
 
     // Test with non-admin user
-    const regularUser = { sub: 'user456', permissions: ['read'] };
+    const regularUser = { sub: 'user456', permissions: ['read'] } as unknown as FirebaseUser;
     expect(await firebase.authorizeUser(regularUser)).toBe(false);
 
     // Test with user without permissions
-    const noPermissionsUser = { sub: 'user789' };
+    const noPermissionsUser = { sub: 'user789' } as unknown as FirebaseUser;
     expect(await firebase.authorizeUser(noPermissionsUser)).toBe(false);
   });
 });

@@ -1,0 +1,55 @@
+name: Auth conformance gate
+
+# Every shipped auth provider must run the Factory auth conformance suite, and
+# that suite must actually be selected by the unit job in test-suite.yml.
+#
+# The check itself is auth-conformance-gate.test.ts, next to this file. It is a
+# test rather than a step here because the requirement is "a new provider that
+# skips conformance cannot be merged", and no YAML can express that: a step can
+# only run the suites that exist, so a provider package added with no suite
+# leaves every step green. The test enumerates auth/ from disk instead. Read its
+# header for the full reasoning.
+#
+# This is a standalone workflow, and a standalone job, on purpose:
+#
+#  * it audits the `unit:*` project selector, so it must not be selected by that
+#    selector - a gate a broken project list can switch off fails open on the
+#    exact fault it exists to catch;
+#  * nothing under .github/ is in the root vitest project list at all, the same
+#    gap that gave the factory-auth EE boundary test its own job in lint.yml.
+#
+# It runs unconditionally on every pull request, with no path filter and no
+# repository condition. A path filter would report "skipped" for a PR that
+# touches nothing under auth/, and a skipped check cannot be a required one.
+# It needs no build - it reads files and asks `vitest list` what CI selects - so
+# it costs an install and a few seconds.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main, 0.x]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  auth-conformance-gate:
+    name: Every shipped auth provider runs conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@e8d4307400f9427dba7cb98e488d6ab85f1cec5f
+        timeout-minutes: 20
+
+      - name: Setup pnpm and Node.js
+        uses: ./.github/actions/setup-pnpm-node
+
+      - name: Run the auth conformance gate
+        run: pnpm vitest run --config .github/workflows/auth-conformance-gate.vitest.config.ts

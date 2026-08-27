@@ -196,6 +196,21 @@ export interface ISSOProvider<TUser = unknown> {
    * @returns Array of Set-Cookie header values, or undefined
    */
   getLoginCookies?(redirectUri: string, state: string): string[] | undefined;
+
+  /**
+   * Optional: Receive the callback request's `Cookie` header, before
+   * `handleCallback` runs.
+   *
+   * The read half of {@link ISSOProvider.getLoginCookies}. A PKCE-enabled
+   * provider stores its code verifier as a login cookie and has to read it
+   * back to complete the exchange, but `handleCallback` is handed only `code`
+   * and `state` — so the header reaches the provider here instead. Hosts call
+   * this on every SSO callback when the provider implements it; a provider
+   * that does not implement it is unaffected.
+   *
+   * @param cookieHeader - Raw `Cookie` header from the callback request, or null when the request carried none
+   */
+  setCallbackCookieHeader?(cookieHeader: string | null): void;
 }
 
 /**

@@ -4,6 +4,7 @@ import type {
   IAuthInit,
   ICredentialsProvider,
   IOrganizationsProvider,
+  ISessionClearer,
   IUserProvider,
   CredentialsResult,
   MastraAuthRequest,
@@ -62,7 +63,16 @@ function mapBetterAuthUserToEEUser(user: User): EEUser {
   };
 }
 
-interface MastraAuthBetterAuthOptions extends MastraAuthProviderOptions<BetterAuthUser> {
+/**
+ * Options for {@link MastraAuthBetterAuth}.
+ *
+ * @typeParam TAuthOptions - the exact options object the caller passed to
+ * `betterAuth()`. Always inferred from the `auth` instance at the call site;
+ * callers never write it themselves.
+ */
+interface MastraAuthBetterAuthOptions<
+  TAuthOptions extends BetterAuthOptions = BetterAuthOptions,
+> extends MastraAuthProviderOptions<BetterAuthUser> {
   /**
    * The Better Auth instance to use for authentication.
    * This should be the result of calling `betterAuth({ ... })`.
@@ -70,8 +80,16 @@ interface MastraAuthBetterAuthOptions extends MastraAuthProviderOptions<BetterAu
    * Optional when `secret` is provided: the provider then builds its own
    * `betterAuth()` instance in `init()` on the host's auth database (deferred
    * instance mode) and owns its schema migrations.
+   *
+   * Typed as `Auth<TAuthOptions>` rather than the bare `Auth`, because the bare
+   * alias rejected the one call every doc page shows. `betterAuth({ ... })`
+   * returns `Auth<{ the exact literal options }>`, and `Auth<T>` is invariant in
+   * `T` — `AuthContext<T>` reaches `DBAdapter<T>`, whose `createSchema(options: T)`
+   * puts `T` in a contravariant position — so no concrete `Auth<X>` is assignable
+   * to `Auth` (which is just `Auth<BetterAuthOptions>`). Inferring `TAuthOptions`
+   * from the argument keeps the caller's exact instance type instead.
    */
-  auth?: Auth;
+  auth?: Auth<TAuthOptions>;
 
   /**
    * Secret used for session signing by the provider-built `betterAuth()`
@@ -150,11 +168,29 @@ interface TaggedAuthDatabase {
  * });
  * ```
  *
+ * @typeParam TAuthOptions - inferred from the `auth` instance the constructor
+ * receives; never written by callers. It exists only so the `betterAuth({ ... })`
+ * result above — typed over that exact literal options object — is accepted. No
+ * member of this class mentions it, so every instantiation stays mutually
+ * assignable and a plain `MastraAuthBetterAuth` annotation keeps working.
+ *
  * @see https://better-auth.com for Better Auth documentation
  */
-export class MastraAuthBetterAuth
+export class MastraAuthBetterAuth<TAuthOptions extends BetterAuthOptions = BetterAuthOptions>
   extends MastraAuthProvider<BetterAuthUser>
-  implements IUserProvider<EEUser>, ICredentialsProvider<EEUser>, IOrganizationsProvider, IAuthInit, IAuthHttpHandler
+  implements
+    IUserProvider<EEUser>,
+    ICredentialsProvider<EEUser>,
+    IOrganizationsProvider,
+    IAuthInit,
+    IAuthHttpHandler,
+    // Declared, where it used to be a convention. This provider owns its
+    // session cookie and clears it on logout, and implements exactly this one
+    // member of the session contract - it creates no session a host can address
+    // by id, so the other six mean nothing to it. Hosts used to reach for the
+    // method through a structural `Partial<ISessionProvider>` cast that no
+    // interface described.
+    ISessionClearer
 {
   #auth: Auth | undefined;
   #secret: string | undefined;
@@ -207,7 +243,7 @@ export class MastraAuthBetterAuth
   #crossSite = false;
   protected signUpEnabledConfig: boolean;
 
-  constructor(options: MastraAuthBetterAuthOptions) {
+  constructor(options: MastraAuthBetterAuthOptions<TAuthOptions>) {
     super({ name: options?.name ?? 'better-auth' });
 
     if (!options.auth && !options.secret) {
@@ -217,7 +253,15 @@ export class MastraAuthBetterAuth
       );
     }
 
-    this.#auth = options.auth;
+    // The single place the caller's `Auth<TAuthOptions>` is narrowed to the
+    // bare `Auth` this provider stores. The two differ only through members
+    // nothing here touches: `$context.adapter.createSchema`, `.transaction`
+    // and `$context.checkPassword` are the contravariant positions that make
+    // `Auth<T>` invariant. What this class actually calls — `handler`,
+    // `api.getSession`/`signInEmail`/`signUpEmail`, `options`, and the
+    // adapter's `create`/`findOne`/`findMany`, all of which take `model: string`
+    // — is identical for every `T`.
+    this.#auth = options.auth as Auth | undefined;
     this.#secret = options.secret;
     this.signUpEnabledConfig = options.signUpEnabled ?? true;
 
@@ -343,19 +387,53 @@ export class MastraAuthBetterAuth
   // ============================================
 
   /**
+   * The one answer this public endpoint gives for every "auth isn't ready yet"
+   * condition — no instance built, or schema migrations still failing. Both are
+   * the same thing to the caller and to the operator, so both get the same
+   * response instead of one 503 and one uncaught throw.
+   */
+  #authUnavailable(): Response {
+    return new Response(JSON.stringify({ error: 'auth_unavailable' }), {
+      status: 503,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  /**
+   * Latch for the not-initialized warning. `handleAuthRequest` sits on an
+   * unauthenticated route, so a persistent startup misconfiguration must not
+   * let anonymous traffic write one log line per request.
+   */
+  #warnedNotInitialized = false;
+
+  /**
    * Proxy a raw HTTP request to Better Auth's own API surface
    * (sign-in/up/out/session). Hosts mount this under `/auth/api/*`.
+   *
+   * Never throws for a not-ready provider: deferred instance mode before
+   * `init()` has no instance to proxy to, and `#ensureDbReady` returns early
+   * there because there is nothing this provider owns to migrate. Reading the
+   * `auth` getter in that state would throw out of a public endpoint and
+   * surface as a 500, where the sibling condition (migrations failing) already
+   * returns 503. Both now return 503 `{ error: 'auth_unavailable' }`.
    */
   async handleAuthRequest(request: Request): Promise<Response> {
+    const auth = this.#auth;
+    if (!auth) {
+      if (!this.#warnedNotInitialized) {
+        this.#warnedNotInitialized = true;
+        console.warn(
+          '[BetterAuth] Received an auth request before init() built the instance; auth stays unavailable until init() runs.',
+        );
+      }
+      return this.#authUnavailable();
+    }
     try {
       await this.#ensureDbReady();
     } catch {
-      return new Response(JSON.stringify({ error: 'auth_unavailable' }), {
-        status: 503,
-        headers: { 'content-type': 'application/json' },
-      });
+      return this.#authUnavailable();
     }
-    return this.auth.handler(request);
+    return auth.handler(request);
   }
 
   // ============================================

@@ -4,10 +4,13 @@
  * MastraRBACCloud: Pure logic tests (no mocking).
  * MastraCloudAuthProvider: Server provider tests (mocked network calls).
  */
+import type { Mock } from 'vitest';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 import { MastraCloudAuthProvider } from './auth-provider';
+import type { MastraCloudAuth } from './client';
 import { MastraRBACCloud } from './rbac';
+import type { MastraRBACCloudOptions } from './rbac';
 import type { CloudUser } from './types';
 
 // ---------------------------------------------------------------------------
@@ -38,13 +41,20 @@ vi.mock('./oauth/oauth', () => ({
 // Shared fixtures
 // ---------------------------------------------------------------------------
 
+// `satisfies`, not a bare literal: `RoleMapping`'s values are a closed union of
+// permission strings, so without it every array widens to `string[]` and the
+// fixture stops being checkable. With it, a permission that no longer exists is
+// a compile error here instead of a silently dead entry in the mapping.
 const testRoleMapping = {
   owner: ['*'],
-  admin: ['agents:*', 'workflows:*', 'tools:*', 'studio:*'],
+  // `memory:*`, not the `studio:*` that stood here: there is no `studio`
+  // resource in the generated permission list, so that entry could never have
+  // matched anything the server checks. `satisfies` above is what surfaced it.
+  admin: ['agents:*', 'workflows:*', 'tools:*', 'memory:*'],
   member: ['agents:read', 'agents:execute', 'workflows:read', 'tools:read'],
   viewer: ['agents:read', 'workflows:read', 'tools:read'],
   _default: [],
-};
+} satisfies MastraRBACCloudOptions['roleMapping'];
 
 function makeUser(overrides: Partial<CloudUser> = {}): CloudUser {
   return { id: 'user-1', email: 'user@test.com', name: 'Test User', role: 'member', ...overrides };
@@ -103,7 +113,7 @@ describe('MastraRBACCloud', () => {
   describe('getPermissions', () => {
     it('maps role to its permissions via roleMapping', async () => {
       const perms = await rbac.getPermissions(makeUser({ role: 'admin' }));
-      expect(perms).toEqual(expect.arrayContaining(['agents:*', 'workflows:*', 'tools:*', 'studio:*']));
+      expect(perms).toEqual(expect.arrayContaining(['agents:*', 'workflows:*', 'tools:*', 'memory:*']));
       expect(perms).toHaveLength(4);
     });
 
@@ -253,10 +263,14 @@ describe('MastraCloudAuthProvider', () => {
   // ---------- getLoginUrl / getLoginCookies ----------
 
   describe('getLoginUrl and getLoginCookies', () => {
-    let mockGetLoginUrl: ReturnType<typeof vi.fn>;
+    // Typed with the client method it stands in for, rather than a bare
+    // `ReturnType<typeof vi.fn>`: an untyped mock is not assignable to
+    // `MastraCloudAuth['getLoginUrl']`, and typing it this way also checks that
+    // every `mockReturnValue` below is a real `LoginUrlResult`.
+    let mockGetLoginUrl: Mock<MastraCloudAuth['getLoginUrl']>;
 
     beforeEach(() => {
-      mockGetLoginUrl = vi.fn().mockReturnValue({
+      mockGetLoginUrl = vi.fn<MastraCloudAuth['getLoginUrl']>().mockReturnValue({
         url: 'https://auth.example.com/login',
         cookies: ['mastra_pkce=123'],
       });

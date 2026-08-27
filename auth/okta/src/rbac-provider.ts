@@ -5,7 +5,7 @@
  * Can be used with any auth provider (Auth0, Clerk, etc.) or with MastraAuthOkta.
  */
 
-import type { IRBACProvider, RoleMapping } from '@internal/auth/ee';
+import type { EEUser, IRBACProvider, RoleMapping } from '@internal/auth/ee';
 import { resolvePermissionsFromMapping, matchesPermission } from '@internal/auth/ee';
 import pkg from '@okta/okta-sdk-nodejs';
 const { Client } = pkg;
@@ -45,14 +45,21 @@ const DEFAULT_CACHE_MAX_SIZE = 1000;
  *
  * @example Cross-provider usage (Auth0 + Okta RBAC)
  * ```typescript
+ * import type { EEUser } from '@mastra/core/auth';
  * import { MastraAuthAuth0 } from '@mastra/auth-auth0';
  * import { MastraRBACOkta } from '@mastra/auth-okta';
+ *
+ * // Name the shape the auth provider produces, so `getUserId` reads it
+ * // without a cast.
+ * interface Auth0User extends EEUser {
+ *   metadata?: { oktaUserId?: string };
+ * }
  *
  * const mastra = new Mastra({
  *   server: {
  *     auth: new MastraAuthAuth0(),
- *     rbac: new MastraRBACOkta({
- *       getUserId: (user) => user.metadata?.oktaUserId || user.email,
+ *     rbac: new MastraRBACOkta<Auth0User>({
+ *       getUserId: user => user.metadata?.oktaUserId ?? user.email,
  *       roleMapping: {
  *         'Engineering': ['agents:*', 'workflows:*'],
  *         'Admin': ['*'],
@@ -63,9 +70,9 @@ const DEFAULT_CACHE_MAX_SIZE = 1000;
  * });
  * ```
  */
-export class MastraRBACOkta implements IRBACProvider<OktaUser> {
+export class MastraRBACOkta<TUser extends EEUser = OktaUser> implements IRBACProvider<TUser> {
   private oktaClient: InstanceType<typeof Client>;
-  private options: MastraRBACOktaOptions;
+  private options: MastraRBACOktaOptions<TUser>;
   /**
    * Single cache for roles (the expensive Okta API call).
    * Permissions are derived from roles on-the-fly (cheap, synchronous).
@@ -87,7 +94,7 @@ export class MastraRBACOkta implements IRBACProvider<OktaUser> {
    *
    * @param options - RBAC configuration options
    */
-  constructor(options: MastraRBACOktaOptions) {
+  constructor(options: MastraRBACOktaOptions<TUser>) {
     const domain = options.domain ?? process.env.OKTA_DOMAIN;
     const apiToken = options.apiToken ?? process.env.OKTA_API_TOKEN;
 
@@ -127,10 +134,14 @@ export class MastraRBACOkta implements IRBACProvider<OktaUser> {
    * @param user - User to get roles for
    * @returns Array of group names
    */
-  async getRoles(user: OktaUser): Promise<string[]> {
-    // If groups are already present on the user object, use them
-    if (user.groups && user.groups.length > 0) {
-      return user.groups;
+  async getRoles(user: TUser): Promise<string[]> {
+    // If groups are already present on the user object, use them.
+    // Read through `Partial<OktaUser>` rather than off `TUser`: with a
+    // cross-provider `TUser` the field is not declared, and the check is a
+    // runtime one either way.
+    const attachedGroups = (user as Partial<OktaUser>).groups;
+    if (attachedGroups && attachedGroups.length > 0) {
+      return attachedGroups;
     }
 
     // Determine the user ID to use for Okta API lookup
@@ -162,11 +173,11 @@ export class MastraRBACOkta implements IRBACProvider<OktaUser> {
    * Resolve the Okta user ID from the user object.
    * Uses custom getUserId function if provided, otherwise falls back to oktaId or id.
    */
-  private resolveUserId(user: OktaUser): string | undefined {
+  private resolveUserId(user: TUser): string | undefined {
     if (this.options.getUserId) {
       return this.options.getUserId(user);
     }
-    return user.oktaId ?? user.id;
+    return (user as Partial<OktaUser>).oktaId ?? user.id;
   }
 
   /**
@@ -193,7 +204,7 @@ export class MastraRBACOkta implements IRBACProvider<OktaUser> {
    * @param role - Group name to check for
    * @returns True if user has the group
    */
-  async hasRole(user: OktaUser, role: string): Promise<boolean> {
+  async hasRole(user: TUser, role: string): Promise<boolean> {
     const roles = await this.getRoles(user);
     return roles.includes(role);
   }
@@ -204,7 +215,7 @@ export class MastraRBACOkta implements IRBACProvider<OktaUser> {
    * @param user - User to get permissions for
    * @returns Array of permission strings
    */
-  async getPermissions(user: OktaUser): Promise<string[]> {
+  async getPermissions(user: TUser): Promise<string[]> {
     const roles = await this.getRoles(user);
     return resolvePermissionsFromMapping(roles, this.options.roleMapping);
   }
@@ -216,7 +227,7 @@ export class MastraRBACOkta implements IRBACProvider<OktaUser> {
    * @param permission - Permission to check for (supports wildcards)
    * @returns True if user has the permission
    */
-  async hasPermission(user: OktaUser, permission: string): Promise<boolean> {
+  async hasPermission(user: TUser, permission: string): Promise<boolean> {
     const permissions = await this.getPermissions(user);
 
     // Check if any granted permission matches the required permission
@@ -230,7 +241,7 @@ export class MastraRBACOkta implements IRBACProvider<OktaUser> {
    * @param permissions - Permissions to check for
    * @returns True if user has all permissions
    */
-  async hasAllPermissions(user: OktaUser, permissions: string[]): Promise<boolean> {
+  async hasAllPermissions(user: TUser, permissions: string[]): Promise<boolean> {
     const userPermissions = await this.getPermissions(user);
 
     return permissions.every(required => userPermissions.some(granted => matchesPermission(granted, required)));
@@ -243,7 +254,7 @@ export class MastraRBACOkta implements IRBACProvider<OktaUser> {
    * @param permissions - Permissions to check for
    * @returns True if user has at least one permission
    */
-  async hasAnyPermission(user: OktaUser, permissions: string[]): Promise<boolean> {
+  async hasAnyPermission(user: TUser, permissions: string[]): Promise<boolean> {
     const userPermissions = await this.getPermissions(user);
 
     return permissions.some(required => userPermissions.some(granted => matchesPermission(granted, required)));

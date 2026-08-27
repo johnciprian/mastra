@@ -7,6 +7,7 @@ export {
   isOrganizationsProvider,
   isAuthHttpHandler,
   hasAuthInit,
+  canClearSession,
 } from '@internal/auth/provider';
 export type { IMastraAuthProvider, MastraAuthProviderOptions } from '@internal/auth/provider';
 export type {
@@ -15,6 +16,7 @@ export type {
   IAuthInit,
   ICredentialsProvider,
   IOrganizationsProvider,
+  ISessionClearer,
   ISessionProvider,
   ISSOProvider,
   IUserProvider,
