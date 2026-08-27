@@ -69,10 +69,14 @@ so the boundary is a build error rather than a code-review habit.
 ## Status
 
 **All 65 original tasks done**, plus **31 post-plan follow-ups** (`P1`–`P31`) filed by
-the re-grade and by the work since, of which **27 are done and 4 pending** (`P13`, `P24`,
-`P28`, `P31`). Each task in
-`tasks.json` carries a `status` field (`done` / `pending` / `held`) — that file is the
-source of truth for progress; update it when a task merges.
+the re-grade and by the work since, of which **27 are done, 3 open** (`P24`,
+`P28`, `P31`) and one — `P13` — is **will-not-do**: required status checks need an
+upgraded GitHub plan, and this is a free account. Both gates still run and still fail
+loudly on every pull request; only the enforcement that would block a merge past a red one
+is missing. Each task in
+`tasks.json` carries a `status` field (`done` / `pending` / `held` / `wont-do`) — that
+file is the source of truth for progress; update it when a task merges or is decided
+against.
 
 | Lane | | Done |
 | --- | --- | --- |

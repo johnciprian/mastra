@@ -1239,7 +1239,7 @@
     },
     {
       "id": "P13",
-      "status": "pending",
+      "status": "wont-do",
       "title": "Make both auth CI gates required, and unconditional",
       "lane": "C",
       "size": "S",
@@ -1249,7 +1249,7 @@
         ".github/workflows/lint.yml",
         ".github/workflows/auth-conformance.yml"
       ],
-      "detail": "Two gates run and neither can block a merge. `auth-conformance.yml` is already built to be requirable - no path filter, no repository condition, its header explains that a skipped check cannot be a required one - so it needs only the repo setting. `factory-auth-ee-boundary` in lint.yml:111 is not: it carries `if: needs.changes.outputs.has_code == 'true' && github.repository == 'mastra-ai/mastra'`, so it reports skipped on a fork and on any PR that touches no code, and a skipped check cannot be required. That job is also the ONLY thing running mastracode/factory-auth's 833 tests in CI (`pnpm --filter ./mastracode/factory-auth test` at lint.yml:141), so its conditions gate the whole kit suite, not just the boundary test. Drop the conditions the way auth-conformance.yml does, then add both to the required checks in repo settings. Branch protection is repo settings rather than a file, so the second half cannot be verified from the tree and has to be confirmed in the GitHub UI. Once P1 lands, the mastracode unit job wants the same treatment.",
+      "detail": "Two gates run and neither can block a merge. `auth-conformance.yml` is already built to be requirable - no path filter, no repository condition, its header explains that a skipped check cannot be a required one - so it needs only the repo setting. `factory-auth-ee-boundary` in lint.yml:111 is not: it carries `if: needs.changes.outputs.has_code == 'true' && github.repository == 'mastra-ai/mastra'`, so it reports skipped on a fork and on any PR that touches no code, and a skipped check cannot be required. That job is also the ONLY thing running mastracode/factory-auth's 833 tests in CI (`pnpm --filter ./mastracode/factory-auth test` at lint.yml:141), so its conditions gate the whole kit suite, not just the boundary test. Drop the conditions the way auth-conformance.yml does, then add both to the required checks in repo settings. Branch protection is repo settings rather than a file, so the second half cannot be verified from the tree and has to be confirmed in the GitHub UI. Once P1 lands, the mastracode unit job wants the same treatment. WILL NOT DO, by the owner's decision. Branch protection and required status checks need an upgraded GitHub plan; this is a free account. The two gates still RUN on every pull request and still fail loudly - what is missing is only the enforcement that would stop a merge past a red one. Recorded as a decision rather than a gap so nobody reopens it as unfinished work: it does not become doable by trying harder, only by changing the plan the repository is on.",
       "doneWhen": "Both checks report a real result on every PR including forks, and both appear in the required status checks for main."
     },
     {
@@ -1556,6 +1556,7 @@
     "pending": "not started, or in flight",
     "note": "Update this field when a task merges. Nothing else records progress.",
     "held": "implemented but deliberately not merged - see README",
-    "ran-found-defects": "gate executed; it failed usefully - fixes dispatched, re-validate after"
+    "ran-found-defects": "gate executed; it failed usefully - fixes dispatched, re-validate after",
+    "wont-do": "decided against, with the reason in the task detail - not a gap to be closed later"
   }
 }
