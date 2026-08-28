@@ -1694,7 +1694,7 @@ describe('issues route', () => {
 describe('issue detail route', () => {
   it("returns one issue's description for the project repo", async () => {
     seedMaterializedProject();
-    const res = await buildApp({ workosId: 'u1' }).request('/web/github/projects/p1/issues/12');
+    const res = await buildApp({ id: 'u1' }).request('/web/github/projects/p1/issues/12');
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({
       number: 12,
@@ -1706,14 +1706,14 @@ describe('issue detail route', () => {
 
   it('404s when the issue does not exist', async () => {
     seedMaterializedProject();
-    const res = await buildApp({ workosId: 'u1' }).request('/web/github/projects/p1/issues/99');
+    const res = await buildApp({ id: 'u1' }).request('/web/github/projects/p1/issues/99');
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'issue_not_found' });
   });
 
   it('400s on a malformed issue number', async () => {
     seedMaterializedProject();
-    const res = await buildApp({ workosId: 'u1' }).request('/web/github/projects/p1/issues/abc');
+    const res = await buildApp({ id: 'u1' }).request('/web/github/projects/p1/issues/abc');
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'invalid_number' });
     expect(getIssueDetail).not.toHaveBeenCalled();
@@ -1721,7 +1721,7 @@ describe('issue detail route', () => {
 
   it('404s for a project owned by another org', async () => {
     seedMaterializedProject({ orgId: 'other-org' });
-    const res = await buildApp({ workosId: 'u1' }).request('/web/github/projects/p1/issues/12');
+    const res = await buildApp({ id: 'u1' }).request('/web/github/projects/p1/issues/12');
     expect(res.status).toBe(404);
     expect(getIssueDetail).not.toHaveBeenCalled();
   });
@@ -1729,7 +1729,7 @@ describe('issue detail route', () => {
   it('502s when GitHub is unavailable', async () => {
     seedMaterializedProject();
     getIssueDetail.mockRejectedValueOnce(new Error('GitHub unavailable'));
-    const res = await buildApp({ workosId: 'u1' }).request('/web/github/projects/p1/issues/12');
+    const res = await buildApp({ id: 'u1' }).request('/web/github/projects/p1/issues/12');
     expect(res.status).toBe(502);
     expect(await res.json()).toMatchObject({ error: 'github_fetch_failed', message: 'GitHub unavailable' });
   });
@@ -1788,7 +1788,7 @@ describe('prs route', () => {
 describe('pr detail route', () => {
   it("returns one pull request's description for the project repo", async () => {
     seedMaterializedProject();
-    const res = await buildApp({ workosId: 'u1' }).request('/web/github/projects/p1/prs/34');
+    const res = await buildApp({ id: 'u1' }).request('/web/github/projects/p1/prs/34');
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({
       number: 34,
@@ -1800,14 +1800,14 @@ describe('pr detail route', () => {
 
   it('404s when the pull request does not exist', async () => {
     seedMaterializedProject();
-    const res = await buildApp({ workosId: 'u1' }).request('/web/github/projects/p1/prs/99');
+    const res = await buildApp({ id: 'u1' }).request('/web/github/projects/p1/prs/99');
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'pull_request_not_found' });
   });
 
   it('400s on a malformed pull request number', async () => {
     seedMaterializedProject();
-    const res = await buildApp({ workosId: 'u1' }).request('/web/github/projects/p1/prs/abc');
+    const res = await buildApp({ id: 'u1' }).request('/web/github/projects/p1/prs/abc');
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'invalid_number' });
     expect(getPullRequestDetail).not.toHaveBeenCalled();
@@ -1945,14 +1945,14 @@ describe('Factory session routes', () => {
       getUser: vi.fn(async (id: string) => profiles[id as keyof typeof profiles] ?? null),
       getUsers: vi.fn(async (ids: string[]) => ids.map(id => profiles[id as keyof typeof profiles]).filter(Boolean)),
     };
-    await postJson(buildApp({ workosId: 'u1' }, { users }), '/web/github/projects/p1/sessions', {
+    await postJson(buildApp({ id: 'u1' }, { users }), '/web/github/projects/p1/sessions', {
       branch: 'feat/mine',
     });
-    await postJson(buildApp({ workosId: 'u2' }, { users }), '/web/github/projects/p1/sessions', {
+    await postJson(buildApp({ id: 'u2' }, { users }), '/web/github/projects/p1/sessions', {
       branch: 'feat/theirs',
     });
 
-    const response = await buildApp({ workosId: 'u1' }, { users }).request('/web/github/projects/p1/sessions');
+    const response = await buildApp({ id: 'u1' }, { users }).request('/web/github/projects/p1/sessions');
 
     expect(response.status).toBe(200);
     expect(users.getUsers).toHaveBeenCalledWith(expect.arrayContaining(['u1', 'u2']));
@@ -1972,8 +1972,8 @@ describe('Factory session routes', () => {
 
   it('falls back to individual profile lookups without dropping successful owners', async () => {
     seedMaterializedProject();
-    await postJson(buildApp({ workosId: 'u1' }), '/web/github/projects/p1/sessions', { branch: 'feat/mine' });
-    await postJson(buildApp({ workosId: 'u2' }), '/web/github/projects/p1/sessions', { branch: 'feat/theirs' });
+    await postJson(buildApp({ id: 'u1' }), '/web/github/projects/p1/sessions', { branch: 'feat/mine' });
+    await postJson(buildApp({ id: 'u2' }), '/web/github/projects/p1/sessions', { branch: 'feat/theirs' });
     const users = {
       getUser: vi.fn(async (id: string) => {
         if (id === 'u1') return { id, email: 'ada@example.com' };
@@ -1981,7 +1981,7 @@ describe('Factory session routes', () => {
       }),
     };
 
-    const response = await buildApp({ workosId: 'u1' }, { users }).request('/web/github/projects/p1/sessions');
+    const response = await buildApp({ id: 'u1' }, { users }).request('/web/github/projects/p1/sessions');
 
     expect(response.status).toBe(200);
     expect(users.getUser).toHaveBeenCalledTimes(2);
@@ -1994,8 +1994,8 @@ describe('Factory session routes', () => {
 
   it('falls back to individual lookups when the bulk owner lookup fails', async () => {
     seedMaterializedProject();
-    await postJson(buildApp({ workosId: 'u1' }), '/web/github/projects/p1/sessions', { branch: 'feat/mine' });
-    await postJson(buildApp({ workosId: 'u2' }), '/web/github/projects/p1/sessions', { branch: 'feat/theirs' });
+    await postJson(buildApp({ id: 'u1' }), '/web/github/projects/p1/sessions', { branch: 'feat/mine' });
+    await postJson(buildApp({ id: 'u2' }), '/web/github/projects/p1/sessions', { branch: 'feat/theirs' });
     const users = {
       getUsers: vi.fn(async () => {
         throw new Error('Directory unavailable');
@@ -2003,7 +2003,7 @@ describe('Factory session routes', () => {
       getUser: vi.fn(async (id: string) => (id === 'u1' ? { id, name: 'Ada Lovelace' } : { id, name: '', email: '' })),
     };
 
-    const response = await buildApp({ workosId: 'u1' }, { users }).request('/web/github/projects/p1/sessions');
+    const response = await buildApp({ id: 'u1' }, { users }).request('/web/github/projects/p1/sessions');
 
     expect(response.status).toBe(200);
     expect(users.getUsers).toHaveBeenCalledOnce();
@@ -2021,7 +2021,7 @@ describe('Factory session routes', () => {
       getUser: vi.fn(async (id: string) => ({ id, name: 'Ada Lovelace' })),
       getUsers: vi.fn(async (ids: string[]) => ids.map(id => ({ id, name: 'Ada Lovelace' }))),
     };
-    const app = buildApp({ workosId: 'u1' }, { users });
+    const app = buildApp({ id: 'u1' }, { users });
     await postJson(app, '/web/github/projects/p1/sessions', { branch: 'feat/mine' });
 
     const first = await app.request('/web/github/projects/p1/sessions');
@@ -2332,7 +2332,7 @@ describe('Factory session routes', () => {
       generateThreadTitle: vi.fn(async () => 'Log parser rewrite'),
     } as any;
     const memorySettings = { get: vi.fn(async () => ({ observerModelId: 'anthropic/claude-haiku-4-5' })) } as any;
-    const app = buildApp({ workosId: 'u1' }, { controller, memorySettings });
+    const app = buildApp({ id: 'u1' }, { controller, memorySettings });
     const created = await postJson(app, '/web/github/projects/p1/sessions', { title: 'rewrite the log parser' });
     const sessionId = (await created.json()).session.sessionId;
 
@@ -2357,7 +2357,7 @@ describe('Factory session routes', () => {
       queryThreads: vi.fn(async () => [{ id: 'thread-1', updatedAt: new Date() }]),
       generateThreadTitle: vi.fn(async () => 'Log parser rewrite'),
     } as any;
-    const app = buildApp({ workosId: 'u1' }, { controller });
+    const app = buildApp({ id: 'u1' }, { controller });
     const created = await postJson(app, '/web/github/projects/p1/sessions', { title: 'rewrite the log parser' });
     const sessionId = (await created.json()).session.sessionId;
 
@@ -2382,7 +2382,7 @@ describe('Factory session routes', () => {
         return 'Log parser rewrite';
       }),
     } as any;
-    const app = buildApp({ workosId: 'u1' }, { controller });
+    const app = buildApp({ id: 'u1' }, { controller });
     const created = await postJson(app, '/web/github/projects/p1/sessions', { title: 'rewrite the log parser' });
     const sessionId = (await created.json()).session.sessionId;
 
@@ -2406,7 +2406,7 @@ describe('Factory session routes', () => {
       queryThreads: vi.fn(async () => [{ id: 'thread-1', updatedAt: new Date() }]),
       generateThreadTitle: vi.fn(async () => `  Rewrite   the log parser ${'and more '.repeat(20)}`),
     } as any;
-    const app = buildApp({ workosId: 'u1' }, { controller });
+    const app = buildApp({ id: 'u1' }, { controller });
     const created = await postJson(app, '/web/github/projects/p1/sessions', { title: 'rewrite the log parser' });
     const sessionId = (await created.json()).session.sessionId;
 
@@ -2424,7 +2424,7 @@ describe('Factory session routes', () => {
       queryThreads: vi.fn(async () => [{ id: 'thread-1', updatedAt: new Date() }]),
       generateThreadTitle: vi.fn(async () => '   '),
     } as any;
-    const app = buildApp({ workosId: 'u1' }, { controller });
+    const app = buildApp({ id: 'u1' }, { controller });
     const created = await postJson(app, '/web/github/projects/p1/sessions', { title: 'rewrite the log parser' });
     const sessionId = (await created.json()).session.sessionId;
 
@@ -2437,7 +2437,7 @@ describe('Factory session routes', () => {
   it('explains that a session with no conversation cannot be named', async () => {
     seedMaterializedProject();
     const controller = { queryThreads: vi.fn(async () => []), generateThreadTitle: vi.fn() } as any;
-    const app = buildApp({ workosId: 'u1' }, { controller });
+    const app = buildApp({ id: 'u1' }, { controller });
     const created = await postJson(app, '/web/github/projects/p1/sessions', { branch: 'feat/x' });
     const sessionId = (await created.json()).session.sessionId;
 
@@ -2451,11 +2451,11 @@ describe('Factory session routes', () => {
   it('does not name a session belonging to another user', async () => {
     seedMaterializedProject();
     const controller = { queryThreads: vi.fn(), generateThreadTitle: vi.fn() } as any;
-    const ownerApp = buildApp({ workosId: 'u1' }, { controller });
+    const ownerApp = buildApp({ id: 'u1' }, { controller });
     const created = await postJson(ownerApp, '/web/github/projects/p1/sessions', { branch: 'feat/x' });
     const sessionId = (await created.json()).session.sessionId;
 
-    const response = await buildApp({ workosId: 'u2' }, { controller }).request(
+    const response = await buildApp({ id: 'u2' }, { controller }).request(
       `/web/user-sessions/${sessionId}/title`,
       { method: 'POST' },
     );

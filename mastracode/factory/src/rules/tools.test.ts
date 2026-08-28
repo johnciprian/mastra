@@ -155,6 +155,7 @@ describe('factory_transition_work_item', () => {
     const storage = (await createFactoryStorageForTests()).workItems;
     await prepareBoundItem(storage, 'github-issue', 'triage');
     const tools = await createFactoryTransitionTools({
+      auth,
       requestContext: requestContext(),
       storage,
       transitionService: new FactoryTransitionService({ storage, rules: defaultFactoryRules({ version: 'rules-v1' }) }),
@@ -186,6 +187,7 @@ describe('factory_transition_work_item', () => {
     }));
     const context = requestContext();
     const tools = await createFactoryTransitionTools({
+      auth,
       requestContext: context,
       storage,
       transitionService: { transition },

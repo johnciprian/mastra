@@ -15,7 +15,7 @@ import type { FactoryStorageTestSeed } from '../storage/test-utils.js';
 import { fakeRouteAuth, mountApiRoutes } from './test-utils.js';
 import { WorkItemRoutes } from './work-items.js';
 
-const orgUser = { workosId: 'u1', organizationId: 'org1' };
+const orgUser = { id: 'u1', organizationId: 'org1' };
 
 let seed: FactoryStorageTestSeed;
 let PROJECT_ID = '';
