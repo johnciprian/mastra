@@ -12,11 +12,11 @@ Every Mastra auth provider implements one base contract, `IMastraAuthProvider`. 
 
 A host detects capabilities with structural guards rather than `instanceof`, so any object carrying the right methods qualifies. Use this page to look up which interface covers which behavior and what it obliges you to implement. The [provider capability matrix](#provider-capability-matrix) records which provider satisfies which.
 
-`@mastra/core/server` exports the base class `MastraAuthProvider`, the capability guards, and eleven types. `@mastra/factory-auth` re-exports those same symbols through a single import site and adds an identity normalizer, a capability descriptor, and a provider conformance suite.
+`@mastra/core/server` exports the base class `MastraAuthProvider`, the capability guards, and twelve types. `@mastra/factory-auth` re-exports those same symbols through a single import site and adds an identity normalizer, a capability descriptor, and a provider conformance suite.
 
 ## Capability guards
 
-`@mastra/core/server` exports eight guards. Each answers one question: does this provider declare this capability?
+`@mastra/core/server` exports nine guards. Each answers one question: does this provider declare this capability?
 
 Each guard tests every member its interface requires, and no optional one.
 
@@ -24,6 +24,7 @@ Each guard tests every member its interface requires, and no optional one.
 | - | - | - |
 | `isSSOProvider` | `ISSOProvider` | `getLoginUrl`, `handleCallback`, `getLoginButtonConfig` |
 | `isSessionProvider` | `ISessionProvider` | `createSession`, `validateSession`, `destroySession`, `refreshSession`, `getSessionIdFromRequest`, `getSessionHeaders`, `getClearSessionHeaders` |
+| `canManageSessions` | `ISessionManager` | `validateSession`, `destroySession`, `refreshSession`, `getSessionIdFromRequest`, `getSessionHeaders`, `getClearSessionHeaders` |
 | `isUserProvider` | `IUserProvider` | `getCurrentUser`, `getUser` |
 | `isCredentialsProvider` | `ICredentialsProvider` | `signIn`, `signUp` |
 | `isOrganizationsProvider` | `IOrganizationsProvider` | `ensureOrganization`, `isOrganizationAdmin` |
@@ -31,7 +32,7 @@ Each guard tests every member its interface requires, and no optional one.
 | `hasAuthInit` | `IAuthInit` | `init` |
 | `canClearSession` | `ISessionClearer` | `getClearSessionHeaders` |
 
-Watch the naming before you write a lookup of your own. Two guards break the `is` prefix the other six use: `hasAuthInit` and `canClearSession`. And no guard exists for `IMastraAuthProvider`, because implementing the base contract is what makes an object a provider in the first place.
+Watch the naming before you write a lookup of your own. Three guards break the `is` prefix the other six use: `hasAuthInit`, `canClearSession`, and `canManageSessions`. And no guard exists for `IMastraAuthProvider`, because implementing the base contract is what makes an object a provider in the first place.
 
 Every guard checks `typeof provider.someMethod === 'function'` against a non-null object. Nothing uses `instanceof`, so the guards keep working when a dependency tree holds two copies of `@mastra/core`, and a plain object with the right methods passes.
 
@@ -114,11 +115,32 @@ Server-side sessions the provider creates, validates, and revokes. All seven mem
 
 A `Session` holds `id`, `userId`, `createdAt`, `expiresAt`, and optional `metadata`.
 
+`createSession` is the only member that separates this interface from `ISessionManager`. Declare `ISessionProvider` only when the provider can really mint a session from a user id, because a host that sees `isSessionProvider` may create one on sign-in rather than taking the one a callback returned.
+
+### `ISessionManager`
+
+Everything `ISessionProvider` requires except `createSession`. All six members are required and each one also belongs to the wider interface.
+
+| Member | Signature |
+| - | - |
+| `validateSession` | `(sessionId: string) => Promise<TSession \| null>` |
+| `destroySession` | `(sessionId: string) => Promise<void>` |
+| `refreshSession` | `(sessionId: string) => Promise<TSession \| null>` |
+| `getSessionIdFromRequest` | `(request: Request) => string \| null` |
+| `getSessionHeaders` | `(session: TSession) => Record<string, string>` |
+| `getClearSessionHeaders` | `() => Record<string, string>` |
+
+Use this interface when the identity service issues a session only in exchange for a credential somebody presented, such as a password or a code from a hosted login, and offers no call that mints one from a user id. `@mastra/auth-workos` is that shape: WorkOS revokes and refreshes sessions, and its SDK has no way to create one.
+
+Before this interface existed, such a provider had two options and both misreported it. Declaring `ISessionProvider` and stubbing `createSession` makes every guard report a capability the provider doesn't have. Declaring nothing loses revocation, refresh, and cookie handling that all work.
+
 ### `ISessionClearer`
 
 One member, `getClearSessionHeaders() => Record<string, string>`, returning `Set-Cookie` values that expire the cookies this provider set.
 
-`ISessionProvider` extends this, so a full session provider satisfies `canClearSession` too and the member is declared in one place. The narrower interface exists because a provider can have only this one. A hosted-login provider mints its own cookie during `handleCallback` and has to clear it on logout, while creating no session a host can address by id, so the other six members mean nothing to it. `@mastra/auth-better-auth` is that shape.
+The session interfaces form a chain: `ISessionProvider` extends `ISessionManager`, which extends `ISessionClearer`. A provider sitting at any rung satisfies every guard below it and none above, and each member is declared in one place.
+
+The narrowest interface exists because a provider can have only this one. A hosted-login provider mints its own cookie during `handleCallback` and has to clear it on logout, while creating no session a host can address by id, so the other members mean nothing to it. `@mastra/auth-better-auth` is that shape.
 
 Return one cookie where you can. A host that receives several joined into one comma-separated value has to split them apart again, and an `Expires` date contains a comma of its own.
 
@@ -190,6 +212,7 @@ Each guard tests every member its interface requires, and no optional member.
 | - | - | - | - |
 | `ISSOProvider` | 6 | 3 | 3 |
 | `ISessionProvider` | 7 | 7 | 7 |
+| `ISessionManager` | 6 | 6 | 6 |
 | `IUserProvider` | 4 | 2 | 2 |
 | `ICredentialsProvider` | 5 | 2 | 2 |
 | `IOrganizationsProvider` | 2 | 2 | 2 |
@@ -238,10 +261,12 @@ Read `none` carefully. It means the provider can't take somebody from a blank br
 
 | Field | Derived from |
 | - | - |
-| `logout` | `signIn.kind !== 'none'`, or `isSessionProvider`, or `isAuthHttpHandler` |
+| `logout` | `signIn.kind !== 'none'`, or `isSessionProvider`, or `typeof provider.destroySession === 'function'`, or `canClearSession`, or `isAuthHttpHandler` |
 | `organizations` | `isOrganizationsProvider` |
-| `refresh` | `isSessionProvider` and `typeof provider.refreshSession === 'function'` |
-| `sessionRevocation` | `isSessionProvider` and `typeof provider.destroySession === 'function'` |
+| `refresh` | `typeof provider.refreshSession === 'function'` |
+| `sessionRevocation` | `typeof provider.destroySession === 'function'` |
+
+`refresh` and `sessionRevocation` read the method directly and aren't gated on `isSessionProvider`. Each names a control a browser renders and then a method that control calls, so the honest test is for the method that gets called. Gating them on the guard would also make a provider carrying six of the seven members report no session features at all, including the ones it has.
 
 ## Obligations the interfaces don't state
 
@@ -274,10 +299,11 @@ Which guards each published provider satisfies. `Yes` means the guard returns `t
 | `@mastra/auth-okta` | Yes | Yes | Yes | No | No | No | No |
 | `@mastra/auth-studio` | Yes | Yes | Yes | No | Yes | No | No |
 | `@mastra/auth-supabase` | No | No | No | No | Yes | No | No |
-| `@mastra/auth-workos` | Yes | Yes | Yes | No | Yes | No | Yes |
+| `@mastra/auth-workos` | Yes | Manager | Yes | No | Yes | No | Yes |
 
 Notes on the rows that need one:
 
+- **WorkOS manages sessions without minting them.** `Manager` means `canManageSessions` returns `true` and `isSessionProvider` returns `false`. A WorkOS session comes from an authenticated token exchange and the SDK has no call that creates one from a user id, so the provider declares `ISessionManager` and drops `createSession` rather than stubbing it. Revocation and refresh both work, so `features.sessionRevocation` and `features.refresh` are both `true`.
 - **`Optional` in Auth0, Clerk, and Google.** Each attaches its hosted-login and session methods to the instance in its constructor, and only when OAuth credentials are configured. Auth0 and Clerk gate on a client id and a client secret together. Google gates on a client secret. Without those, the guards return `false` and the provider validates bearer tokens only.
 - **Better Auth has no session capability.** It defines `getClearSessionHeaders` but neither `createSession` nor `validateSession`, so `isSessionProvider` returns `false`. It's the only published provider that serves its own auth routes.
 - **Firebase and Supabase validate bearer tokens and resolve an organization.** Neither satisfies any sign-in guard, so `toAuthDescriptor` reports `signIn.kind: 'none'` and `features.logout: false` for each. Both packages declare that shape in the open, as a `FACTORY_BROWSER_SIGN_IN` export carrying the reason and the alternative. See [Providers that can't sign a browser in](/docs/auth/write-a-provider#providers-that-cant-sign-a-browser-in).
@@ -318,13 +344,13 @@ describeAuthProvider({
 })
 ```
 
-The suite holds 19 checks, grouped like this:
+The suite holds 23 checks, grouped like this:
 
 | Group | Checks |
 | - | - |
-| Base contract | 6 |
+| Base contract | 7 |
 | Obligations | 6 |
-| Declared capabilities | 7 |
+| Declared capabilities | 10 |
 
 A check is skipped, with its reason attached, only when a guard says the provider doesn't declare the capability the check is about. It's never skipped because a provider declared a capability and then didn't deliver it.
 
@@ -349,7 +375,7 @@ Reaching the exchange is what proves the verifier survived. The outcomes below i
 
 ### When a check can't pass yet
 
-Pass `knownFailures` to record a failure you can't fix now, naming the check, its failure code, and why. The suite then stays green while reporting the entry on every run. The record is checked in both directions. A failure that stops happening turns the suite red, and so does one that begins failing for a different reason, which keeps an entry from quietly becoming a permanent exemption. Sixteen such records exist today across six packages: Auth0, Clerk, Cloud, Google and Neon carry three each, and WorkOS one. Studio carried four and now carries none.
+Pass `knownFailures` to record a failure you can't fix now, naming the check, its failure code, and why. The suite then stays green while reporting the entry on every run. The record is checked in both directions. A failure that stops happening turns the suite red, and so does one that begins failing for a different reason, which keeps an entry from quietly becoming a permanent exemption. Fifteen such records exist today across five packages: Auth0, Clerk, Cloud, Google, and Neon carry three each. Studio and WorkOS each carried records and now carry none.
 
 For setup, fixtures, and the failure messages the suite emits, see the [`@mastra/factory-auth` README](https://github.com/mastra-ai/mastra/blob/main/mastracode/factory-auth/README.md).
 
