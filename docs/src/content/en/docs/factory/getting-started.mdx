@@ -1,0 +1,94 @@
+---
+title: "Get started with Factory"
+description: "Scaffold a Mastra Factory project, run it locally, and add a model provider key."
+packages:
+  - "@mastra/factory"
+---
+
+# Get started with Factory
+
+Mastra Factory is an agent-powered software delivery environment. It pulls issues from GitHub and Linear onto an intake board. Hand one to a coding agent, and the agent works it into a pull request. Factory is an application you own and deploy yourself, built on the [harness](/docs/harness/overview) capabilities.
+
+This page takes you from nothing to a Factory running on your machine with a working agent. Integrations and sign-in are optional and come later.
+
+## Requirements
+
+- Node.js 22.19 or later
+- Docker, only if you want the local database
+
+Postgres 15 or later with the `pgvector` extension is needed for GitHub and Linear integrations. Without a database, Factory stores agent state in a local libSQL file and integrations stay off.
+
+## Create a project
+
+`create-factory` clones the project template. It also installs dependencies and initializes Git:
+
+```bash
+npm create factory
+```
+
+Run `npm create factory -- --help` for the available options.
+
+## Start the server
+
+From the new project directory:
+
+```bash npm2yarn
+npm install
+npm run dev
+```
+
+One server serves both the API and the web application. Open `http://localhost:4111`. The API is at `http://localhost:4111/api`.
+
+With no configuration, Factory runs in local mode. Agents work against local storage. Integrations and sign-in stay off until you configure them.
+
+To run Postgres and Redis in Docker first, add `npm run db:up` before `npm run dev`. That starts Postgres on port `54329`, matching the `APP_DATABASE_URL` the template documents, and Redis on port `63799`.
+
+## Add a model provider
+
+Agents need a model provider key before they can run. Open **Settings › Models** in the Factory web application and add one there.
+
+You can also set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in `.env` and restart the server.
+
+Send a message to an agent to confirm the setup works.
+
+## Change the port
+
+`PORT` overrides the server port. OAuth callback URLs for sign-in and integrations are registered against the configured origin, so also set `MASTRACODE_PUBLIC_URL` when you change it:
+
+```bash title=".env"
+PORT=3000
+MASTRACODE_PUBLIC_URL=http://localhost:3000
+```
+
+Update the callback URLs on any OAuth application you already registered.
+
+## What to configure next
+
+Day-to-day settings such as model providers and integrations live in the web application. Deployment-level settings live in `.env`, validated against `.env.schema` by [varlock](https://varlock.dev). Every value is optional, and each feature turns itself on when its variables are set. Restart the server after editing `.env`.
+
+| Feature | Requires |
+| - | - |
+| Sign-in | `WORKOS_API_KEY`, `WORKOS_CLIENT_ID`, `WORKOS_COOKIE_PASSWORD` |
+| GitHub projects and intake | Sign-in, the `GITHUB_APP_*` group, and `APP_DATABASE_URL` |
+| Linear intake | Sign-in, `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET`, `APP_DATABASE_URL`, and a state secret |
+| Slack channels | The `SLACK_APP_*` group, sign-in, and a state secret |
+| Distributed event bus | `REDIS_URL`, only for multi-process deployments |
+| Cloud sandboxes | `MASTRA_PLATFORM_SECRET_KEY`, `MASTRA_PROJECT_ID`, `MASTRA_ENVIRONMENT_ID` |
+
+GitHub and Slack webhooks need a public HTTPS origin, so local development either skips them or uses a tunnel. Factory fetches issues on demand without webhooks.
+
+## Scripts
+
+| Script | What it does |
+| - | - |
+| `npm run dev` | Run the Factory server on port 4111, serving the API and the web application |
+| `npm run db:up`, `npm run db:down` | Start and stop local Postgres and Redis in Docker |
+| `npm run build` | Bundle the server and copy the Factory web application into `.mastra/output` |
+| `npm run start` | Run the production build |
+| `npm run check` | Typecheck the Factory server |
+
+## Related
+
+- [Factory auth](/docs/factory/auth): Choose how people sign in to your Factory.
+- [Harness](/docs/harness/overview): The agent capabilities Factory is built on.
+- [`mastra factory dev`](/reference/cli/mastra#mastra-factory-dev): The CLI command behind `npm run dev`.

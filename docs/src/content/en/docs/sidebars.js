@@ -195,6 +195,24 @@ const sidebars = {
         },
         {
           type: 'category',
+          label: 'Factory',
+          link: {
+            type: 'doc',
+            id: 'factory/getting-started',
+          },
+          customProps: {
+            contextualSidebar: true,
+          },
+          items: [
+            {
+              type: 'doc',
+              id: 'factory/auth',
+              label: 'Auth',
+            },
+          ],
+        },
+        {
+          type: 'category',
           label: 'Memory',
           link: {
             type: 'doc',

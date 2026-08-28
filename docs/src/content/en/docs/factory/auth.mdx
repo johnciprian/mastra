@@ -1,0 +1,113 @@
+---
+title: "Factory auth"
+description: "Choose an auth provider for a Mastra Factory, and understand what each one gives the people signing in."
+packages:
+  - "@mastra/factory"
+---
+
+# Factory auth
+
+Factory takes one auth provider and derives everything else from it. The sign-in screen, the `/auth/*` routes, and whether the account menu offers a sign-out control all follow from the capabilities the provider declares. Picking a provider is the only decision. Nothing else needs wiring.
+
+This page covers the choice and its consequences. For the interfaces themselves, see [Auth capability interfaces](/reference/auth/capability-interfaces).
+
+## Three shapes, not eleven choices
+
+What matters isn't which provider you pick but which of three shapes it has.
+
+**Hosted login** sends the browser to a page the identity provider owns, then handles the callback. People get a sign-in screen with a single control.
+
+| Package | Notes |
+| - | - |
+| `@mastra/auth-studio` | The default when Factory receives no provider. Identity comes through the shared Mastra platform API. |
+| `@mastra/auth-workos` | Self-managed sign-in. Revokes and refreshes sessions against WorkOS. |
+| `@mastra/auth-okta` | |
+| `@mastra/auth-cloud` | |
+
+**Email and password** serves its own HTTP surface under `/auth/api/*`, and the sign-in screen renders a form.
+
+| Package | Notes |
+| - | - |
+| `@mastra/auth-better-auth` | The only published provider that serves its own auth routes. |
+
+**Token validation only** verifies a bearer token and nothing else. These providers can't take somebody from a blank browser to a session, so Factory mounts no sign-in route and the web application shows no sign-in screen or sign-out control. Use one when a system in front of Factory already handles sign-in.
+
+| Package | Notes |
+| - | - |
+| `@mastra/auth-auth0` | Gains hosted login when OAuth credentials are configured. |
+| `@mastra/auth-clerk` | Gains hosted login when OAuth credentials are configured. |
+| `@mastra/auth-google` | Gains hosted login when a client secret is configured. |
+| `@mastra/auth-firebase` | Resolves an organization. |
+| `@mastra/auth-supabase` | Resolves an organization. |
+
+`@mastra/auth-neon` declares credentials sign-in without serving its own HTTP routes, so Factory mounts no route for its sign-in form. Verify it end to end before relying on it.
+
+## Configure sign-in in a scaffolded project
+
+A project created with `npm create factory` runs without sign-in until you configure it. Set the WorkOS variables in `.env` to turn it on:
+
+```bash title=".env"
+WORKOS_API_KEY=sk_test_...
+WORKOS_CLIENT_ID=client_...
+WORKOS_COOKIE_PASSWORD=a-random-string-of-32-characters-or-more
+```
+
+In the WorkOS dashboard, under **Redirects**, add `http://localhost:4111/auth/callback`. Use your deployment origin instead of `localhost` in production. Restart the server after editing `.env`.
+
+## Set the provider explicitly
+
+Pass any provider instance as the `auth` option. Whatever you pass is the active provider:
+
+```typescript title="src/mastra/index.ts"
+import { MastraFactory } from '@mastra/factory'
+import { MastraAuthWorkos } from '@mastra/auth-workos'
+import { LibSQLFactoryStorage } from '@mastra/libsql'
+
+export const factory = new MastraFactory({
+  storage: new LibSQLFactoryStorage({ url: 'file:./factory.db' }),
+  auth: new MastraAuthWorkos({ fetchMemberships: true }),
+  publicUrl: 'http://localhost:4111',
+})
+```
+
+Omitting `auth` installs `MastraAuthStudio`, which proxies identity through the shared Mastra platform API. Passing `null` disables auth entirely and leaves the server open, which suits local development and nothing else.
+
+`fetchMemberships` lets token authentication resolve the user's organization, so a bootstrapped personal organization works without a second sign-in.
+
+## Routes Factory mounts
+
+Routes come from the provider's capabilities, so a provider that can't do something has no route for it.
+
+| Route | Mounted for |
+| - | - |
+| `GET /auth/me` | Every provider |
+| `GET /auth/login` | Hosted login, and providers serving their own routes |
+| `GET /auth/callback` | Hosted login |
+| `POST /auth/logout` | Hosted login, and providers serving their own routes |
+| `ALL /auth/api/*` | Providers serving their own routes |
+
+Sign-out is `POST` only. A URL that ends a session by being fetched is one any other site can put in an image tag, so no route ends a session on a `GET`.
+
+## Session cookies across origins
+
+Factory can sign its own session cookie instead of leaving the cookie to the provider. Set a secret of at least 32 bytes, identical on every instance a request might reach:
+
+```bash title=".env"
+MASTRACODE_AUTH_SESSION_SECRET=a-secret-of-at-least-32-bytes-long
+```
+
+Replicas with different secrets sign people out whenever the load balancer moves them. Leaving the variable unset keeps the provider's own cookie, which is why it's opt-in. Setting it on a running deployment invalidates existing sessions once, because the cookie Factory mints isn't the cookie the provider minted.
+
+When the web application is served from a different origin than the API, list that origin:
+
+```bash title=".env"
+MASTRACODE_ALLOWED_ORIGINS=https://app.example.com
+```
+
+Setting it moves the session cookie to `SameSite=None; Secure` so the separately hosted application can use it, and from that point every cross-site request carries the cookie too. Factory then refuses any `POST`, `PUT`, `PATCH`, or `DELETE` that carries a cookie and no `Authorization` header, unless its `Origin` is the API's own or one you listed here. Omit an origin your application actually uses and its requests get a `403`.
+
+## Related
+
+- [Get started with Factory](/docs/factory/getting-started): Scaffold a project and run it locally.
+- [Auth capability interfaces](/reference/auth/capability-interfaces): Which guard detects which capability, and which provider satisfies each.
+- [Write an auth provider](/docs/auth/write-a-provider): Build a provider and check it against the conformance suite.
