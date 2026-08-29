@@ -27,7 +27,7 @@ const INTERNAL_AUTH_MESSAGE =
   '@internal/auth re-exports ee/ from its barrel (11 ee/ modules at runtime) and is private to the monorepo, so a published package must not name it. This package does not depend on it and should not start: take the contract from @mastra/core/server, or @mastra/factory-auth/contract. See mastracode/factory-auth/README.md#the-ee-boundary.';
 
 const VENDOR_AUTH_MESSAGE =
-  'This package names no auth vendor package except in src/factory.ts, which constructs MastraAuthStudio as the default provider. Everything else composes whatever provider the host was given, via the capability guards. Take the contract from @mastra/core/server and the Factory-side helpers from @mastra/factory-auth. If you need a vendor client for an integration, take it from the host through the integration constructor - integrations/workos/ does exactly that, which is what let @mastra/auth-workos leave this package (P14).';
+  'This package names no auth vendor package except in src/auth-config.ts, where createMastraPlatformAuth() constructs MastraAuthStudio for hosts that ask for platform-proxied identity by name. Everything else composes whatever provider the host was given, via the capability guards. Take the contract from @mastra/core/server and the Factory-side helpers from @mastra/factory-auth. If you need a vendor client for an integration, take it from the host through the integration constructor - integrations/workos/ does exactly that, which is what let @mastra/auth-workos leave this package (P14).';
 
 const EE_BOUNDARY_GROUPS = [
   {
@@ -59,11 +59,14 @@ const EE_BOUNDARY_GROUPS = [
 ];
 
 /**
- * Provider packages, banned everywhere except `src/factory.ts`, which
- * constructs `MastraAuthStudio` as the default provider. This was scoped to
- * `src/auth.ts` alone until P14 took `@mastra/auth-workos` out of the package
- * and left one legitimate importer. See eslint.config.js for the full reasoning
- * and for why the exemption is a separate block rather than a negated pattern.
+ * Provider packages, banned everywhere except `src/auth-config.ts`, where
+ * `createMastraPlatformAuth()` constructs `MastraAuthStudio` for hosts that ask
+ * for platform-proxied identity by name. This was scoped to `src/auth.ts` alone
+ * until P14 took `@mastra/auth-workos` out of the package, then to
+ * `src/factory.ts` while that file still constructed a default provider — it no
+ * longer does, because `auth` is a required config slot. See eslint.config.js
+ * for the full reasoning and for why the exemption is a separate block rather
+ * than a negated pattern.
  */
 const VENDOR_AUTH_GROUP = {
   group: ['@mastra/auth-*', '@mastra/auth-*/**'],
@@ -94,7 +97,7 @@ export default defineConfig({
     },
     {
       // Last, so it wins for the one file allowed to name a provider.
-      files: ['src/factory.ts', 'src/factory.test.ts'],
+      files: ['src/auth-config.ts'],
       rules: {
         'no-restricted-imports': eeBoundaryRule,
       },

@@ -14,6 +14,18 @@ importers:
 
   .:
     dependencies:
+      '@mastra/auth-better-auth':
+        specifier: link:../../auth/better-auth
+        version: link:../../auth/better-auth
+      '@mastra/auth-firebase':
+        specifier: link:../../auth/firebase
+        version: link:../../auth/firebase
+      '@mastra/auth-okta':
+        specifier: link:../../auth/okta
+        version: link:../../auth/okta
+      '@mastra/auth-supabase':
+        specifier: link:../../auth/supabase
+        version: link:../../auth/supabase
       '@mastra/auth-workos':
         specifier: link:../../auth/workos
         version: link:../../auth/workos

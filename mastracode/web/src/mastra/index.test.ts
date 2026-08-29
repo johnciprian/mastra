@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import type * as factoryModule from '@mastra/factory';
+// Safe to import statically despite the `vi.resetModules()` in every hook:
+// `isAuthDisabled` reads a property rather than comparing identities, so it
+// gives the same answer across module generations.
+import { isAuthDisabled } from '@mastra/factory';
 import { buildAuthRoutes } from '@mastra/factory/auth';
 import { resolveFactoryGithubRule } from '@mastra/factory/rules/resolve';
 import type { IMastraAuthProvider } from '@mastra/core/server';
@@ -54,23 +58,35 @@ vi.mock('@mastra/factory', async importOriginal => {
  *    booted surface — the deployer-facing `apiRoutes`, a wired controller —
  *    pay for a real boot, because that is what they are checking.
  *
- * With no auth env configured the entry leaves `auth` undefined, so the factory
- * installs its default platform-backed provider (`MastraAuthStudio`) and the
- * public `/auth/*` routes ride along on `apiRoutes`. The custom `/web/*` routes
- * are always present.
+ * With no auth env configured the entry names the platform-proxied provider
+ * itself — the factory has no default left to install — so the public `/auth/*`
+ * routes ride along on `apiRoutes`. The custom `/web/*` routes are always
+ * present.
  */
 describe('platform entry (src/mastra/index.ts)', () => {
   // Every test in this file imports the real entry, and the entry's auth
-  // selection reads WORKOS_*/MASTRA_* directly from the environment. Blank
-  // them at file scope so a runner with real credentials exported can't flip
-  // the entry into a different auth branch (or crash tests that stub a short
-  // WORKOS_COOKIE_PASSWORD); each test states its own env on top of this.
+  // selection reads MASTRACODE_AUTH_PROVIDER and each provider's own group
+  // directly from the environment. Blank them at file scope so a runner with
+  // real credentials exported can't flip the entry into a different auth branch
+  // (or crash tests that stub a short WORKOS_COOKIE_PASSWORD); each test states
+  // its own env on top of this. MASTRACODE_AUTH_PROVIDER matters most: one
+  // exported value would override every branch these tests exercise.
   beforeEach(() => {
     for (const name of [
+      'MASTRACODE_AUTH_PROVIDER',
       'MASTRACODE_AUTH_DISABLED',
       'WORKOS_API_KEY',
       'WORKOS_CLIENT_ID',
       'WORKOS_COOKIE_PASSWORD',
+      'OKTA_DOMAIN',
+      'OKTA_CLIENT_ID',
+      'OKTA_CLIENT_SECRET',
+      'OKTA_REDIRECT_URI',
+      'OKTA_COOKIE_PASSWORD',
+      'BETTER_AUTH_SECRET',
+      'SUPABASE_URL',
+      'SUPABASE_ANON_KEY',
+      'FIREBASE_SERVICE_ACCOUNT',
       'MASTRA_SHARED_API_URL',
       'MASTRA_PLATFORM_SECRET_KEY',
       'MASTRA_PLATFORM_ACCESS_TOKEN',
@@ -401,7 +417,10 @@ describe('platform entry (src/mastra/index.ts)', () => {
      * restating that derivation and passing whatever it restated.
      */
     function authRoutesFor(config: FactoryConfig) {
-      expect(config.auth, 'expected the entry to select an auth provider').toBeTruthy();
+      // `toBeTruthy()` would pass on AUTH_DISABLED — `{ disabled: true }` is an
+      // object — and then hand `buildAuthRoutes` something that is not a
+      // provider. Ask the question that actually distinguishes the two.
+      expect(isAuthDisabled(config.auth), 'expected the entry to select an auth provider').toBe(false);
       return buildAuthRoutes(config.auth as IMastraAuthProvider, { publicUrl: config.publicUrl });
     }
 
@@ -417,6 +436,23 @@ describe('platform entry (src/mastra/index.ts)', () => {
       return (await import('@mastra/auth-workos')).MastraAuthWorkos;
     }
 
+    /**
+     * Assert the entry selected platform-proxied identity — what omitting
+     * `auth` used to get you implicitly, and what `createMastraPlatformAuth()`
+     * now returns explicitly.
+     *
+     * Checked by provider name rather than `instanceof`: `@mastra/auth-studio`
+     * is a transitive dependency of `@mastra/factory`, not one this package can
+     * import, so there is no class here to compare against. (The SPA bans this
+     * literal because branching on provider identity is the defect that gate
+     * exists to stop; a test naming which provider was selected is exactly the
+     * case the ban is not about, and that ban is scoped to `factory-ui`.)
+     */
+    function expectPlatformProvider(auth: FactoryConfig['auth']): void {
+      expect(isAuthDisabled(auth), 'expected a provider, not AUTH_DISABLED').toBe(false);
+      expect((auth as IMastraAuthProvider).name).toBe('mastra-studio');
+    }
+
     const stubWorkosPair = () => {
       vi.stubEnv('WORKOS_API_KEY', 'sk_test_fake');
       vi.stubEnv('WORKOS_CLIENT_ID', 'client_fake');
@@ -428,11 +464,12 @@ describe('platform entry (src/mastra/index.ts)', () => {
 
     it('turns auth off entirely when MASTRACODE_AUTH_DISABLED is set', async () => {
       vi.stubEnv('MASTRACODE_AUTH_DISABLED', '1');
-      // `null` and `undefined` are different instructions to the factory, and
-      // only one of them is "off": `null` disables auth, `undefined` asks for
-      // the platform-backed default. An opt-out that produced `undefined` would
-      // quietly leave the server gated.
-      expect((await captureFactoryConfig()).auth).toBeNull();
+      // The slot has two inhabitants now — a provider, or AUTH_DISABLED — so
+      // "off" is a value the entry states rather than the absence of one. The
+      // old rule this comment used to teach (null disables, undefined asks for
+      // the default) is gone: there is no default to ask for, and an opt-out
+      // can no longer be spelled in a way that leaves the server gated.
+      expect(isAuthDisabled((await captureFactoryConfig()).auth)).toBe(true);
     });
 
     it('selects a WorkOS provider when the WORKOS_* pair is configured', async () => {
@@ -465,10 +502,12 @@ describe('platform entry (src/mastra/index.ts)', () => {
       // varlock rejects an API-key-only env at the dev-script level; this
       // guards direct boot paths that bypass it. A half-configured pair must
       // not construct the provider (which would throw on the missing clientId)
-      // — the slot stays unset, so the factory's platform-backed default
-      // applies and the entry loads without throwing.
+      // — the entry falls through to platform-proxied identity and loads
+      // without throwing. Note this soft fall-through is only the INFERENCE
+      // path: `MASTRACODE_AUTH_PROVIDER=workos` with the same half-set pair is
+      // a boot error, because then somebody asked for WorkOS by name.
       vi.stubEnv('WORKOS_API_KEY', 'sk_test_fake');
-      expect((await captureFactoryConfig()).auth).toBeUndefined();
+      expectPlatformProvider((await captureFactoryConfig()).auth);
     });
 
     it('defers to the platform when MASTRA_SHARED_API_URL is set, warning that WORKOS_* is ignored', async () => {
@@ -477,9 +516,10 @@ describe('platform entry (src/mastra/index.ts)', () => {
       const warn = vi.spyOn(console, 'warn');
       try {
         // Explicit platform deferral is the schema's highest-precedence auth
-        // contract: a fully configured WORKOS_* pair still loses to it, and the
-        // slot is left for the platform-backed default.
-        expect((await captureFactoryConfig()).auth).toBeUndefined();
+        // contract short of MASTRACODE_AUTH_PROVIDER: a fully configured
+        // WORKOS_* pair still loses to it, and the entry names the
+        // platform-proxied provider outright rather than leaving the slot unset.
+        expectPlatformProvider((await captureFactoryConfig()).auth);
         expect(
           warn.mock.calls.some(
             call => String(call[0]).includes('WORKOS') && String(call[0]).includes('MASTRA_SHARED_API_URL'),

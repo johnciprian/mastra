@@ -2,6 +2,7 @@ import { EventEmitterPubSub } from '@mastra/core/events';
 import { Mastra } from '@mastra/core/mastra';
 import { LibSQLFactoryStorage } from '@mastra/libsql';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMastraPlatformAuth } from '../../../auth-config.js';
 import { MastraFactory } from '../../../factory.js';
 import type { FactoryProjectsStorage } from '../../../storage/domains/projects/base.js';
 import { subscribeToPullRequest } from '../../github/subscriptions.js';
@@ -132,7 +133,7 @@ describe('Platform GitHub event worker factory lifecycle', () => {
     });
     vi.stubGlobal('fetch', fetchImpl);
     const github = new PlatformGithubIntegration();
-    const factory = new MastraFactory({ storage, pubsub, integrations: [github] });
+    const factory = new MastraFactory({ storage, pubsub, auth: createMastraPlatformAuth(), integrations: [github] });
 
     try {
       const args = await factory.prepare();

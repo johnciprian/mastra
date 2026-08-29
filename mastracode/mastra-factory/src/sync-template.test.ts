@@ -12,6 +12,10 @@ const pkgRoot = path.resolve(here, '..');
 const webRoot = path.resolve(pkgRoot, '../web');
 const script = path.join(pkgRoot, 'scripts', 'sync-template.mjs');
 const TEMPLATE_LINKED_DEPENDENCIES = [
+  '@mastra/auth-better-auth',
+  '@mastra/auth-firebase',
+  '@mastra/auth-okta',
+  '@mastra/auth-supabase',
   '@mastra/auth-workos',
   '@mastra/code-sdk',
   '@mastra/core',
@@ -112,6 +116,8 @@ describe.skipIf(process.platform === 'win32')('sync-template.mjs', () => {
     expect(result.status).toBe(0);
 
     expect(fs.existsSync(path.join(outDir, 'src/mastra/index.ts'))).toBe(true);
+    // The entry imports `./auth.js`; without it the scaffold does not resolve.
+    expect(fs.existsSync(path.join(outDir, 'src/mastra/auth.ts'))).toBe(true);
     expect(fs.existsSync(path.join(outDir, '.env.schema'))).toBe(true);
     expect(fs.existsSync(path.join(outDir, '.env.example'))).toBe(true);
     expect(fs.existsSync(path.join(outDir, 'docker-compose.yml'))).toBe(true);
@@ -156,6 +162,10 @@ describe.skipIf(process.platform === 'win32')('sync-template.mjs', () => {
     }
 
     expect(Object.keys(pkg.dependencies).sort()).toEqual([
+      '@mastra/auth-better-auth',
+      '@mastra/auth-firebase',
+      '@mastra/auth-okta',
+      '@mastra/auth-supabase',
       '@mastra/auth-workos',
       '@mastra/code-sdk',
       '@mastra/core',

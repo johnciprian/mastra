@@ -1,4 +1,3 @@
-import type * as authStudioModule from '@mastra/auth-studio';
 import { AgentControllerChannels } from '@mastra/core/channels';
 import { RequestContext } from '@mastra/core/request-context';
 import type { AuthInitContext, IMastraAuthProvider } from '@mastra/core/server';
@@ -11,6 +10,7 @@ import { PgVector } from '@mastra/pg';
 import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { AUTH_DISABLED } from './auth-config.js';
 import type { VersionControl } from './capabilities/version-control.js';
 import { MastraFactory } from './factory.js';
 import type { FactoryIntegration, IntegrationContext } from './integrations/base.js';
@@ -110,30 +110,6 @@ vi.mock('./rules/dispatcher', async importOriginal => {
   return { ...actual, FactoryDecisionDispatcher: TrackedFactoryDecisionDispatcher };
 });
 
-// The default-auth path constructs `MastraAuthStudio` internally (no service
-// locator to peek at), so capture every instance the factory creates and let
-// tests observe the resolved default provider directly.
-const studioInstances = vi.hoisted(() => [] as unknown[]);
-vi.mock('@mastra/auth-studio', async importOriginal => {
-  const mod = (await importOriginal()) as typeof authStudioModule;
-  class TrackedMastraAuthStudio extends mod.MastraAuthStudio {
-    constructor(...args: ConstructorParameters<typeof mod.MastraAuthStudio>) {
-      super(...args);
-      studioInstances.push(this);
-    }
-  }
-  return { ...mod, MastraAuthStudio: TrackedMastraAuthStudio };
-});
-
-/** The default `MastraAuthStudio` provider minted by the last `prepare()`. */
-function lastStudioProvider():
-  | (IMastraAuthProvider & {
-      getSessionHeaders?: (s: { id: string; userId: string }) => Record<string, string>;
-    })
-  | undefined {
-  return studioInstances.at(-1) as ReturnType<typeof lastStudioProvider>;
-}
-
 // Keep the real tenant-credentials module but spy on the registration so tests
 // can assert whether the factory registers the per-tenant resolver. Registering
 // in local/auth-disabled mode would force model calls through an empty tenant
@@ -179,8 +155,13 @@ function fakeProvider(
   } as unknown as IMastraAuthProvider & { init: ReturnType<typeof vi.fn> };
 }
 
+// `auth` is a required slot now, so every helper boot has to name a provider.
+// The default is an ENABLED fake, not `AUTH_DISABLED`: most of these tests
+// assert auth-dependent wiring (gate middleware counts, the tenant-credential
+// resolver, the `authEnabled` flag, the SPA-middleware branch), and defaulting
+// to disabled would leave them green while silently testing the other mode.
 async function prepareFactory(config: ConstructorParameters<typeof MastraFactory>[0]) {
-  const factory = new MastraFactory({ secretEncryption, ...config });
+  const factory = new MastraFactory({ secretEncryption, auth: fakeProvider(), ...config });
   await factory.prepare();
   expect(prepareMock).toHaveBeenCalledOnce();
   return prepareMock.mock.calls[0]![0];
@@ -205,7 +186,6 @@ async function prepareIntegrationContext(config: ConstructorParameters<typeof Ma
 
 beforeEach(() => {
   vi.clearAllMocks();
-  studioInstances.length = 0;
   dispatcherOptions.length = 0;
   terminalCleanups.length = 0;
   transitionServiceOptions.length = 0;
@@ -214,6 +194,22 @@ beforeEach(() => {
 describe('MastraFactory constructor', () => {
   it('requires a storage backend', () => {
     expect(() => new MastraFactory({ secretEncryption } as never)).toThrow(/'storage' is required/);
+  });
+
+  // The `auth` slot is closed: a provider, or AUTH_DISABLED. Each of these
+  // three used to boot — omission silently reached for `MastraAuthStudio`,
+  // `null` silently disabled auth — so they are the whole point of the guard,
+  // and they must fail at construction rather than at prepare().
+  it('requires an auth config', () => {
+    expect(() => new MastraFactory({ storage: fakeStorage() } as never)).toThrow(/'auth' is required/);
+  });
+
+  it('rejects null, which used to disable auth', () => {
+    expect(() => new MastraFactory({ storage: fakeStorage(), auth: null } as never)).toThrow(/use AUTH_DISABLED/);
+  });
+
+  it('rejects an object that is neither a provider nor AUTH_DISABLED', () => {
+    expect(() => new MastraFactory({ storage: fakeStorage(), auth: {} } as never)).toThrow(/'auth' is required/);
   });
 });
 
@@ -230,12 +226,12 @@ describe('MastraFactory.prepare', () => {
   });
 
   it('allows auth-disabled local mode without secret encryption', async () => {
-    const factory = new MastraFactory({ storage: fakeStorage(), auth: null });
+    const factory = new MastraFactory({ storage: fakeStorage(), auth: AUTH_DISABLED });
     await expect(factory.prepare()).resolves.toBeDefined();
   });
 
   it('throws when called twice', async () => {
-    const factory = new MastraFactory({ secretEncryption, storage: fakeStorage() });
+    const factory = new MastraFactory({ auth: fakeProvider(), secretEncryption, storage: fakeStorage() });
     await factory.prepare();
     await expect(factory.prepare()).rejects.toThrow(/called twice/);
   });
@@ -254,7 +250,7 @@ describe('MastraFactory.prepare', () => {
 
   it('registers a blocking session-created listener that seeds stored OM settings', async () => {
     const storage = fakeStorage();
-    const factory = new MastraFactory({ secretEncryption, storage });
+    const factory = new MastraFactory({ auth: fakeProvider(), secretEncryption, storage });
     await factory.prepare();
 
     const blockingCalls = controllerMock.onSessionCreated.mock.calls.filter(
@@ -415,7 +411,12 @@ describe('MastraFactory.prepare', () => {
       name: 'Uncloneable',
       provider: 'custom',
     } as unknown as WorkspaceSandbox;
-    const factory = new MastraFactory({ secretEncryption, storage: fakeStorage(), sandbox: { machine: uncloneable } });
+    const factory = new MastraFactory({
+      auth: fakeProvider(),
+      secretEncryption,
+      storage: fakeStorage(),
+      sandbox: { machine: uncloneable },
+    });
     await expect(factory.prepare()).rejects.toThrow(/does not implement clone\(\)/);
   });
 
@@ -616,8 +617,8 @@ describe('MastraFactory.prepare', () => {
     expect(paths).not.toContain('/web/channel-accounts');
   });
 
-  it('omits auth routes when auth is explicitly disabled (auth: null)', async () => {
-    const config = await prepareFactory({ storage: fakeStorage(), auth: null });
+  it('omits auth routes when auth is explicitly disabled (AUTH_DISABLED)', async () => {
+    const config = await prepareFactory({ storage: fakeStorage(), auth: AUTH_DISABLED });
     const buildApiRoutes = config.buildApiRoutes as (deps: object) => Array<{ path: string }>;
     const paths = buildApiRoutes({ controller: sessionNotifierStub, authStorage: {} }).map(r => r.path);
     expect(paths.some(p => p.startsWith('/auth/'))).toBe(false);
@@ -627,7 +628,7 @@ describe('MastraFactory.prepare', () => {
     // Both modes mount the custom-providers primer and the SPA static
     // middleware is environment-dependent (present when ui/dist exists), so
     // assert the delta from the three auth-specific middleware.
-    const openConfig = await prepareFactory({ storage: fakeStorage(), auth: null });
+    const openConfig = await prepareFactory({ storage: fakeStorage(), auth: AUTH_DISABLED });
     const openMiddleware = (openConfig.buildServerConfig as () => { middleware?: unknown[] })().middleware ?? [];
 
     prepareMock.mockClear();
@@ -676,8 +677,8 @@ describe('MastraFactory.prepare', () => {
     expect(serverConfig.auth).toBe(provider);
   });
 
-  it('omits server.auth and studio.auth when auth is explicitly disabled (auth: null)', async () => {
-    const factory = new MastraFactory({ secretEncryption, storage: fakeStorage(), auth: null });
+  it('omits server.auth and studio.auth when auth is explicitly disabled (AUTH_DISABLED)', async () => {
+    const factory = new MastraFactory({ secretEncryption, storage: fakeStorage(), auth: AUTH_DISABLED });
     const args = (await factory.prepare()) as { studio?: unknown };
     expect(args.studio).toBeUndefined();
 
@@ -692,118 +693,15 @@ describe('MastraFactory.prepare', () => {
     expect(registerTenantCredentialResolverMock).toHaveBeenCalledTimes(1);
   });
 
-  it('skips the per-tenant credential resolver when auth is disabled (auth: null)', async () => {
+  it('skips the per-tenant credential resolver when auth is disabled (AUTH_DISABLED)', async () => {
     // With no auth adapter there is no authenticated tenant. Registering the
     // resolver would route every model call through an empty tenant store
     // (fail-closed, no env fallback) and break local chat with "Not logged in".
     // Leaving it unregistered lets the SDK fall back to the file-backed
     // AuthStorage (auth.json) — the store the local /login + Settings use.
     registerTenantCredentialResolverMock.mockClear();
-    await prepareFactory({ storage: fakeStorage(), auth: null });
+    await prepareFactory({ storage: fakeStorage(), auth: AUTH_DISABLED });
     expect(registerTenantCredentialResolverMock).not.toHaveBeenCalled();
-  });
-
-  it('defaults to MastraAuthStudio when no auth is configured', async () => {
-    // No `auth` slot in config → factory falls back to `MastraAuthStudio` and
-    // the public `/auth/*` routes are folded into the API surface.
-    const config = await prepareFactory({ storage: fakeStorage() });
-    const provider = lastStudioProvider();
-    expect(provider).toBeDefined();
-    expect(provider?.name).toBe('mastra-studio');
-    const buildApiRoutes = config.buildApiRoutes as (deps: object) => Array<{ path: string }>;
-    const paths = buildApiRoutes({ controller: sessionNotifierStub, authStorage: {} }).map(r => r.path);
-    expect(paths).toContain('/auth/login');
-    expect(paths).toContain('/auth/callback');
-    expect(paths).toContain('/auth/logout');
-    expect(paths).toContain('/auth/me');
-  });
-
-  // Both `MASTRA_COOKIE_DOMAIN` and `MASTRA_SHARED_API_URL` feed Studio's
-  // cookie-domain precedence (explicit > shared-API hostname > publicUrl
-  // fallback), so a runner with either set would silently flip the derived
-  // domain. Clear both around each derivation test and restore after.
-  async function withCleanCookieEnv<T>(fn: () => Promise<T>): Promise<T> {
-    const prevCookie = process.env.MASTRA_COOKIE_DOMAIN;
-    const prevShared = process.env.MASTRA_SHARED_API_URL;
-    delete process.env.MASTRA_COOKIE_DOMAIN;
-    delete process.env.MASTRA_SHARED_API_URL;
-    try {
-      return await fn();
-    } finally {
-      if (prevCookie === undefined) delete process.env.MASTRA_COOKIE_DOMAIN;
-      else process.env.MASTRA_COOKIE_DOMAIN = prevCookie;
-      if (prevShared === undefined) delete process.env.MASTRA_SHARED_API_URL;
-      else process.env.MASTRA_SHARED_API_URL = prevShared;
-    }
-  }
-
-  function seededSetCookie(): string | undefined {
-    return lastStudioProvider()?.getSessionHeaders?.({ id: 'test-token', userId: 'u_1' })?.['Set-Cookie'];
-  }
-
-  it('derives the default Studio cookie domain from publicUrl for subdomain deploys', async () => {
-    // A `<sub>.mastra.cloud` deploy should mint cookies with
-    // `Domain=.mastra.cloud` so the browser sends them back to sibling
-    // subdomains — no `MASTRA_COOKIE_DOMAIN` env wiring required.
-    await withCleanCookieEnv(async () => {
-      await prepareFactory({ storage: fakeStorage(), publicUrl: 'https://studio-abc.mastra.cloud' });
-      const setCookie = seededSetCookie();
-      expect(setCookie).toBeDefined();
-      expect(setCookie).toContain('Domain=.mastra.cloud');
-    });
-  });
-
-  it('leaves the default Studio cookie host-only on localhost', async () => {
-    // `publicUrl` on localhost has no parent to peel — the cookie must stay
-    // host-only or the browser will silently reject it.
-    await withCleanCookieEnv(async () => {
-      await prepareFactory({ storage: fakeStorage(), publicUrl: 'http://localhost:4111' });
-      const setCookie = seededSetCookie();
-      expect(setCookie).toBeDefined();
-      expect(setCookie).not.toContain('Domain=');
-    });
-  });
-
-  it('leaves the default Studio cookie host-only for hosts outside the platform allowlist', async () => {
-    // Public-suffix trap: a naive last-two-labels heuristic would emit
-    // `Domain=.co.uk` for `foo.example.co.uk`, which every major browser
-    // rejects. Custom-domain deploys must fall through to host-only cookies.
-    await withCleanCookieEnv(async () => {
-      await prepareFactory({ storage: fakeStorage(), publicUrl: 'https://studio.example.co.uk' });
-      const setCookie = seededSetCookie();
-      expect(setCookie).toBeDefined();
-      expect(setCookie).not.toContain('Domain=');
-    });
-  });
-
-  it('leaves the default Studio cookie host-only for numeric-labelled hostnames', async () => {
-    // A leading-digit label (e.g. `3scale.example.com`) is still a valid DNS
-    // host, not an IP. The derivation must not misclassify it as IPv4.
-    await withCleanCookieEnv(async () => {
-      await prepareFactory({ storage: fakeStorage(), publicUrl: 'https://3scale.example.com' });
-      const setCookie = seededSetCookie();
-      expect(setCookie).toBeDefined();
-      // Not on the platform allowlist → host-only.
-      expect(setCookie).not.toContain('Domain=');
-    });
-  });
-
-  it('leaves the default Studio cookie host-only for literal IPv4 hosts', async () => {
-    // IP-literal deploys can't share cookies across an arbitrary parent, and
-    // browsers reject Domain= attributes on IP hosts entirely.
-    await withCleanCookieEnv(async () => {
-      await prepareFactory({ storage: fakeStorage(), publicUrl: 'http://10.0.0.1:4111' });
-      const setCookie = seededSetCookie();
-      expect(setCookie).toBeDefined();
-      expect(setCookie).not.toContain('Domain=');
-    });
-  });
-
-  it('boots with auth off when auth is explicitly disabled (auth: null)', async () => {
-    // `auth: null` opts out of the default entirely — no default Studio
-    // provider constructed, no `/auth/*` routes, no gate middleware.
-    await prepareFactory({ storage: fakeStorage(), auth: null });
-    expect(lastStudioProvider()).toBeUndefined();
   });
 });
 
@@ -822,6 +720,7 @@ function fakeAuditIntegration(overrides: Partial<FactoryIntegration> & { id: str
 describe('MastraFactory.prepare audit-capable integrations', () => {
   it('rejects duplicate audit-capable integration ids', async () => {
     const factory = new MastraFactory({
+      auth: fakeProvider(),
       secretEncryption,
       storage: fakeStorage(),
       integrations: [fakeAuditIntegration({ id: 'mirror' }), fakeAuditIntegration({ id: 'mirror' })],
@@ -882,6 +781,7 @@ describe('MastraFactory.prepare audit-capable integrations', () => {
 describe('MastraFactory.prepare integrations', () => {
   it('rejects duplicate integration ids', async () => {
     const factory = new MastraFactory({
+      auth: fakeProvider(),
       secretEncryption,
       storage: fakeStorage(),
       integrations: [fakeIntegration({ id: 'custom' }), fakeIntegration({ id: 'custom' })],
@@ -973,6 +873,7 @@ describe('MastraFactory.prepare integrations', () => {
 
   it('fails loud when a ready integration requires a stable signer but none is configured', async () => {
     const factory = new MastraFactory({
+      auth: fakeProvider(),
       secretEncryption,
       storage: fakeStorage(),
       integrations: [fakeIntegration({ id: 'custom', requiresStableStateSigner: true })],
@@ -1000,6 +901,7 @@ describe('MastraFactory.prepare integrations', () => {
     const worker = { name: 'custom-poller' } as unknown as MastraWorker;
     const workers = vi.fn((_ctx: IntegrationContext) => [worker]);
     const factory = new MastraFactory({
+      auth: fakeProvider(),
       secretEncryption,
       storage: fakeStorage(),
       integrations: [fakeIntegration({ id: 'custom', workers })],
@@ -1032,6 +934,7 @@ describe('MastraFactory.prepare integrations', () => {
     vi.spyOn(storage, 'isDomainReady').mockReturnValue(false);
     const workers = vi.fn(() => [{ name: 'custom-poller' } as unknown as MastraWorker]);
     const factory = new MastraFactory({
+      auth: fakeProvider(),
       secretEncryption,
       storage,
       integrations: [fakeIntegration({ id: 'custom', workers })],
@@ -1043,6 +946,7 @@ describe('MastraFactory.prepare integrations', () => {
 
   it('omits the workers option when no integration contributes workers', async () => {
     const factory = new MastraFactory({
+      auth: fakeProvider(),
       secretEncryption,
       storage: fakeStorage(),
       integrations: [fakeIntegration({ id: 'custom' })],
@@ -1077,6 +981,7 @@ describe('MastraFactory.prepare integrations', () => {
       const setChannels = withController();
       const channels = vi.fn((_ctx: IntegrationContext) => fakeChannelsConfig());
       const factory = new MastraFactory({
+        auth: fakeProvider(),
         secretEncryption,
         storage: fakeStorage(),
         integrations: [fakeIntegration({ id: 'chat-platform', channels })],
@@ -1098,6 +1003,7 @@ describe('MastraFactory.prepare integrations', () => {
       withController();
       const channels = vi.fn((_ctx: IntegrationContext) => fakeChannelsConfig());
       const factory = new MastraFactory({
+        auth: fakeProvider(),
         secretEncryption,
         storage: fakeStorage(),
         integrations: [fakeIntegration({ id: 'github' }), fakeIntegration({ id: 'chat-platform', channels })],
@@ -1114,6 +1020,7 @@ describe('MastraFactory.prepare integrations', () => {
       withController();
       const channels = vi.fn((_ctx: IntegrationContext) => fakeChannelsConfig());
       const factory = new MastraFactory({
+        auth: fakeProvider(),
         secretEncryption,
         storage: fakeStorage(),
         integrations: [fakeIntegration({ id: 'chat-platform', channels })],
@@ -1127,6 +1034,7 @@ describe('MastraFactory.prepare integrations', () => {
     it('leaves the controller alone when no integration provides channels', async () => {
       const setChannels = withController();
       const factory = new MastraFactory({
+        auth: fakeProvider(),
         secretEncryption,
         storage: fakeStorage(),
         integrations: [fakeIntegration({ id: 'custom' })],
@@ -1145,6 +1053,7 @@ describe('MastraFactory.prepare integrations', () => {
       vi.spyOn(storage, 'isDomainReady').mockReturnValue(false);
       const channels = vi.fn(() => ({}) as never);
       const factory = new MastraFactory({
+        auth: fakeProvider(),
         secretEncryption,
         storage,
         integrations: [fakeIntegration({ id: 'chat-platform', channels })],
@@ -1165,6 +1074,7 @@ describe('MastraFactory.prepare integrations', () => {
       vi.spyOn(storage, 'isDomainReady').mockImplementation(domain => domain !== 'channel-identity');
       const channels = vi.fn(() => ({}) as never);
       const factory = new MastraFactory({
+        auth: fakeProvider(),
         secretEncryption,
         storage,
         integrations: [fakeIntegration({ id: 'chat-platform', channels })],
@@ -1181,6 +1091,7 @@ describe('MastraFactory.prepare integrations', () => {
       // setChannels replaces rather than merges, so the loser would silently
       // never receive a message.
       const factory = new MastraFactory({
+        auth: fakeProvider(),
         secretEncryption,
         storage: fakeStorage(),
         integrations: [
@@ -1196,12 +1107,12 @@ describe('MastraFactory.prepare integrations', () => {
 
 describe('MastraFactory.finalize', () => {
   it('throws before prepare()', async () => {
-    const factory = new MastraFactory({ secretEncryption, storage: fakeStorage() });
+    const factory = new MastraFactory({ auth: fakeProvider(), secretEncryption, storage: fakeStorage() });
     await expect(factory.finalize()).rejects.toThrow(/before prepare/);
   });
 
   it('runs the prepared finalize after prepare()', async () => {
-    const factory = new MastraFactory({ secretEncryption, storage: fakeStorage() });
+    const factory = new MastraFactory({ auth: fakeProvider(), secretEncryption, storage: fakeStorage() });
     await factory.prepare();
     await factory.finalize();
     const prepared = await prepareMock.mock.results[0]!.value;

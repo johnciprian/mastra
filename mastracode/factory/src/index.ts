@@ -1,5 +1,7 @@
 export { MastraFactory } from './factory.js';
 export type { MastraArgs, MastraFactoryConfig } from './factory.js';
+export { AUTH_DISABLED, createMastraPlatformAuth, isAuthDisabled, resolveFactoryPublicUrl } from './auth-config.js';
+export type { FactoryAuthConfig, FactoryAuthDisabled, MastraPlatformAuthOptions } from './auth-config.js';
 export { ChannelIdentityStorage } from './storage/domains/channel-identity/base.js';
 export type {
   ChannelAccountLink,

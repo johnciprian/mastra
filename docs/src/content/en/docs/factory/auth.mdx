@@ -19,7 +19,7 @@ What matters isn't which provider you pick but which of three shapes it has.
 
 | Package | Notes |
 | - | - |
-| `@mastra/auth-studio` | The default when Factory receives no provider. Identity comes through the shared Mastra platform API. |
+| `@mastra/auth-studio` | Identity comes through the shared Mastra platform API. Construct it with `createMastraPlatformAuth()` from `@mastra/factory`, which derives the session cookie's domain from your `publicUrl`. |
 | `@mastra/auth-workos` | Self-managed sign-in. Revokes and refreshes sessions against WorkOS. |
 | `@mastra/auth-okta` | |
 | `@mastra/auth-cloud` | |
@@ -54,6 +54,16 @@ WORKOS_COOKIE_PASSWORD=a-random-string-of-32-characters-or-more
 
 In the WorkOS dashboard, under **Redirects**, add `http://localhost:4111/auth/callback`. Use your deployment origin instead of `localhost` in production. Restart the server after editing `.env`.
 
+Set `MASTRACODE_AUTH_PROVIDER` to name the provider outright instead of letting the scaffold infer one from whichever credentials are present:
+
+```bash title=".env"
+MASTRACODE_AUTH_PROVIDER=workos
+```
+
+It accepts `studio`, `workos`, `okta`, `better-auth`, `supabase`, `firebase`, or `none`, and an unrecognized value is a startup error rather than a fallback. Each choice still reads its own variable group, documented in the project's `.env.schema`.
+
+`MASTRACODE_AUTH_PROVIDER` belongs to the scaffold, not to `@mastra/factory`. It is read by the generated `src/mastra/auth.ts`, which turns the answer into the `auth` option below — so it exists only in projects created with `npm create factory`, and a host that builds its own entry passes the `auth` option directly.
+
 ## Set the provider explicitly
 
 Pass any provider instance as the `auth` option. Whatever you pass is the active provider:
@@ -70,7 +80,21 @@ export const factory = new MastraFactory({
 })
 ```
 
-Omitting `auth` installs `MastraAuthStudio`, which proxies identity through the shared Mastra platform API. Passing `null` disables auth entirely and leaves the server open, which suits local development and nothing else.
+`auth` is required, and it takes one of exactly two things: a provider instance, or `AUTH_DISABLED`.
+
+```typescript title="src/mastra/index.ts"
+import { AUTH_DISABLED, createMastraPlatformAuth, MastraFactory } from '@mastra/factory'
+
+// Identity proxied through the shared Mastra platform API.
+new MastraFactory({ storage, auth: createMastraPlatformAuth({ publicUrl }) })
+
+// No authentication at all: the server is open and the web application shows
+// an "auth not configured" screen instead of a sign-in page. Local development
+// and nothing else.
+new MastraFactory({ storage, auth: AUTH_DISABLED })
+```
+
+There is no third option. Omitting `auth` and passing `null` both throw from the constructor — earlier versions treated them as "use the platform provider" and "disable auth" respectively, which meant a deployment that had simply forgotten to configure auth booted anyway and deferred every identity decision to a platform nobody had chosen. Use `isAuthDisabled(config.auth)` if your own code needs to branch on whether auth is on.
 
 `fetchMemberships` lets token authentication resolve the user's organization, so a bootstrapped personal organization works without a second sign-in.
 

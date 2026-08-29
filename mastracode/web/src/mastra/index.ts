@@ -27,15 +27,14 @@ import { InProcessSandboxAddressRegistry, PlatformSandbox } from '@mastra/platfo
 import { RedisStreamsPubSub } from '@mastra/redis-streams';
 import { getDatabasePath } from '@mastra/code-sdk/utils/project';
 import { DEFAULT_RETENTION } from '@mastra/code-sdk/utils/storage-maintenance';
-import { MastraAuthWorkos } from '@mastra/auth-workos';
-import { createFactorySecretEncryption, MastraFactory } from '@mastra/factory';
+import { createFactorySecretEncryption, isAuthDisabled, MastraFactory } from '@mastra/factory';
 import { defaultFactoryRules } from '@mastra/factory/rules/defaults';
 import type { FactoryStageRuleContext } from '@mastra/factory/rules/types';
 import { GithubIntegration } from '@mastra/factory/integrations/github/integration';
 import { parseAuthorizedBotsEnv } from '@mastra/factory/integrations/github/webhook';
 import { LinearIntegration } from '@mastra/factory/integrations/linear/integration';
 import { SlackIntegration } from '@mastra/factory/integrations/slack/integration';
-import type { IMastraAuthProvider } from '@mastra/core/server';
+import { resolveFactoryAuth } from './auth.js';
 
 /**
  * Parse a positive-integer env knob; anything else means "use the default".
@@ -118,41 +117,25 @@ if (redisUrl) {
   console.log(`[PubSub] REDIS_URL set — event bus on Redis Streams (${redisTarget}), cross-process leases enabled.`);
 }
 
-// Auth selection, ordered by how explicit the operator's intent is:
-//   1. MASTRACODE_AUTH_DISABLED=1 — explicit opt-out, auth off entirely.
-//   2. MASTRA_SHARED_API_URL — explicit platform deferral; identity rides the
-//      shared platform API (`.env.schema` names this the highest-precedence
-//      auth config), so it wins even over a configured WORKOS_* pair — but
-//      loudly, because silently ignoring sign-in config is how self-hosted
-//      logins end up 302-ing somewhere that rejects their redirect_uri.
-//   3. WORKOS_API_KEY + WORKOS_CLIENT_ID — self-managed WorkOS sign-in. The
-//      constructor reads the rest of the WORKOS_* group from env, and
-//      `init()` derives the /auth/callback redirect from the deployment's
-//      publicUrl when WORKOS_REDIRECT_URI is unset. `fetchMemberships` lets
-//      token auth resolve the user's organization so the bootstrapped
-//      personal org works without re-auth. Note MASTRA_PLATFORM_ACCESS_TOKEN /
-//      MASTRA_PLATFORM_SECRET_KEY do NOT defer to the platform here: they are
-//      compute/integration credentials (sandboxes, GitHub/Linear slots), not
-//      identity signals — platform compute plus self-managed sign-in is a
-//      supported combination.
-//   4. Nothing configured — leave undefined and MastraFactory installs its
-//      platform-backed default provider.
-const authDisabled = process.env.MASTRACODE_AUTH_DISABLED === '1';
-const workosConfigured = Boolean(process.env.WORKOS_API_KEY?.trim() && process.env.WORKOS_CLIENT_ID?.trim());
-let auth: IMastraAuthProvider | null | undefined;
+// The deployment's browser-facing origin, read once and used everywhere below:
+// the auth selection, the Slack channel origins, and the factory's own
+// `publicUrl`. Hoisted this far up because the auth selection needs it — Okta
+// validates `redirectUri` in its constructor and has no `init()` hook to
+// receive the host origin later, so its callback has to be derived here.
+const publicUrl = process.env.MASTRACODE_PUBLIC_URL;
 
-if (authDisabled) {
-  auth = null;
-} else if (process.env.MASTRA_SHARED_API_URL?.trim()) {
-  if (workosConfigured) {
-    console.warn(
-      '[Auth] WORKOS_API_KEY/WORKOS_CLIENT_ID are set but ignored: MASTRA_SHARED_API_URL takes precedence, so sign-in defers to the platform. Unset MASTRA_SHARED_API_URL to use self-managed WorkOS auth.',
-    );
-  }
-} else if (workosConfigured) {
-  auth = new MastraAuthWorkos({ fetchMemberships: true });
-}
-const secretEncryption = auth === null ? undefined : credentialEncryption();
+// Which provider signs people in, and why — see `./auth.ts`. Either
+// `MASTRACODE_AUTH_PROVIDER` names one outright, or the legacy env ladder
+// infers one; both paths end at a named provider or an explicit AUTH_DISABLED,
+// because MastraFactory's `auth` slot no longer has a default to fall into.
+const auth = resolveFactoryAuth({ publicUrl, env: process.env });
+// Encryption is pointless with auth off (no per-tenant credentials to protect)
+// and required with it on. Asking `isAuthDisabled` rather than comparing to a
+// sentinel keeps this reading the same one fact `auth.ts` decided: an earlier
+// version compared `auth === null`, which would have kept compiling — and
+// silently started encrypting in the auth-off path — the moment the selection
+// stopped producing `null`.
+const secretEncryption = isAuthDisabled(auth) ? undefined : credentialEncryption();
 
 // Direct GitHub App fallback: when the platform-backed integration isn't in
 // play (self-hosted / local deploys), a complete GITHUB_APP_* env group wires
@@ -296,6 +279,8 @@ const vector = databaseUrl ? new PgVector({ id: 'mastra-code-vectors', connectio
 const stateSecret =
   process.env.GITHUB_APP_WEBHOOK_SECRET ||
   process.env.WORKOS_COOKIE_PASSWORD ||
+  process.env.OKTA_COOKIE_PASSWORD ||
+  process.env.BETTER_AUTH_SECRET ||
   process.env.SLACK_APP_SIGNING_SECRET ||
   undefined;
 
@@ -312,8 +297,8 @@ const slack = slackSigningSecret
       clientSecret: process.env.SLACK_APP_CLIENT_SECRET?.trim(),
       // Slack requires an HTTPS redirect_uri, which locally is the tunnel
       // origin rather than the app's own public URL.
-      oidcRedirectBaseUrl: process.env.MASTRACODE_CHANNELS_PUBLIC_URL ?? process.env.MASTRACODE_PUBLIC_URL,
-      uiOrigin: process.env.MASTRACODE_PUBLIC_URL,
+      oidcRedirectBaseUrl: process.env.MASTRACODE_CHANNELS_PUBLIC_URL ?? publicUrl,
+      uiOrigin: publicUrl,
     })
   : undefined;
 
@@ -365,7 +350,7 @@ export const factory = new MastraFactory({
   },
   // Browser-facing origin. On the platform the SPA is hosted separately, so
   // this MUST be set to the public API origin.
-  publicUrl: process.env.MASTRACODE_PUBLIC_URL,
+  publicUrl,
   // Allowed cross-origin SPA origins (comma-separated). The SPA is served from
   // a separate static host, so credentialed requests must be explicitly allowed.
   allowedOrigins: (process.env.MASTRACODE_ALLOWED_ORIGINS ?? '')

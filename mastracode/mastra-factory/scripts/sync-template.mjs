@@ -56,6 +56,14 @@ if (customOutOverlapsMonorepo) {
 }
 
 const RUNTIME_DEPENDENCIES = [
+  // One entry per provider `src/mastra/auth.ts` can select by name. They are
+  // static imports there — `mastra build` cannot follow a dynamic specifier —
+  // so every selectable provider is a real dependency of the scaffold even
+  // when a given deployment picks only one.
+  '@mastra/auth-better-auth',
+  '@mastra/auth-firebase',
+  '@mastra/auth-okta',
+  '@mastra/auth-supabase',
   '@mastra/auth-workos',
   '@mastra/code-sdk',
   '@mastra/core',
@@ -275,6 +283,7 @@ minimumReleaseAgeExclude:
   - '@mastra/*'
   - mastra
 allowBuilds:
+  '@firebase/util': false
   '@google/genai': true
   agent-browser: true
   bufferutil: true
@@ -318,6 +327,9 @@ if (fs.existsSync(outDir)) {
 }
 fs.mkdirSync(outDir, { recursive: true });
 copySourceFile('src/mastra/index.ts');
+// The entry imports `./auth.js` for its provider selection, so the scaffold is
+// not a working project without it.
+copySourceFile('src/mastra/auth.ts');
 copySourceFile('.env.schema');
 copySourceFile('docker-compose.yml');
 writePackageJson();

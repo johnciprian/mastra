@@ -33,12 +33,25 @@ Day-to-day configuration (model providers, integrations) happens in the web UI. 
 | Feature                  | Requires                                                                                                                                            |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Agents / model providers | add keys in the UI (Settings › Models), or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`                                                                   |
+| Which auth provider      | `MASTRACODE_AUTH_PROVIDER` — one of `studio`, `workos`, `okta`, `better-auth`, `supabase`, `firebase`, `none`; unset infers one (see below)         |
 | Sign-in (WorkOS)         | `WORKOS_API_KEY`, `WORKOS_CLIENT_ID`, `FACTORY_CREDENTIAL_ENCRYPTION_KEY`                                                                           |
 | GitHub projects & intake | WorkOS + `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_SLUG` + `APP_DATABASE_URL`      |
 | Linear intake            | WorkOS + `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET` + `APP_DATABASE_URL` + a state secret (`GITHUB_APP_WEBHOOK_SECRET` or `WORKOS_COOKIE_PASSWORD`) |
 | Slack channels           | `SLACK_APP_SIGNING_SECRET`, `SLACK_APP_BOT_TOKEN`, `SLACK_APP_CLIENT_ID`, `SLACK_APP_CLIENT_SECRET` + WorkOS + a state secret (see above)           |
 | Distributed event bus    | `REDIS_URL` (only needed for multi-process deployments)                                                                                             |
 | Cloud sandboxes          | `MASTRA_PLATFORM_SECRET_KEY`, `MASTRA_PROJECT_ID`, `MASTRA_ENVIRONMENT_ID` (defaults to a local git sandbox otherwise)                              |
+
+`MASTRACODE_AUTH_PROVIDER` names the sign-in provider outright and outranks every other auth variable. Set it to
+`none` to run with no authentication at all (local development only — every route is open, and the UI shows an
+"auth not configured" screen instead of a sign-in page). An unrecognized value is a startup error rather than a
+fallback, so a typo cannot quietly point the server at the wrong identity provider. Each provider reads its own
+variable group — `OKTA_*`, `BETTER_AUTH_SECRET`, `SUPABASE_*`, `FIREBASE_*` — documented in `.env.schema`. Note
+`supabase` and `firebase` verify bearer tokens but cannot sign anyone in from a browser.
+
+Leave it unset to keep the inference: `MASTRA_SHARED_API_URL` selects the Mastra platform, a complete
+`WORKOS_API_KEY` + `WORKOS_CLIENT_ID` pair selects WorkOS, and neither selects the Mastra platform. Any provider
+not on the list above can still be used by constructing it in `src/mastra/auth.ts` and passing the instance to
+`MastraFactory`'s `auth` slot.
 
 ### Database
 
