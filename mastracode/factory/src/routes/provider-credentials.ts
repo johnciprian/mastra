@@ -91,13 +91,21 @@ export async function resolveCredentialContext({
   credentials?: ModelCredentialsStorage;
 }): Promise<CredentialContext | { response: Response }> {
   await auth.ensureUser(c);
+  // Which store, decided by whether a provider is configured — NOT by whether a
+  // tenant resolved. Tenant presence was a working proxy for that only while an
+  // auth-off deployment had no identity; it now always resolves the local
+  // single-user tenant, so the proxy inverted and sent local deployments to the
+  // tenant DB. Model calls never follow: `factory.ts` leaves the tenant
+  // credential resolver unregistered without a provider, so the SDK reads the
+  // file-backed AuthStorage. Writing to the other store there is invisible to
+  // every model call — the UI reports the provider logged in and the run fails
+  // with "Not logged in".
+  if (!auth.enabled()) return { mode: 'local' };
   const tenant = auth.tenant(c);
   if (!tenant) {
-    // When an auth provider is active, credential operations always require a
-    // signed-in caller — otherwise one anonymous request could write keys for
-    // everyone. Without a provider this is a single-user local server.
-    if (auth.enabled()) return { response: c.json({ error: 'unauthorized' }, 401) };
-    return { mode: 'local' };
+    // A provider is active and this caller is anonymous. Refuse: one anonymous
+    // request must not be able to write keys for everyone.
+    return { response: c.json({ error: 'unauthorized' }, 401) };
   }
   const storage = await getTenantCredentialsStorage(credentials);
   if (!storage) {
@@ -132,8 +140,13 @@ export async function listTenantCredentialsForRequest({
   credentials?: ModelCredentialsStorage;
 }): Promise<CredentialRecord[] | undefined> {
   await auth.ensureUser(c);
+  // `undefined` means local mode — the caller reads AuthStorage. Keyed on the
+  // provider for the reason in `resolveCredentialContext`: an auth-off
+  // deployment always has a tenant now, but its credentials are not in the
+  // tenant store.
+  if (!auth.enabled()) return undefined;
   const tenant = auth.tenant(c);
-  if (!tenant) return auth.enabled() ? [] : undefined;
+  if (!tenant) return [];
   const storage = await getTenantCredentialsStorage(credentials);
   if (!storage) return [];
   return storage.listCredentials(tenantOrgId(tenant), tenant.userId);

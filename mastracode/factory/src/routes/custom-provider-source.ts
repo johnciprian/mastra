@@ -21,6 +21,7 @@ import { setCustomProvidersSource } from '@mastra/code-sdk/agents/custom-provide
 import type { MastraCodeCustomProvider } from '@mastra/code-sdk/agents/mastracode-gateway';
 import type { MiddlewareHandler } from 'hono';
 
+import { LOCAL_TENANT_ID } from '../auth.js';
 import type { CustomProvidersStorage } from '../storage/domains/custom-providers/base.js';
 import { tenantOrgId } from './provider-credentials.js';
 import type { RouteAuth } from './route.js';
@@ -30,9 +31,6 @@ const SNAPSHOT_TTL_MS = 15_000;
 
 /** Cap on cached org snapshots; oldest-inserted evicted beyond this. */
 const MAX_CACHED_ORGS = 1000;
-
-/** Sentinel org for no-auth mode — must match the custom provider routes. */
-const LOCAL_ORG = 'local';
 
 class OrgCustomProvidersSnapshot {
   readonly #orgId: string;
@@ -96,7 +94,7 @@ function orgForTenant(
   tenant: { orgId?: string; userId: string } | undefined,
   authEnabled: boolean,
 ): string | undefined {
-  if (!authEnabled) return LOCAL_ORG;
+  if (!authEnabled) return LOCAL_TENANT_ID;
   return tenant ? tenantOrgId(tenant) : undefined;
 }
 

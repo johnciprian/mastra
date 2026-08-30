@@ -25,10 +25,24 @@ describe('useFactoryAuth', () => {
   describe('given the server injected authEnabled: false', () => {
     it('resolves the disabled state without touching the network', async () => {
       window.__MASTRACODE_CONFIG__ = { authEnabled: false };
-      // No `/auth/me` handler registered: any fetch would trip MSW's
-      // onUnhandledRequest: 'error' and fail this test.
+      // `msw-server.ts` registers an ambient `*/auth/me` handler, so an absent
+      // handler here would NOT trip onUnhandledRequest — it would quietly serve
+      // the default 404 and this test would pass whether or not the
+      // short-circuit exists. Register a spy that fails the assertion below if
+      // the probe happens, so what is pinned is "no request", not "a request
+      // whose answer happens to match".
+      const hit = vi.fn();
+      server.use(
+        http.get(AUTH_ME_URL, () => {
+          hit();
+          return HttpResponse.json(null, { status: 404 });
+        }),
+      );
 
       const { result, client } = renderHookWithProviders(() => useFactoryAuth());
+
+      await waitFor(() => expect(result.current.data).toBeDefined());
+      expect(hit).not.toHaveBeenCalled();
 
       await waitFor(() => expect(result.current.data).toBeDefined());
       expect(result.current.data).toEqual({ authEnabled: false, authenticated: false });
@@ -92,6 +106,34 @@ describe('useFactoryAuth', () => {
       await waitFor(() => expect(result.current.data).toBeDefined());
       expect(result.current.data).toEqual({ authEnabled: false, authenticated: false });
       expect(hit).toHaveBeenCalledTimes(1);
+    });
+
+    /**
+     * The status a real host actually returns for an unmounted `/auth/me`.
+     *
+     * With auth disabled the factory mounts no `/auth/*` routes, and the SPA
+     * fallback answers every unmatched GET with `200 text/html` (index.html) —
+     * not 404. So the 404 degradation above never fires in production, and
+     * `res.json()` parses `<!doctype html>` and throws. The whole app then
+     * renders the error branch forever.
+     */
+    it('degrades to auth disabled when an unmounted route serves the SPA fallback', async () => {
+      server.use(
+        http.get(
+          AUTH_ME_URL,
+          () =>
+            new HttpResponse('<!doctype html><html><head><title>Mastra Factory</title></head></html>', {
+              status: 200,
+              headers: { 'Content-Type': 'text/html' },
+            }),
+        ),
+      );
+
+      const { result } = renderHookWithProviders(() => useFactoryAuth());
+
+      await waitFor(() => expect(result.current.data).toBeDefined());
+      expect(result.current.data).toEqual({ authEnabled: false, authenticated: false });
+      expect(result.current.isError).toBe(false);
     });
   });
 });

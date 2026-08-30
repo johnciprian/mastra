@@ -135,9 +135,19 @@ beforeEach(async () => {
 });
 
 describe('status route', () => {
-  it('reports disabled without web auth', async () => {
+  /**
+   * Auth off no longer disables the integration. It used to, and that was right
+   * while an auth-off deployment had no identity: connections are stored per
+   * organization and there was none to key them under. `createFactoryRouteAuth`
+   * now substitutes the local single-user tenant, so there is a stable `local`
+   * org that owns the connection. This matches the GitHub gate, which would
+   * otherwise be the only integration an auth-off Factory could use.
+   *
+   * What still disables it is a missing Linear app, asserted below.
+   */
+  it('stays enabled without web auth, under the local tenant', async () => {
     const res = await buildApp(org1(), { authEnabled: false }).request('/web/linear/status');
-    expect(await res.json()).toMatchObject({ enabled: false, connected: false, reason: 'missing_config' });
+    expect(await res.json()).toMatchObject({ enabled: true, connected: false, reason: 'not_connected' });
   });
 
   it('reports disabled without a state signer', async () => {

@@ -7,6 +7,7 @@ import {
   getFactoryAuthOrgId,
   getFactoryAuthUser,
   getFactoryAuthUserId,
+  LOCAL_TENANT_ID,
   mountFactoryAuth,
   factoryAuthProfile,
   factoryAuthTenant,
@@ -841,5 +842,66 @@ describe('mountFactoryAuth PKCE round trip', () => {
     expect(res.headers.get('location')).toBe('/');
     expect(res.headers.get('set-cookie')).toContain('idp_session=sealed');
     expect(mockHandleCallback).toHaveBeenCalledWith('abc', 'uuid-1');
+  });
+});
+
+/**
+ * What a tenant-scoped route sees when the deployment runs with no auth.
+ *
+ * `factoryAuthTenant` reads the signed-in user out of the request context, so
+ * with no provider there is nobody to read and it answers `undefined`. That is
+ * correct for a gated route — no user, no tenant, 401. But it is the wrong
+ * answer for a deployment that deliberately turned auth off: five route modules
+ * (projects, work-items, knowledge, intake, provider-credentials) gate on
+ * `if (!tenant) return 401`, so an open server answered 401 to its own operator
+ * on every route that stores anything.
+ *
+ * The seam already knows which case it is in — it holds the provider — so it
+ * substitutes the local single-user tenant rather than making each of those
+ * five routes learn the distinction. `custom-provider-source.ts` reached the
+ * same answer first, for model config alone; this generalizes it.
+ */
+describe('RouteAuth.tenant with auth disabled', () => {
+  function tenantApp(provider: IMastraAuthProvider | undefined) {
+    const app = new Hono();
+    const auth = createFactoryRouteAuth(provider);
+    app.get('/web/whoami', c => c.json(auth.tenant(c) ?? { tenant: null }));
+    return app;
+  }
+
+  async function tenantOf(app: Hono): Promise<unknown> {
+    const res = await app.request('/web/whoami', { headers: { Accept: 'application/json' } });
+    expect(res.status).toBe(200);
+    return res.json();
+  }
+
+  it('resolves the local single-user tenant so tenant-scoped routes still serve', async () => {
+    expect(await tenantOf(tenantApp(undefined))).toEqual({ orgId: LOCAL_TENANT_ID, userId: LOCAL_TENANT_ID });
+  });
+
+  it('still answers "no tenant" for an unauthenticated request when a provider is configured', async () => {
+    // The security-relevant half: substituting a tenant must depend on auth
+    // being OFF, never on the request simply having failed to authenticate.
+    expect(await tenantOf(tenantApp(hostedProvider()))).toEqual({ tenant: null });
+  });
+
+  /**
+   * `runTenant` answers the same question as `tenant` for callers that hold a
+   * `RequestContext` rather than a Hono `Context` — agent runs and workspace
+   * resolution, which is where a Factory session is matched to its owner.
+   * Substituting in only one of the two left auth-off deployments able to open
+   * the app and then failing on the first chat with "Factory session <id> was
+   * resolved without a caller identity" (workspace.ts). One fact, so both
+   * readers of it have to agree.
+   */
+  it('answers the same local tenant through runTenant, which agent runs read', () => {
+    expect(createFactoryRouteAuth(undefined).runTenant(undefined)).toEqual({
+      orgId: LOCAL_TENANT_ID,
+      userId: LOCAL_TENANT_ID,
+    });
+  });
+
+  it('still answers "no tenant" through runTenant when a provider is configured', () => {
+    expect(createFactoryRouteAuth(hostedProvider()).runTenant(undefined)).toBeUndefined();
   });
 });

@@ -324,6 +324,17 @@ export async function fetchAuthState(baseUrl: string): Promise<FactoryAuthState>
   if (!res.ok) {
     throw new Error(`Auth check failed (${res.status})`);
   }
+  // The 404 above is only half the "route is absent" story, and it is the half
+  // a real host does not produce. With auth disabled the server mounts no
+  // `/auth/*` routes at all, and the SPA fallback answers every unmatched GET
+  // with `200 text/html` (index.html) rather than a 404 — so without this the
+  // parse below hits `<!doctype html>`, throws, and the whole app sits on the
+  // error branch retrying forever. The content type is what separates a real
+  // payload from the fallback, so an answer that is not JSON means the same
+  // thing the 404 does: there is no auth here.
+  if (!(res.headers.get('content-type') ?? '').includes('application/json')) {
+    return { authEnabled: false, authenticated: false };
+  }
   const data = (await res.json()) as {
     authenticated?: boolean;
     user?: { userId?: string; email?: string; name?: string; organizationId?: string } | null;

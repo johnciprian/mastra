@@ -51,9 +51,28 @@ export interface GithubFeatureGateOptions {
 
 /**
  * True when the GitHub App project feature should be active.
+ *
+ * Configuration only. This used to also require `auth.enabled()`, which was
+ * right while an auth-off deployment had no identity at all: installations are
+ * stored per organization, and there was no organization to key them under, so
+ * a connect flow had nowhere to put its result. `createFactoryRouteAuth` now
+ * substitutes the local single-user tenant when no provider is configured, so
+ * an auth-off Factory has a stable `local` org that owns its installations
+ * across restarts, and every `if (!tenant)` on the GitHub routes is satisfied.
+ *
+ * Factory auth and GitHub identity answer different questions, which is why
+ * dropping one does not weaken the other: this decides who is using the
+ * Factory, while the connect flow still completes GitHub's own OAuth and
+ * refuses to trust a raw `installation_id` without a verified user token
+ * (see the identify bounce in `routes.ts`).
+ *
+ * The exposure this adds is the one auth-off already has: on a server with no
+ * auth every route is open, so anyone who can reach it can use the connected
+ * installation. That is why auth-off is documented for single-user local
+ * development and warned about at boot.
  */
 export function isGithubFeatureEnabled(options: Pick<GithubFeatureGateOptions, 'github' | 'auth'>): boolean {
-  return options.github !== undefined && options.auth.enabled();
+  return options.github !== undefined;
 }
 
 /**

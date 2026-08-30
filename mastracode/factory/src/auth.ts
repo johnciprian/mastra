@@ -289,6 +289,23 @@ export function getFactoryAuthOrgId(user: FactoryAuthUser | undefined): string |
  * derived id over that would move a member of a real organization into a
  * private one, where their team's data is not.
  */
+/**
+ * The identity every request carries when the deployment runs with no auth.
+ *
+ * One value for both halves of the tuple because there is exactly one actor: an
+ * open server has no way to tell callers apart, and inventing two ids would
+ * imply a separation it cannot enforce. `custom-provider-source.ts` reached
+ * this answer first for model config alone and named the org `'local'`; this is
+ * that constant, hoisted so the two cannot drift into scoping the same
+ * deployment's data under different keys.
+ *
+ * Only ever substituted when no provider is configured — see
+ * {@link createFactoryRouteAuth}. It is not a fallback for a failed sign-in.
+ */
+export const LOCAL_TENANT_ID = 'local';
+
+const LOCAL_TENANT: FactoryAuthTenant = Object.freeze({ orgId: LOCAL_TENANT_ID, userId: LOCAL_TENANT_ID });
+
 export function factoryAuthTenant(c: Context): FactoryAuthTenant | undefined {
   const user = getFactoryAuthUser(c);
   const userId = getFactoryAuthUserId(user);
@@ -795,8 +812,27 @@ export function createFactoryRouteAuth(provider: IMastraAuthProvider | undefined
   return {
     enabled: () => provider !== undefined,
     ensureUser: (c: Context) => ensureFactoryAuthUser(provider, c),
-    tenant: (c: Context) => factoryAuthTenant(c),
-    runTenant: (requestContext: RequestContextLike | undefined) => factoryRunTenant(requestContext),
+    // With no provider there is no user to read, so `factoryAuthTenant` answers
+    // `undefined` — right for a gated route, wrong for a deployment that turned
+    // auth off on purpose. Five route modules gate on `if (!tenant) return 401`
+    // (projects, work-items, knowledge, intake, provider-credentials), so an
+    // open server used to 401 its own operator on every route that stores
+    // anything. Substituting here rather than teaching those five the
+    // difference keeps the distinction in the one place that already knows it:
+    // this seam holds the provider.
+    //
+    // The condition is `provider === undefined`, never "the request failed to
+    // authenticate". A configured deployment whose caller is anonymous still
+    // gets no tenant, and still 401s.
+    tenant: (c: Context) => (provider === undefined ? LOCAL_TENANT : factoryAuthTenant(c)),
+    // Same fact as `tenant`, for callers holding a `RequestContext` rather than
+    // a Hono `Context` — agent runs, and the workspace resolution that matches
+    // a Factory session to its owner. Both readers must agree: substituting in
+    // only one left an auth-off deployment able to open the app and then fail
+    // on the first chat with "was resolved without a caller identity", because
+    // `workspace.ts` reads identity through this member and not the other.
+    runTenant: (requestContext: RequestContextLike | undefined) =>
+      provider === undefined ? LOCAL_TENANT : factoryRunTenant(requestContext),
     profile: (c: Context) => factoryAuthProfile(c),
     isOrganizationAdmin: (c: Context, organizationId: string) => isOrganizationAdmin(provider, c, organizationId),
   };

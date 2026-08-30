@@ -166,7 +166,13 @@ function linearFetchError(c: RouteContext, err: unknown) {
 export function buildLinearRoutes(options: MountLinearRoutesOptions): ApiRoute[] {
   const routes: ApiRoute[] = [];
   const { linear, auth, stateSigner, intake } = options;
-  const enabled = Boolean(linear) && auth.enabled();
+  // Configuration only, matching `isGithubFeatureEnabled`. Requiring
+  // `auth.enabled()` was right while an auth-off deployment had no identity to
+  // key an org-scoped connection under; `createFactoryRouteAuth` now
+  // substitutes the local single-user tenant, so there is a stable `local` org
+  // that owns it. Linear's own OAuth still verifies the workspace, exactly as
+  // Factory auth being off does not weaken GitHub's.
+  const enabled = Boolean(linear);
   const diagnostics = (): LinearFeatureDiagnostics => ({
     linearAppConfigured: Boolean(linear),
     factoryAuthEnabled: auth.enabled(),
